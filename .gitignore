@@ -6,6 +6,7 @@ __pycache__/
 .vntrader/
 .DS_Store
 .idea/
+.scheduler_history.json
 *.db
 performance.json
 data/
