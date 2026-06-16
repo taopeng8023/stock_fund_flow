@@ -96,58 +96,25 @@ canvas{max-height:300px}
 
   <!-- Tab 4: 调度控制 -->
   <div id="tab-control" class="tab">
-    <div class="card" style="padding:10px 20px;margin-bottom:16px;display:flex;align-items:center;gap:24px">
-      <span style="color:#64748b;font-size:12px">上次调度</span>
-      <b id="last-run-time" style="color:#e2e8f0;font-size:14px">--</b>
-      <button class="btn" style="background:#334155;color:#e2e8f0;font-size:11px;padding:4px 10px" onclick="clearStepHistory()">清除记录</button>
+    <!-- Daily schedule toggle bar -->
+    <div class="card" style="padding:12px 20px;margin-bottom:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="font-size:14px;font-weight:600">APScheduler 调度引擎</span>
+      <span style="color:#94a3b8;font-size:12px">每日定时:</span>
+      <b style="color:#38bdf8;font-size:13px">15:35 (收盘后)</b>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:auto">
+        <span id="daily-toggle-label" style="font-size:13px;color:#94a3b8">自动调度</span>
+        <input type="checkbox" id="daily-toggle" onchange="toggleDaily(this.checked)" style="width:18px;height:18px;cursor:pointer">
+      </label>
+      <span id="daily-status" style="font-size:12px;color:#64748b"></span>
     </div>
 
-    <div class="grid2">
-      <div class="card">
-        <h3>① 数据采集 <span id="step-fetch-data-time" style="font-size:11px;color:#64748b;font-weight:400"></span></h3>
-        <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">从东方财富抓取个股资金流/板块/北向/龙虎榜/分析师数据</p>
-        <button class="btn btn-primary" onclick="runStep('fetch-data')">执行采集</button>
-        <span id="step-fetch-data-status" style="margin-left:8px;font-size:13px"></span>
-        <pre id="step-fetch-data-log" style="background:#0f172a;padding:8px;border-radius:4px;font-size:10px;max-height:120px;overflow-y:auto;margin-top:8px;display:none;white-space:pre-wrap"></pre>
-      </div>
+    <!-- Job list -->
+    <div id="jobs-container"><div class="loading">加载中...</div></div>
 
-      <div class="card">
-        <h3>② 数据导入 <span id="step-import-data-time" style="font-size:11px;color:#64748b;font-weight:400"></span></h3>
-        <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">将 fund_flow.json 导入 vnpy SQLite BarData 表</p>
-        <button class="btn btn-primary" onclick="runStep('import-data')">执行导入</button>
-        <span id="step-import-data-status" style="margin-left:8px;font-size:13px"></span>
-        <pre id="step-import-data-log" style="background:#0f172a;padding:8px;border-radius:4px;font-size:10px;max-height:120px;overflow-y:auto;margin-top:8px;display:none;white-space:pre-wrap"></pre>
-      </div>
-
-      <div class="card">
-        <h3>③ 盘面诊断 <span id="step-diagnosis-time" style="font-size:11px;color:#64748b;font-weight:400"></span></h3>
-        <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">市场宽度/资金流/板块/北向/情绪/风险/仓位，结果写入数据库</p>
-        <button class="btn btn-primary" onclick="runStep('diagnosis')">执行诊断</button>
-        <span id="step-diagnosis-status" style="margin-left:8px;font-size:13px"></span>
-        <pre id="step-diagnosis-log" style="background:#0f172a;padding:8px;border-radius:4px;font-size:10px;max-height:120px;overflow-y:auto;margin-top:8px;display:none;white-space:pre-wrap"></pre>
-      </div>
-
-      <div class="card">
-        <h3>④ 多因子选股 <span id="step-stock-picks-time" style="font-size:11px;color:#64748b;font-weight:400"></span></h3>
-        <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">24因子模型全市场打分，输出TOP 5精选个股</p>
-        <button class="btn btn-primary" onclick="runStep('stock-picks')">执行选股</button>
-        <span id="step-stock-picks-status" style="margin-left:8px;font-size:13px"></span>
-        <pre id="step-stock-picks-log" style="background:#0f172a;padding:8px;border-radius:4px;font-size:10px;max-height:120px;overflow-y:auto;margin-top:8px;display:none;white-space:pre-wrap"></pre>
-      </div>
-
-      <div class="card">
-        <h3>⑤ 绩效追踪 <span id="step-performance-time" style="font-size:11px;color:#64748b;font-weight:400"></span></h3>
-        <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">记录当日选股 + 用今日数据回测历史选股的次日收益</p>
-        <button class="btn btn-primary" onclick="runStep('performance')">执行追踪</button>
-        <span id="step-performance-status" style="margin-left:8px;font-size:13px"></span>
-        <pre id="step-performance-log" style="background:#0f172a;padding:8px;border-radius:4px;font-size:10px;max-height:120px;overflow-y:auto;margin-top:8px;display:none;white-space:pre-wrap"></pre>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px;text-align:center">
-      <button class="btn btn-primary" onclick="runStep('run-all')" style="font-size:15px;padding:12px 32px">一键执行全部管线</button>
-      <span id="step-run-all-status" style="margin-left:12px;font-size:14px"></span>
-      <span id="step-run-all-time" style="margin-left:12px;font-size:12px;color:#64748b"></span>
+    <!-- Execution history -->
+    <div class="card" style="margin-top:16px">
+      <h3>执行历史 <button class="btn" style="background:#334155;color:#e2e8f0;font-size:11px;padding:4px 10px;margin-left:12px" onclick="refreshHistory()">刷新</button></h3>
+      <div id="history-container" style="max-height:400px;overflow-y:auto"><div class="loading">加载中...</div></div>
     </div>
   </div>
 
@@ -426,150 +393,138 @@ async function loadPerformance() {
 }
 
 // ── Control ──
-const STORAGE_KEY = 'scheduler_history';
 
-function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
-  catch(e) { return {}; }
-}
-
-function nowStr() {
-  return new Date().toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'});
-}
-
-function saveHistoryEntry(step, data) {
-  const h = loadHistory();
-  h[step] = { time: nowStr(), success: data.success, error: data.error || data._error || '', data: data };
-  if(step === 'run-all' && data.success) h._lastFullRun = h[step].time;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(h));
-  // Sync to server
-  fetchAPI('/api/scheduler/history', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({step:step, time:h[step].time, success:data.success, error:h[step].error})}).catch(()=>{});
-}
-
-function formatStepResult(step, data) {
-  if(!data || !data.success) return null;
-  const d = data;
-  switch(step) {
+function formatJobResult(jobId, result) {
+  if (!result) return '';
+  const d = result;
+  switch (jobId) {
     case 'fetch-data':
-      return `<div style="font-size:12px;line-height:1.6">
-        <div>📅 日期: <b>${d.date||'?'}</b></div>
-        <div>📋 ${(d.stdout||'').split('\\n').filter(l=>l.includes('.json')).map(l=>'<span style="color:#94a3b8">'+l.trim()+'</span>').join('<br>')||'采集完成'}</div>
+      return `<div style="font-size:11px;line-height:1.5">
+        <div>日期: <b>${d.date||'?'}</b></div>
+        ${(d.stdout||'').split('\\n').filter(l=>l.includes('.json')).map(l=>'<div style="color:#94a3b8">'+l.trim()+'</div>').join('')||'<div style="color:#94a3b8">采集完成</div>'}
       </div>`;
     case 'import-data':
-      return `<div style="font-size:12px;line-height:1.6">
-        <div>📅 日期: <b>${d.date||'?'}</b></div>
-        <div>📊 导入 <b style="color:#38bdf8">${d.bar_count||0}</b> 条 BarData</div>
-        <div style="color:#94a3b8">${d.message||''}</div>
+      return `<div style="font-size:11px;line-height:1.5">
+        <div>日期: <b>${d.date||'?'}</b></div>
+        <div>导入 <b style="color:#38bdf8">${d.bar_count||0}</b> 条 BarData</div>
       </div>`;
     case 'diagnosis':
-      return `<div style="font-size:12px;line-height:1.6">
-        <div>📊 覆盖 <b>${d.stock_count||0}</b> 只个股</div>
-        <div>🎯 市场状态: <b style="color:${(d.regime||'').includes('牛')?'#22c55e':'#ef4444'}">${d.regime||'?'}</b></div>
-        <div>🌡️ 情绪温度: <b>${d.sentiment||'?'}</b> ${d.sentiment_label||''}</div>
-        <div>⚡ 风险等级: <b>${d.risk_level||'?'}</b> | 建议仓位 <b>${d.position_advice||'?'}%</b></div>
-        <div>📈 上涨比 ${d.up_ratio||'?'} | 涨停 ${d.limit_up||0} | 跌停 ${d.limit_down||0}</div>
-        ${(d.risk_alerts||[]).slice(0,2).map(a=>'<div style="color:#f97316">⚠️ '+a+'</div>').join('')}
+      return `<div style="font-size:11px;line-height:1.5">
+        <div>个股: <b>${d.stock_count||0}</b> | 状态: <b>${d.regime||'?'}</b> | 风险: <b>${d.risk_level||'?'}</b></div>
+        <div>情绪: <b>${d.sentiment||'?'}</b> | 仓位: <b>${d.position_advice||'?'}%</b> | 上涨比: ${d.up_ratio||'?'}</div>
+        <div>涨停 ${d.limit_up||0} | 跌停 ${d.limit_down||0}</div>
       </div>`;
     case 'stock-picks':
-      let pickRows = '';
+      let rows = '';
       (d.picks||[]).forEach(p => {
-        pickRows += `<tr><td style="padding:2px 6px">${p.rank}</td><td style="padding:2px 6px;font-weight:600">${p.code}</td><td style="padding:2px 6px">${p.name}</td><td style="padding:2px 6px;color:#38bdf8">${(p.score||0).toFixed(4)}</td><td style="padding:2px 6px" class="${(p.chg||0)>0?'positive':'negative'}">${(p.chg||0)>=0?'+':''}${(p.chg||0).toFixed(1)}%</td><td style="padding:2px 6px">${p.main_flow_yi||0}亿</td></tr>`;
+        rows += `<tr><td style="padding:1px 4px">${p.rank}</td><td style="padding:1px 4px;font-weight:600">${p.code}</td><td style="padding:1px 4px">${p.name}</td><td style="padding:1px 4px;color:#38bdf8">${(p.score||0).toFixed(4)}</td></tr>`;
       });
-      return `<div style="font-size:12px;line-height:1.6">
-        <div>📅 日期: <b>${d.date||'?'}</b> | 环境: <b>${d.regime||'?'}</b> | 选出 <b>${d.picks_count||0}</b> 只</div>
-        <table style="margin-top:4px;font-size:11px"><thead><tr><th>#</th><th>代码</th><th>名称</th><th>得分</th><th>涨跌</th><th>主力</th></tr></thead><tbody>${pickRows}</tbody></table>
+      return `<div style="font-size:11px;line-height:1.5">
+        <div>日期: <b>${d.date||'?'}</b> | 环境: <b>${d.regime||'?'}</b> | 选出 <b>${d.picks_count||0}</b> 只</div>
+        ${rows?('<table style="margin-top:4px;font-size:10px"><thead><tr><th>#</th><th>代码</th><th>名称</th><th>得分</th></tr></thead><tbody>'+rows+'</tbody></table>'):''}
       </div>`;
     case 'performance':
-      const fe = d.factor_edge;
-      return `<div style="font-size:12px;line-height:1.6">
-        <div>📝 记录 <b>${d.picks_recorded||0}</b> 只选股</div>
-        <div>📊 累计已完成: <b>${d.total_picks||0}</b> 笔</div>
-        <div>🏆 胜率: <b>${d.win_rate||0}%</b> | 均收益: <b class="${(d.avg_return||0)>0?'positive':'negative'}">${(d.avg_return||0)>=0?'+':''}${(d.avg_return||0).toFixed(2)}%</b></div>
-        <div>📐 因子区分度: <b>${fe!=null?(fe>=0?'+':'')+fe.toFixed(2)+'%':'N/A'}</b></div>
+      return `<div style="font-size:11px;line-height:1.5">
+        <div>记录 <b>${d.picks_recorded||0}</b> 只 | 累计完成 <b>${d.total_completed||0}</b> 笔</div>
+        <div>胜率: <b>${d.win_rate||0}%</b> | 均收益: <b>${(d.avg_return||0)>=0?'+':''}${(d.avg_return||0).toFixed(2)}%</b></div>
       </div>`;
     case 'run-all':
-      const rd = d.result || d;
-      const dd = rd.diagnosis || {};
-      return `<div style="font-size:12px;line-height:1.6">
-        <div>📊 导入 ${rd.bar_count||0} 条数据 | 选出 ${rd.picks_count||0} 只</div>
-        <div>🎯 ${dd.regime||'?'} | ⚡ ${dd.risk_level||'?'} | 仓位 ${dd.position_advice||'?'}%</div>
+      const s = d.steps || d;
+      return `<div style="font-size:11px;line-height:1.5">
+        ${Object.entries(s).map(([k,v])=>'<div>'+k+': <b style="color:'+(v==='success'?'#22c55e':'#ef4444')+'">'+v+'</b></div>').join('')}
       </div>`;
-    default: return null;
+    default: return '';
   }
-}
-
-function restoreStepUI(step) {
-  const h = loadHistory();
-  const entry = h[step];
-  const statusEl = document.getElementById('step-'+step+'-status');
-  const logEl = document.getElementById('step-'+step+'-log');
-  const timeEl = document.getElementById('step-'+step+'-time');
-  if(!entry) return;
-  if(timeEl) timeEl.textContent = entry.time || '';
-  if(!statusEl) return;
-  if(entry.success) {
-    statusEl.innerHTML = '<span style="color:#22c55e">✓ 完成</span>';
-  } else {
-    statusEl.innerHTML = '<span style="color:#ef4444">✗ '+(entry.error||'失败')+'</span>';
-  }
-  if(logEl && entry.data) {
-    const formatted = formatStepResult(step, entry.data);
-    logEl.style.display = 'block';
-    logEl.innerHTML = formatted || JSON.stringify(entry.data, null, 2);
-  }
-}
-
-function restoreAllSteps() {
-  ['fetch-data','import-data','diagnosis','stock-picks','performance','run-all'].forEach(restoreStepUI);
-  const h = loadHistory();
-  const lastTime = document.getElementById('last-run-time');
-  if(lastTime) {
-    lastTime.textContent = h._lastFullRun || Object.values(h).map(e=>e.time).sort().pop() || '--';
-  }
-}
-
-async function clearStepHistory() {
-  localStorage.removeItem(STORAGE_KEY);
-  await fetchAPI('/api/scheduler/history', {method:'DELETE'}).catch(()=>{});
-  ['fetch-data','import-data','diagnosis','stock-picks','performance','run-all'].forEach(s => {
-    const se = document.getElementById('step-'+s+'-status');
-    if(se) se.innerHTML = '';
-    const le = document.getElementById('step-'+s+'-log');
-    if(le) { le.style.display = 'none'; le.textContent = ''; }
-    const te = document.getElementById('step-'+s+'-time');
-    if(te) te.textContent = '';
-  });
-  const lr = document.getElementById('last-run-time');
-  if(lr) lr.textContent = '--';
 }
 
 async function loadSchedulerStatus() {
-  // Try server-side history first
-  const serverHistory = await fetchAPI('/api/scheduler/history');
-  if(serverHistory && !serverHistory._error && serverHistory.history) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serverHistory.history));
+  const jobsEl = document.getElementById('jobs-container');
+  try {
+    const data = await fetchAPI('/api/scheduler/jobs');
+    if (data._error) { jobsEl.innerHTML = '<div class="error">'+data._error+'</div>'; return; }
+    const jobs = data.jobs || [];
+    if (!jobs.length) { jobsEl.innerHTML = '<div class="neutral" style="padding:20px;text-align:center">无调度任务</div>'; return; }
+
+    let html = '';
+    jobs.forEach(job => {
+      const lr = job.last_run;
+      const statusIcon = lr ? (lr.status==='success'?'✓':'✗') : '';
+      const statusColor = lr ? (lr.status==='success'?'#22c55e':'#ef4444') : '#64748b';
+      const resultHtml = lr && lr.result ? formatJobResult(job.id, lr.result) : (lr && lr.error ? '<div style="color:#ef4444;font-size:11px">'+lr.error+'</div>' : '');
+
+      html += `<div class="card" style="padding:14px 18px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="font-weight:600;font-size:14px">${job.name}</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:2px">${job.desc}</div>
+          </div>
+          <div style="text-align:center;min-width:100px">
+            <div style="font-size:11px;color:#94a3b8">上次执行</div>
+            <div style="font-size:12px;color:${statusColor};font-weight:600">${statusIcon} ${lr ? lr.time : '--'}</div>
+            <div style="font-size:11px;color:${statusColor}">${lr ? lr.status : '--'}</div>
+          </div>
+          <div style="text-align:center;min-width:100px">
+            <div style="font-size:11px;color:#94a3b8">下次调度</div>
+            <div style="font-size:12px;color:#38bdf8;font-weight:500">${job.next_run || '未排期'}</div>
+          </div>
+          <button class="btn btn-primary" onclick="runJob('${job.id}', this)" style="min-width:70px">▶ 执行</button>
+        </div>
+        ${resultHtml ? '<div style="margin-top:10px;padding:8px 12px;background:#0f172a;border-radius:4px">'+resultHtml+'</div>' : ''}
+      </div>`;
+    });
+    jobsEl.innerHTML = html;
+  } catch(e) {
+    jobsEl.innerHTML = '<div class="error">加载失败: '+e.message+'</div>';
   }
-  restoreAllSteps();
+  refreshHistory();
 }
 
-async function runStep(step) {
-  const statusEl = document.getElementById('step-'+step+'-status');
-  const logEl = document.getElementById('step-'+step+'-log');
-  const timeEl = document.getElementById('step-'+step+'-time');
-  statusEl.innerHTML = '<span style="color:#38bdf8">⏳ 执行中...</span>';
-  if(logEl) { logEl.style.display='block'; logEl.innerHTML = '<span style="color:#94a3b8">执行中...</span>'; }
+async function runJob(jobId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
   try {
-    const data = await fetchAPI('/api/pipeline/'+step, {method:'POST'});
-    saveHistoryEntry(step, data);
-    restoreStepUI(step);
-    if(step === 'run-all') {
-      const h = loadHistory();
-      document.getElementById('last-run-time').textContent = h._lastFullRun || '';
-    }
+    const data = await fetchAPI('/api/scheduler/jobs/'+encodeURIComponent(jobId)+'/run', {method:'POST'});
+    if (data._error) { alert('执行失败: '+data._error); }
   } catch(e) {
-    const errData = {_error: e.message};
-    saveHistoryEntry(step, {success: false, error: e.message, data: errData});
-    restoreStepUI(step);
+    alert('执行异常: '+e.message);
+  }
+  loadSchedulerStatus();
+}
+
+async function toggleDaily(enabled) {
+  try {
+    const data = await fetchAPI('/api/scheduler/daily?enabled='+enabled, {method:'POST'});
+    document.getElementById('daily-status').textContent = data.message || '';
+    document.getElementById('daily-toggle-label').textContent = data.daily_enabled ? '自动调度 (已开启)' : '自动调度 (已关闭)';
+    document.getElementById('daily-toggle').checked = data.daily_enabled;
+  } catch(e) {
+    alert('切换失败: '+e.message);
+  }
+}
+
+async function refreshHistory() {
+  const histEl = document.getElementById('history-container');
+  try {
+    const data = await fetchAPI('/api/scheduler/history');
+    if (data._error) { histEl.innerHTML = '<div class="error">'+data._error+'</div>'; return; }
+    const history = data.history || [];
+    if (!history.length) { histEl.innerHTML = '<div style="color:#64748b;padding:16px;text-align:center">暂无执行记录</div>'; return; }
+
+    let html = '<table style="font-size:12px"><thead><tr><th>时间</th><th>任务</th><th>状态</th><th>详情</th></tr></thead><tbody>';
+    history.forEach(h => {
+      const sc = h.status==='success'?'positive':'negative';
+      const statusText = h.status==='success'?'✓ 成功':'✗ 失败';
+      const detail = h.result ? JSON.stringify(h.result).substring(0,120) : (h.error||'');
+      html += `<tr>
+        <td style="white-space:nowrap">${h.time||''}</td>
+        <td style="font-weight:600">${h.job_id||''}</td>
+        <td class="${sc}">${statusText}</td>
+        <td style="color:#94a3b8;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${detail}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    histEl.innerHTML = html;
+  } catch(e) {
+    histEl.innerHTML = '<div class="error">加载历史失败: '+e.message+'</div>';
   }
 }
 

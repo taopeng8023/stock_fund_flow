@@ -1,8 +1,8 @@
 """
-vnpy Web Dashboard 启动入口
+vnpy Web Dashboard 启动入口 + APScheduler 调度引擎
 用法:
-  python run_vnpy_web.py               默认: 导入数据 + 启动 web server
-  python run_vnpy_web.py --import-only   只导入数据
+  python run_vnpy_web.py               默认: 导入数据 + 启动调度器 + web server
+  python run_vnpy_web.py --no-scheduler  不启动自动调度
   python run_vnpy_web.py --port=8080     自定义端口
 """
 import sys
@@ -18,6 +18,7 @@ import uvicorn
 
 from vnpy_bridge.database import init_db
 from vnpy_bridge.web_api import api_router
+from vnpy_bridge.scheduler_engine import start_scheduler, stop_scheduler
 
 from fetchers.base import DATA_ROOT, BJS_TZ
 
@@ -26,10 +27,9 @@ DB_PATH = os.path.join(PROJECT_DIR, ".vntrader", "database.db")
 
 
 def create_app():
-    app = FastAPI(title="A股量化选股系统", version="1.0")
+    app = FastAPI(title="A股量化选股系统", version="2.0")
     app.include_router(api_router)
 
-    # Serve dashboard
     ui_dir = os.path.join(PROJECT_DIR, "vnpy_bridge", "web_ui")
 
     @app.get("/")
@@ -41,6 +41,10 @@ def create_app():
 
     if os.path.isdir(ui_dir):
         app.mount("/static", StaticFiles(directory=os.path.join(ui_dir, "static")), name="static")
+
+    @app.on_event("shutdown")
+    def on_shutdown():
+        stop_scheduler()
 
     return app
 
@@ -71,9 +75,9 @@ def import_and_run(date_str=None):
 
 
 def main():
-    import_only = "--import-only" in sys.argv
     date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
     port = 8000
+    enable_scheduler = "--no-scheduler" not in sys.argv
 
     for arg in sys.argv:
         if arg.startswith("--date="):
@@ -83,13 +87,16 @@ def main():
 
     import_and_run(date_str)
 
-    if import_only:
-        print("导入完成，退出")
-        return
+    if enable_scheduler:
+        os.makedirs(os.path.join(PROJECT_DIR, ".vntrader"), exist_ok=True)
+        start_scheduler()
+    else:
+        print("[scheduler] 自动调度已禁用 (--no-scheduler)")
 
     app = create_app()
     print(f"\n  A股量化选股系统 Web Dashboard")
     print(f"  地址: http://localhost:{port}")
+    print(f"  自动调度: {'已开启 (每日15:35)' if enable_scheduler else '已关闭'}")
     print(f"  按 Ctrl+C 停止\n")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 

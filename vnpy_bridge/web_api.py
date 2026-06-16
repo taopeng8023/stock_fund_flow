@@ -238,64 +238,42 @@ def step_performance(date: str = Query(None)):
 
 @api_router.post("/pipeline/run-all")
 def trigger_pipeline(date: str = Query(None)):
-    """全量执行: 导入 + 诊断 + 选股 + 绩效"""
-    from vnpy_bridge.pipeline import run
-    try:
-        result = run(date_str=date)
-        return {"success": True, "result": {
-            "bar_count": result["bar_count"],
-            "picks_count": len(result.get("picks", [])),
-            "diagnosis": result.get("diagnosis"),
-        }}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    """全量执行: 导入 + 诊断 + 选股 + 绩效（通过调度引擎）"""
+    from vnpy_bridge.scheduler_engine import run_job_now
+    result = run_job_now("run-all")
+    if result:
+        return {"success": result.get("status") == "success", "result": result.get("result", result)}
+    return {"success": False, "error": "执行失败"}
 
 
-# ── Scheduler History (server-side persistence) ──
+# ── Scheduler Management (APScheduler) ──
 
-import os as _os
-_HISTORY_FILE = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                               ".scheduler_history.json")
-
-
-def _load_history():
-    if _os.path.exists(_HISTORY_FILE):
-        with open(_HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+@api_router.get("/scheduler/jobs")
+def scheduler_jobs():
+    """获取所有调度任务状态"""
+    from vnpy_bridge.scheduler_engine import get_jobs_status
+    return {"jobs": get_jobs_status()}
 
 
-def _save_history(h):
-    with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(h, f, ensure_ascii=False, indent=2)
+@api_router.post("/scheduler/jobs/{job_id}/run")
+def scheduler_run_job(job_id: str):
+    """手动触发单个任务"""
+    from vnpy_bridge.scheduler_engine import run_job_now
+    result = run_job_now(job_id)
+    if result:
+        return {"success": result.get("status") == "success", "result": result}
+    return {"success": False, "error": f"未知任务: {job_id}"}
 
 
 @api_router.get("/scheduler/history")
-def get_scheduler_history():
-    """获取服务端调度历史"""
-    return {"history": _load_history()}
+def scheduler_execution_history(limit: int = Query(30)):
+    """获取调度执行历史"""
+    from vnpy_bridge.scheduler_engine import get_execution_history
+    return {"history": get_execution_history(limit)}
 
 
-@api_router.post("/scheduler/history")
-async def save_scheduler_history(request: Request):
-    """保存单步调度结果到服务端"""
-    body = await request.json()
-    step = body.get("step", "")
-    h = _load_history()
-    h[step] = {
-        "time": body.get("time", ""),
-        "success": body.get("success", False),
-        "error": body.get("error", ""),
-    }
-    if step == "run-all" and body.get("success"):
-        h["_lastFullRun"] = body.get("time", "")
-    _save_history(h)
-    return {"ok": True}
-
-
-@api_router.delete("/scheduler/history")
-def clear_scheduler_history():
-    """清除服务端调度历史"""
-    if _os.path.exists(_HISTORY_FILE):
-        _os.remove(_HISTORY_FILE)
-    return {"ok": True}
+@api_router.post("/scheduler/daily")
+def scheduler_toggle_daily(enabled: bool = Query(True)):
+    """开启/关闭每日自动调度"""
+    from vnpy_bridge.scheduler_engine import toggle_daily_schedule
+    return toggle_daily_schedule(enabled)
