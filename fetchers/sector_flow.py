@@ -196,7 +196,7 @@ def verify_stock_data(stocks, sector_code, sector_name, date_str):
 # ── Top N 成分股钻取 ──
 
 def fetch_sector_stocks(sector_code, sector_name, date_str):
-    """获取指定板块的成分股资金流详情（含大单/中单/小单明细）"""
+    """获取指定板块的成分股资金流详情 + 今日/5日/10日三个维度的排名"""
     all_rows = []
     total = None
     page = 1
@@ -222,7 +222,49 @@ def fetch_sector_stocks(sector_code, sector_name, date_str):
             break
         page += 1
         time.sleep(0.15)
+
+    # ── 获取5日排行（API fid=f204 排序，值不返回但排位有效）──
+    rank_5d = _fetch_ranked(sector_code, "f204", total)
+    # ── 获取10日排行 ──
+    rank_10d = _fetch_ranked(sector_code, "f205", total)
+
+    # 标记每个股票的5日/10日排名
+    for s in all_rows:
+        code = s.get("f12", "")
+        s["_rank_5d"] = rank_5d.get(code, 0)
+        s["_rank_10d"] = rank_10d.get(code, 0)
+
+    print(f"    5日/10日排名已标记 ({len(rank_5d)}/{len(rank_10d)} 只)")
     return all_rows
+
+
+def _fetch_ranked(sector_code, fid, expected_total):
+    """调用 API 按 fid 排序获取排名（值不返回，仅用排位）"""
+    rank_map = {}
+    page = 1
+    collected = 0
+    fs = f"b:{sector_code}"
+    while True:
+        params = {
+            "pn": str(page), "pz": "100", "po": "1",
+            "np": "1", "fltt": "2", "invt": "2",
+            "fid": fid, "fs": fs, "fields": "f12",
+        }
+        try:
+            data = push2_get(params)
+        except Exception:
+            break
+        if data.get("rc") != 0 or not data.get("data", {}).get("diff"):
+            break
+        for i, r in enumerate(data["data"]["diff"]):
+            code = r.get("f12", "")
+            rank_map[code] = collected + i + 1
+        collected += len(data["data"]["diff"])
+        if collected >= data["data"].get("total", 0):
+            break
+        page += 1
+        time.sleep(0.1)
+    return rank_map
 
 
 def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
