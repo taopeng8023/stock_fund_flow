@@ -6,6 +6,14 @@ from data_collector.fetchers.base import DATA_ROOT
 from sector_screener.config import to_float
 
 
+def _top3_contributors(contributions):
+    """取贡献度最高的前3个因子"""
+    if not contributions:
+        return []
+    sorted_items = sorted(contributions.items(), key=lambda x: x[1], reverse=True)
+    return [{"factor": k, "contribution": v} for k, v in sorted_items[:3]]
+
+
 def _gen_reasons(s):
     """生成选中理由"""
     reasons = []
@@ -75,6 +83,10 @@ def save_json(scored, limit_up, date_str, top_n=10, weights=None, regime="range"
             "analyst_num": s.get("_analyst_num", 0),
             "breakout_20d": s.get("_breakout_20d", False),
             "reasons": _gen_reasons(s),
+            "factor_contributions": s.get("_contributions", {}),   # 🆕 回溯优化
+            "signals": s.get("_signals", []),                      # 🆕 信号触发
+            "p_adjustment": s.get("_p_adjustment", 0),             # 🆕 P因子调整
+            "top_contributors": _top3_contributors(s.get("_contributions", {})),
         })
 
     for s in limit_up:

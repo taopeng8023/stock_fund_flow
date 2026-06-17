@@ -95,7 +95,31 @@ def score_candidates(candidates, context):
         )
 
         # P因子调整
+        total_before_p = total
         total = apply_p_factors(s, s_start, s_capital, s_trend, total, context)
+        p_adjustment = round(total - total_before_p, 4)
+
+        # 因子贡献度 (weight × sub_score)
+        contributions = {
+            "start_signal":  round(s_start    * weights.get("start_signal", 0), 4),
+            "capital":       round(s_capital  * weights.get("capital", 0), 4),
+            "trend":         round(s_trend    * weights.get("trend", 0), 4),
+            "sector":        round(s_sector   * weights.get("sector", 0), 4),
+            "position":      round(s_position * weights.get("position", 0), 4),
+            "analyst":       round(s_analyst  * weights.get("analyst", 0), 4),
+            "multiday":      round(s_multiday * weights.get("multiday", 0), 4),
+            "technical":     round(s_tech     * weights.get("technical", 0), 4),
+            "dragon_tiger":  round(s_dt       * weights.get("dragon_tiger", 0), 4),
+            "north_flow":    round(s_north    * weights.get("north_flow", 0), 4),
+            "ratio_rank":    round(s_rr       * weights.get("ratio_rank", 0), 4),
+            "intra_sector":  round(s_intra    * weights.get("intra_sector", 0), 4),
+            "margin_net":    round(s_margin   * weights.get("margin_net", 0), 4),
+            "flow_accel":    round(s_accel    * weights.get("flow_accel", 0), 4),
+        }
+
+        # 信号触发明细
+        signals = _detect_signals(s, s_start, s_capital, s_trend, s_analyst,
+                                  s_intra, s_margin, s_dt, s_north, context)
 
         # 附加属性
         f62 = to_float(s.get("f62"))
@@ -132,6 +156,9 @@ def score_candidates(candidates, context):
             "_analyst_num": a.get("org_num", 0),
             "_s_consensus": round(a.get("consensus", 0.5), 3),
             "_s_eps_growth": round(a.get("eps_growth", 0), 3),
+            "_contributions": contributions,     # 因子贡献度（回溯优化关键数据）
+            "_signals": signals,                 # 信号触发明细
+            "_p_adjustment": p_adjustment,       # P因子调整量
         })
 
     scored.sort(key=lambda x: x["_score"], reverse=True)
@@ -149,3 +176,83 @@ def score_candidates(candidates, context):
             tracker[code]["times"].append(now.strftime("%H:%M"))
 
     return scored
+
+
+def _detect_signals(s, s_start, s_capital, s_trend, s_analyst,
+                    s_intra, s_margin, s_dt, s_north, context):
+    """检测触发的量化信号，返回结构化列表供回溯优化"""
+    signals = []
+    f3 = to_float(s.get("f3"))
+    f62 = to_float(s.get("f62"))
+    f184 = to_float(s.get("f184"))
+    f66 = to_float(s.get("f66"))
+    f10 = to_float(s.get("f10"))
+    f8 = to_float(s.get("f8"))
+    f87 = to_float(s.get("f87"))
+    code = s.get("f12", "")
+    closes = context.get("price_history", {}).get(code, [])
+    breakout = s.get("_breakout_20d", False)
+    ma_align = s.get("_ma_align", 0)
+
+    # 启动信号
+    if s_start > 0.7:
+        signals.append({"factor": "start_signal", "strength": "strong", "value": s_start,
+                        "desc": f"启动信号强({s_start:.0%})"})
+    elif s_start > 0.5:
+        signals.append({"factor": "start_signal", "strength": "moderate", "value": s_start,
+                        "desc": f"启动信号中等({s_start:.0%})"})
+
+    # 主力资金
+    if s_capital > 0.75:
+        signals.append({"factor": "capital", "strength": "strong", "value": s_capital,
+                        "desc": f"主力大幅介入(超大单{f66/1e8:.1f}亿)"})
+    elif s_capital > 0.6:
+        signals.append({"factor": "capital", "strength": "moderate", "value": s_capital,
+                        "desc": f"主力持续流入({f62/1e4:.0f}万)"})
+
+    # 趋势确认
+    if s_trend > 0.7:
+        signals.append({"factor": "trend", "strength": "strong", "value": s_trend,
+                        "desc": f"放量趋势确立(量比{f10:.1f})"})
+
+    # 分析师
+    if s_analyst > 0.7:
+        a_num = context.get("analyst_data", {}).get(code, {}).get("org_num", 0)
+        signals.append({"factor": "analyst", "strength": "strong", "value": s_analyst,
+                        "desc": f"分析师强共识({a_num}家)"})
+
+    # 行业内强度
+    if s_intra > 0.7:
+        signals.append({"factor": "intra_sector", "strength": "strong", "value": s_intra,
+                        "desc": f"行业内排名前{round((1-s_intra)*100)}%"})
+
+    # 融资
+    if s_margin > 0.7:
+        signals.append({"factor": "margin_net", "strength": "strong", "value": s_margin,
+                        "desc": "融资净买入排名靠前"})
+
+    # 龙虎榜
+    if s_dt > 0.6:
+        signals.append({"factor": "dragon_tiger", "strength": "strong", "value": s_dt,
+                        "desc": "龙虎榜机构买入"})
+
+    # 技术面
+    if breakout:
+        signals.append({"factor": "technical", "strength": "strong", "value": 1.0,
+                        "desc": "突破20日高点"})
+    elif ma_align >= 0.5:
+        signals.append({"factor": "technical", "strength": "moderate", "value": ma_align,
+                        "desc": "均线多头排列"})
+
+    # 主力占比
+    if f184 > 8:
+        signals.append({"factor": "main_ratio", "strength": "strong", "value": f184,
+                        "desc": f"主力占比{f184:.1f}%，资金高度集中"})
+
+    # 小单情绪（反向指标）
+    if f87 < 5 and f62 > 0:
+        signals.append({"factor": "retail_sentiment", "strength": "positive", "value": f87,
+                        "desc": f"小单占比{f87:.1f}%，主力完全控盘"})
+
+    return signals
+
