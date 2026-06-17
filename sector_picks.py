@@ -426,6 +426,28 @@ def score_candidates(candidates, price_history, sector_flows,
     f62_vals = [_to_float(s.get("f62")) for s in candidates]
     f184_vals = [_to_float(s.get("f184")) for s in candidates]
 
+    # ── 板块内5日/10日累计排名（P18/P19用）──
+    sector_5d_ranks = {}  # {code: percentile}
+    sector_10d_ranks = {}
+    sector_groups = defaultdict(list)
+    for s in candidates:
+        md = stock_multiday.get(s.get("f12", ""), {})
+        sc = s.get("_sector_code", "")
+        sector_groups[sc].append((s.get("f12", ""), md.get("f62_5d", 0), md.get("f62_10d", 0)))
+    for sc, stocks in sector_groups.items():
+        stocks_5d = sorted(stocks, key=lambda x: x[1])
+        stocks_10d = sorted(stocks, key=lambda x: x[2])
+        n = len(stocks)
+        if n > 1:
+            for i, (code, _, _) in enumerate(stocks_5d):
+                sector_5d_ranks[code] = i / n
+            for i, (code, _, _) in enumerate(stocks_10d):
+                sector_10d_ranks[code] = i / n
+        else:
+            for code, _, _ in stocks:
+                sector_5d_ranks[code] = 0.5
+                sector_10d_ranks[code] = 0.5
+
     scored = []
     for s in candidates:
         code = s.get("f12", "")
@@ -597,6 +619,14 @@ def score_candidates(candidates, price_history, sector_flows,
 
         # ── P17: 情绪周期 — 冰点期次日反弹概率高 ──
         total += sentiment_bonus
+
+        # ── P18+P19: 板块内5日/10日排名 — 累计流入在板块内rank ──
+        rank_5d = sector_5d_ranks.get(code, 0.5)
+        rank_10d = sector_10d_ranks.get(code, 0.5)
+        if rank_5d > 0.70:
+            total += 0.04  # P18: 5日累计在板块内前30%
+        if rank_10d > 0.70:
+            total += 0.03  # P19: 10日累计在板块内前30%
 
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
