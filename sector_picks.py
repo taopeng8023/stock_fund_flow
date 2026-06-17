@@ -361,8 +361,8 @@ def load_sector_multiday(date_str):
 
     # 按 f62 排名（今日）、f204 排名（5日累计）、f205 排名（10日累计）
     by_f62 = sorted(rows, key=lambda r: _to_float(r.get("f62")), reverse=True)
-    by_f204 = sorted(rows, key=lambda r: _to_float(r.get("f204")), reverse=True)
-    by_f205 = sorted(rows, key=lambda r: _to_float(r.get("f205")), reverse=True)
+    by_f204 = sorted(rows, key=lambda r: _to_float(r.get("f160")), reverse=True)
+    by_f205 = sorted(rows, key=lambda r: _to_float(r.get("f174")), reverse=True)
 
     rank_today = {r.get("f12"): i + 1 for i, r in enumerate(by_f62)}
     rank_5d = {r.get("f12"): i + 1 for i, r in enumerate(by_f204)}

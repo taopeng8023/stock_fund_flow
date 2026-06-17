@@ -21,12 +21,12 @@ except ImportError:
     from fetchers.base import push2_get, save_data, get_date_dir
 
 # ── 板块级别字段 ──
-# f204=5日主力净流入, f205=10日主力净流入, f124=时间戳
+# f160=5日主力净流入, f174=10日主力净流入, f124=时间戳
 SECTOR_FIELDS = ("f12,f14,f2,f3,f62,f184,"
                  "f66,f69,f72,f75,f78,f81,f84,f87,"
-                 "f204,f205,f124")
+                 "f160,f174,f124")
 CSV_FIELDS = ["f12", "f14", "f62", "f184", "f66", "f69", "f72", "f75",
-              "f78", "f81", "f84", "f87", "f204", "f205"]
+              "f78", "f81", "f84", "f87", "f160", "f174"]
 CSV_HEADERS = ["代码", "名称", "主力净流入", "主力占比",
                "超大单净流入", "超大单占比", "大单净流入", "大单占比",
                "中单净流入", "中单占比", "小单净流入", "小单占比",
@@ -299,8 +299,8 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
         name = sector.get("f14", "")
         main_flow = _to_float(sector.get("f62"))
         main_ratio = _to_float(sector.get("f184"))
-        flow_5d = _to_float(sector.get("f204"))
-        flow_10d = _to_float(sector.get("f205"))
+        flow_5d = _to_float(sector.get("f160"))
+        flow_10d = _to_float(sector.get("f174"))
 
         print(f"\n  [{rank}] {name}({code}) "
               f"主力净流入 {_fmt_yi(main_flow)} 占比 {main_ratio:.2f}%"
@@ -477,8 +477,8 @@ def _save_multiday_rankings(rows, date_str):
     # 按三个维度排序
     rankings = [
         ("f62", "industry_flow.csv", "今日排行"),
-        ("f204", "industry_flow_5d.csv", "5日排行"),
-        ("f205", "industry_flow_10d.csv", "10日排行"),
+        ("f160", "industry_flow_5d.csv", "5日排行"),
+        ("f174", "industry_flow_10d.csv", "10日排行"),
     ]
     for fid, fname, label in rankings:
         sorted_rows = sorted(rows, key=lambda r: _to_float(r.get(fid)), reverse=True)
