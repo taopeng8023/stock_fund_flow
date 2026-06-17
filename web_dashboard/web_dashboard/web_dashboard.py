@@ -67,8 +67,11 @@ class DashboardState(rx.State):
 
     def load_diagnosis(self):
         try:
-            from market_diagnosis import get_diagnosis
-            d = get_diagnosis(self.selected_date)
+            # 优先读持久化结果（秒开），否则实时计算（~10s）
+            from market_diagnosis import load_diagnosis as load_diag, get_diagnosis
+            d = load_diag(self.selected_date)
+            if d is None:
+                d = get_diagnosis(self.selected_date)
             if d:
                 self.regime = d.get("regime", {}).get("label", "-")
                 self.regime_conf = f"{d.get('regime', {}).get('confidence', 0):.0%}"

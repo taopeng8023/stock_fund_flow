@@ -6,9 +6,10 @@
 """
 import sys
 import os
+import json
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
-from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json, format_amount
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json, format_amount, today_str
 
 BJS = BJS_TZ
 
@@ -634,7 +635,7 @@ def get_diagnosis(date_str=None):
     # 市场情绪
     sentiment = diagnose_sentiment(rows, date_str)
 
-    return {
+    result = {
         "date": date_str,
         "stock_count": len(rows),
         "breadth": breadth,
@@ -646,6 +647,38 @@ def get_diagnosis(date_str=None):
         "position": position,
         "sentiment": sentiment,
     }
+    save_diagnosis(result, date_str)
+    return result
+
+
+def save_diagnosis(diag, date_str=None):
+    """持久化诊断结果到 data/<date>/diagnosis/"""
+    if diag is None:
+        return
+    date_str = date_str or diag.get("date", today_str())
+    diag_dir = os.path.join(DATA_ROOT, date_str, "diagnosis")
+    os.makedirs(diag_dir, exist_ok=True)
+
+    ts = datetime.now(BJS_TZ).strftime("%H%M%S")
+    path = os.path.join(diag_dir, f"diagnosis_{ts}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(diag, f, ensure_ascii=False, indent=2)
+
+    # 同时保存一份 latest 副本便于快速读取
+    latest_path = os.path.join(diag_dir, "latest.json")
+    with open(latest_path, "w", encoding="utf-8") as f:
+        json.dump(diag, f, ensure_ascii=False, indent=2)
+
+    print(f"  诊断结果已保存: {os.path.basename(path)} ({os.path.getsize(path):,} bytes)")
+
+
+def load_diagnosis(date_str):
+    """加载最新诊断结果"""
+    path = os.path.join(DATA_ROOT, date_str, "diagnosis", "latest.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
 
 
 if __name__ == "__main__":
