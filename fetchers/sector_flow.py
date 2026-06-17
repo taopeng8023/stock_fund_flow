@@ -332,6 +332,9 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
         # ── 验真 ──
         verify_stock_data(stocks, code, name, date_str)
 
+        # ── 保存成分股排行CSV（今日+5日+10日排序）──
+        _save_sector_stocks_csv(stocks, code, name, sector_dir, date_str, file_ts)
+
         # 统计成分股大单分布
         large_vals = [_to_float(s.get("f72")) for s in stocks]
         pos_stocks = sum(1 for v in large_vals if v > 0)
@@ -362,6 +365,32 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
         _print_top_large(stocks, 5)
 
     return result
+
+
+
+def _save_sector_stocks_csv(stocks, sector_code, sector_name, sector_dir, date_str, file_ts):
+    """保存板块成分股排行CSV: 今日排名 + 5日排名 + 10日排名"""
+    import csv
+    sorted_stocks = sorted(stocks, key=lambda s: _to_float(s.get("f62")), reverse=True)
+    path = os.path.join(sector_dir, f"sector_stocks_{sector_code}_{date_str}_{file_ts}.csv")
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["今日排名", "5日排名", "10日排名", "代码", "名称",
+                     "涨跌幅", "最新价", "主力净流入", "主力占比",
+                     "超大单净流入", "大单净流入", "换手率", "量比", "总市值"])
+        for i, s in enumerate(sorted_stocks, 1):
+            w.writerow([
+                i,
+                s.get("_rank_5d", ""),
+                s.get("_rank_10d", ""),
+                s.get("f12", ""), s.get("f14", ""),
+                _to_float(s.get("f3")), _to_float(s.get("f2")),
+                _to_float(s.get("f62")), _to_float(s.get("f184")),
+                _to_float(s.get("f66")), _to_float(s.get("f72")),
+                _to_float(s.get("f8")), _to_float(s.get("f10")),
+                _to_float(s.get("f20")),
+            ])
+    print(f"    成分股CSV已保存: {os.path.basename(path)} ({len(sorted_stocks)} 行)")
 
 
 def _save_sector_summary(date_dir, code, name, main_flow, main_ratio, stocks, date_str, file_ts):
