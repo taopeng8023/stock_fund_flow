@@ -107,6 +107,16 @@ def fetch(date_str=None):
     return all_klines
 
 
+def transform(date_str):
+    from .base import load_json
+    rows = load_json(date_str, "north_flow")
+    if not rows: return {"net_north": 0, "masked": True}
+    latest = rows[0]
+    net_north = latest.get("net_north", 0)
+    masked = abs(net_north) > 500 or (net_north == 0 and latest.get("net_south", 0) == 0)
+    return {"net_north": net_north, "masked": masked}
+
+
 def _parse_float(s):
     try:
         return float(s) if s else 0.0

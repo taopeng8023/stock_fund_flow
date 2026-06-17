@@ -69,3 +69,32 @@ def fetch(date_str=None):
 
     save_data(all_rows, "earnings_forecast", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def _tof(val):
+    try: return float(val) if val else 0.0
+    except: return 0.0
+
+def transform(date_str):
+    """聚合为选股用格式: {code: {type, type_score, growth_lower, growth_upper}}"""
+    from .base import load_json
+
+    rows = load_json(date_str, "earnings_forecast")
+    if not rows:
+        return {}
+
+    result = {}
+    for r in rows:
+        code = r.get("SECURITY_CODE", "")
+        if not code or code in result:
+            continue
+        pred_type = r.get("PREDICT_TYPE", "")
+        result[code] = {
+            "type": pred_type,
+            "type_score": TYPE_SCORE.get(pred_type, 0.5),
+            "growth_lower": _tof(r.get("ADD_AMP_LOWER")),
+            "growth_upper": _tof(r.get("ADD_AMP_UPPER")),
+            "notice_date": r.get("NOTICE_DATE", ""),
+        }
+    print(f"  业绩预告(选股): {len(result)} 只")
+    return result

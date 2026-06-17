@@ -60,3 +60,24 @@ def fetch(date_str=None):
     print(f"  分析师预测: {len(all_rows)} 条")
     save_data(all_rows, "analyst_forecast", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def _tof(val):
+    try: return float(val) if val else 0.0
+    except: return 0.0
+
+def transform(date_str):
+    from .base import load_json
+    rows = load_json(date_str, "analyst_forecast")
+    if not rows: return {}
+    result = {}
+    for r in rows:
+        code = r.get("SECURITY_CODE", "")
+        org_num = r.get("RATING_ORG_NUM") or 0
+        buy, add, neutral, reduce_, sale = [r.get(k) or 0 for k in ("RATING_BUY_NUM","RATING_ADD_NUM","RATING_NEUTRAL_NUM","RATING_REDUCE_NUM","RATING_SALE_NUM")]
+        total = buy + add + neutral + reduce_ + sale
+        consensus = (buy*1.0+add*0.75+neutral*0.25+reduce_*0.0+sale*(-0.5))/total if (org_num>=3 and total>0) else 0.5
+        eps1, eps2 = r.get("EPS1") or 0, r.get("EPS2") or 0
+        eps_growth = max(-0.5, min(2.0, (eps2-eps1)/abs(eps1))) if (eps1 and abs(eps1)>0.01) else 0.0
+        result[code] = {"consensus": round(consensus,3), "eps_growth": round(eps_growth,3), "org_num": org_num}
+    return result

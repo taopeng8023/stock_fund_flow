@@ -41,3 +41,11 @@ def fetch(limit=300, date_str=None):
     print(f"  占比排名: {len(all_rows)} 只")
     save_data(all_rows, "rank_ratio", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def transform(date_str):
+    from .base import load_json
+    rows = load_json(date_str, "rank_ratio")
+    if not rows: return {}
+    total = len(rows)
+    return {r.get("f12",""): round(1.0 - i / total, 4) for i, r in enumerate(rows)}

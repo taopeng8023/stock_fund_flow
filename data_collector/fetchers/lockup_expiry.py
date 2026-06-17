@@ -67,3 +67,39 @@ def fetch(date_str=None):
 
     save_data(all_rows, "lockup_expiry", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def _tof(val):
+    try: return float(val) if val else 0.0
+    except: return 0.0
+
+def transform(date_str):
+    """聚合为选股用格式: {code: {days, ratio, free_date}}"""
+    from .base import load_json
+
+    rows = load_json(date_str, "lockup_expiry")
+    if not rows:
+        return {}
+
+    today = datetime.strptime(date_str, "%Y%m%d")
+    result = {}
+
+    for r in rows:
+        code = r.get("SECURITY_CODE", "")
+        if not code:
+            continue
+        free_date = r.get("FREE_DATE", "")
+        if not free_date:
+            continue
+        try:
+            fd = datetime.strptime(free_date[:10], "%Y-%m-%d")
+        except ValueError:
+            continue
+        days = (fd - today).days
+        ratio = _tof(r.get("ADD_LISTSHARES_RATIO"))
+
+        if code not in result or days < result[code]["days"]:
+            result[code] = {"days": days, "ratio": ratio, "free_date": free_date[:10]}
+
+    print(f"  限售解禁(选股): {len(result)} 只")
+    return result

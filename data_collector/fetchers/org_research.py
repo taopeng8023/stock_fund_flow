@@ -65,3 +65,16 @@ def fetch(date_str=None):
 
     save_data(all_rows, "org_research", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def transform(date_str):
+    """聚合为选股用格式: {code: research_count}"""
+    from collections import Counter
+    from .base import load_json
+
+    rows = load_json(date_str, "org_research")
+    if not rows:
+        return {}
+    counts = Counter(r.get("SECURITY_CODE") for r in rows if r.get("SECURITY_CODE"))
+    print(f"  机构调研(选股): {len(counts)} 只")
+    return dict(counts)

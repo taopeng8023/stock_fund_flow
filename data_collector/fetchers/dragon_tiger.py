@@ -83,3 +83,20 @@ def fetch(date_str=None):
     if all_rows:
         save_data(all_rows, "dragon_tiger", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def transform(date_str):
+    from .base import load_json
+    rows = load_json(date_str, "dragon_tiger")
+    if not rows: return {}
+    from datetime import timedelta
+    d = __import__('datetime').datetime.strptime(date_str, "%Y%m%d")
+    if rows is None:
+        prev = d - timedelta(days=1)
+        for _ in range(3):
+            prev_str = prev.strftime("%Y%m%d")
+            rows = load_json(prev_str, "dragon_tiger")
+            if rows is not None: break
+            prev -= timedelta(days=1)
+    if not rows: return {}
+    return {r.get("SECURITY_CODE",""): {"on_board":True, "has_institution":"机构" in str(r.get("EXPLAIN","")), "is_main_buy":"主买" in str(r.get("EXPLAIN",""))} for r in rows}

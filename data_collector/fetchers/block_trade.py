@@ -66,3 +66,44 @@ def fetch(date_str=None):
 
     save_data(all_rows, "block_trade", CSV_FIELDS, CSV_HEADERS, date_str)
     return all_rows
+
+
+def _tof(val):
+    try: return float(val) if val else 0.0
+    except: return 0.0
+
+def transform(date_str):
+    """聚合为选股用格式: {code: {avg_premium, total_amt, has_premium_buy, ...}}"""
+    from collections import defaultdict
+    from .base import load_json
+
+    rows = load_json(date_str, "block_trade")
+    if not rows:
+        return {}
+
+    result = {}
+    stock_groups = defaultdict(list)
+    for r in rows:
+        code = r.get("SECURITY_CODE", "")
+        if code:
+            stock_groups[code].append(r)
+
+    for code, trades in stock_groups.items():
+        premiums = [_tof(t.get("PREMIUM_RATIO")) for t in trades]
+        amts = [_tof(t.get("DEAL_AMT")) for t in trades]
+        avg_premium = sum(premiums) / len(premiums) if premiums else 0
+        total_amt = sum(amts)
+        buyers = [t.get("BUYER_NAME", "") for t in trades]
+        inst_buy = sum(1 for b in buyers if "机构" in str(b) or "专用" in str(b))
+
+        result[code] = {
+            "count": len(trades),
+            "avg_premium": round(avg_premium, 2),
+            "total_amt": total_amt,
+            "inst_buy_count": inst_buy,
+            "has_premium_buy": any(p > 0 for p in premiums),
+            "has_deep_discount": any(p < -8 for p in premiums),
+        }
+
+    print(f"  大宗交易(选股): {len(result)} 只")
+    return result
