@@ -6,6 +6,7 @@ from sector_screener.scorers import (
     score_position, score_analyst, score_multiday, score_technical,
     score_dragon_tiger, score_north_flow, score_ratio_rank,
     score_intra_sector, score_margin_net, score_flow_accel,
+    score_block_trade, score_org_research, score_earnings, score_lockup,
     apply_p_factors, get_tracker,
 )
 
@@ -13,7 +14,9 @@ from sector_screener.scorers import (
 def build_context(candidates, price_history, sector_freshness, sector_persistence,
                   sector_flows, stock_multiday, analyst_data, dt_data,
                   north_data, ratio_rank, intra_sector_rank, margin_net_map,
-                  regime, sentiment_bonus, date_str, afternoon):
+                  regime, sentiment_bonus, date_str, afternoon,
+                  block_trade=None, org_research=None,
+                  earnings_forecast=None, lockup_expiry=None):
     """构建评分上下文 — 预计算所有候选池的 percentile 数组"""
     ctx = {
         "sector_freshness": sector_freshness,
@@ -41,6 +44,11 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
         "_cum3_vals": _build_cum_vals(candidates, stock_multiday, "f62_5d"),
         "_cum5_vals": _build_cum_vals(candidates, stock_multiday, "f62_5d"),
         "_cum10_vals": _build_cum_vals(candidates, stock_multiday, "f62_10d"),
+        # 新数据源
+        "block_trade": block_trade or {},
+        "org_research": org_research or {},
+        "earnings_forecast": earnings_forecast or {},
+        "lockup_expiry": lockup_expiry or {},
     }
     return ctx
 
@@ -75,8 +83,12 @@ def score_candidates(candidates, context):
         s_intra    = score_intra_sector(s, context)
         s_margin   = score_margin_net(s, context)
         s_accel    = score_flow_accel(s, context)
+        s_block    = score_block_trade(s, context)
+        s_org      = score_org_research(s, context)
+        s_earn     = score_earnings(s, context)
+        s_lockup   = score_lockup(s, context)
 
-        # 加权求和
+        # 加权求和 (18维)
         total = (
             s_start    * weights.get("start_signal", 0)
             + s_capital * weights.get("capital", 0)
@@ -92,6 +104,10 @@ def score_candidates(candidates, context):
             + s_intra    * weights.get("intra_sector", 0)
             + s_margin   * weights.get("margin_net", 0)
             + s_accel    * weights.get("flow_accel", 0)
+            + s_block    * weights.get("block_trade", 0)
+            + s_org      * weights.get("org_research", 0)
+            + s_earn     * weights.get("earnings", 0)
+            + s_lockup   * weights.get("lockup_expiry", 0)
         )
 
         # P因子调整
@@ -115,6 +131,10 @@ def score_candidates(candidates, context):
             "intra_sector":  round(s_intra    * weights.get("intra_sector", 0), 4),
             "margin_net":    round(s_margin   * weights.get("margin_net", 0), 4),
             "flow_accel":    round(s_accel    * weights.get("flow_accel", 0), 4),
+            "block_trade":   round(s_block    * weights.get("block_trade", 0), 4),
+            "org_research":  round(s_org      * weights.get("org_research", 0), 4),
+            "earnings":      round(s_earn     * weights.get("earnings", 0), 4),
+            "lockup_expiry": round(s_lockup   * weights.get("lockup_expiry", 0), 4),
         }
 
         # 信号触发明细

@@ -39,16 +39,22 @@ WEIGHTS_BASE = {
     "intra_sector":  0.04,
     "margin_net":    0.04,
     "flow_accel":    0.04,
+    "block_trade":   0.02,   # 🆕 大宗交易溢价信号
+    "org_research":  0.02,   # 🆕 机构调研热度
+    "earnings":      0.02,   # 🆕 业绩预告类型
+    "lockup_expiry": 0.02,   # 🆕 限售解禁风险
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
-    "trend": 0.15, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
-    "start_signal": 0.20, "capital": 0.20, "intra_sector": 0.05, "margin_net": 0.05,
+    "trend": 0.13, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
+    "start_signal": 0.18, "capital": 0.18, "intra_sector": 0.05, "margin_net": 0.05,
+    "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
 }
 
 WEIGHTS_BEAR = {**WEIGHTS_BASE,
     "analyst": 0.07, "north_flow": 0.04, "position": 0.11, "start_signal": 0.18,
-    "trend": 0.10, "dragon_tiger": 0.02, "capital": 0.16, "intra_sector": 0.06,
+    "trend": 0.10, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
+    "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
 }
 
 # ═══════════════════════════════════════

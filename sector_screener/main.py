@@ -16,6 +16,10 @@ from sector_screener.loaders import (
     load_fund_flow_cross_ref, load_analyst_data, load_dragon_tiger_data,
     load_north_flow_data, load_ratio_rank, load_stock_multiday, load_past_closes,
 )
+from sector_screener.loaders.block_trade import load_block_trade
+from sector_screener.loaders.org_research import load_org_research
+from sector_screener.loaders.earnings_forecast import load_earnings_forecast
+from sector_screener.loaders.lockup_expiry import load_lockup_expiry
 from sector_screener.filters import split_stocks
 from sector_screener.engine import build_context, score_candidates
 from sector_screener.output import print_results, print_diagnosis, save_json, save_csv
@@ -120,6 +124,12 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
     stock_multiday = load_stock_multiday(date_str)
     intra_sector_rank, margin_net_map = load_fund_flow_cross_ref(date_str)
 
+    # 新数据源
+    block_trade = load_block_trade(date_str)
+    org_research = load_org_research(date_str)
+    earnings_data = load_earnings_forecast(date_str)
+    lockup_data = load_lockup_expiry(date_str)
+
     # [4] 历史价格 + 选股分流
     print(f"\n[4/5] 加载历史价格 + 选股分流...")
     codes_set = {s.get("f12", "") for s in stocks}
@@ -136,6 +146,8 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
         sector_flows, stock_multiday, analyst_data, dt_data,
         north_data, ratio_rank, intra_sector_rank, margin_net_map,
         regime, sentiment_bonus, date_str, afternoon,
+        block_trade=block_trade, org_research=org_research,
+        earnings_forecast=earnings_data, lockup_expiry=lockup_data,
     )
     context["_weights"] = weights
 

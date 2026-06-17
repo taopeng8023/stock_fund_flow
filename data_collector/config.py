@@ -41,4 +41,28 @@ COLLECTOR_REGISTRY = [
         "required": False,
         "description": "北向资金市场流向（沪深港通）",
     },
+    {
+        "name": "block_trade",
+        "module": "data_collector.collectors.block_trade",
+        "required": False,
+        "description": "大宗交易每日明细（溢价率/成交额/买卖方）",
+    },
+    {
+        "name": "org_research",
+        "module": "data_collector.collectors.org_research",
+        "required": False,
+        "description": "近30日机构调研明细（调研次数/家数）",
+    },
+    {
+        "name": "earnings_forecast",
+        "module": "data_collector.collectors.earnings_forecast",
+        "required": False,
+        "description": "最新业绩预告（预增/预减/扭亏/首亏）",
+    },
+    {
+        "name": "lockup_expiry",
+        "module": "data_collector.collectors.lockup_expiry",
+        "required": False,
+        "description": "限售解禁明细（解禁日期/解禁占比）",
+    },
 ]

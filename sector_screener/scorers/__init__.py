@@ -14,3 +14,7 @@ from .intra_sector import score_intra_sector
 from .margin_net import score_margin_net
 from .flow_accel import score_flow_accel
 from .p_factors import apply_p_factors, get_tracker
+from .block_trade import score_block_trade
+from .org_research import score_org_research
+from .earnings_forecast import score_earnings
+from .lockup_expiry import score_lockup
