@@ -85,7 +85,6 @@ log "选股分析完成 ✓"
 log ""
 log "[4/4] 绩效追踪更新..."
 $PYTHON performance.py --update --date="$DATE_STR" 2>&1 | tee -a "$LOGFILE"
-$PYTHON performance.py --report 2>&1 | tee -a "$LOGFILE"
 log "绩效更新完成 ✓"
 
 log ""

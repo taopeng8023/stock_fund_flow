@@ -48,7 +48,6 @@ def run_pipeline():
         ("盘面诊断", ["market_diagnosis.py", f"--date={date_str}"]),
         ("选股分析", ["stock_picker.py", f"--date={date_str}", "--top=5"]),
         ("绩效更新", ["performance.py", "--update", f"--date={date_str}"]),
-        ("绩效报告", ["performance.py", "--report"]),
     ]
 
     for step_name, args in steps:
@@ -73,7 +72,7 @@ def run_pipeline():
                     return
             else:
                 # 打印选股摘要（前 30 行）
-                if step_name in ("选股分析", "绩效报告"):
+                if step_name == "选股分析":
                     outlines = result.stdout.strip().split("\n")
                     for line in outlines[:30]:
                         if line.strip():
