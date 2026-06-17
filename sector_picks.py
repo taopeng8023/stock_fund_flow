@@ -408,7 +408,7 @@ def load_sector_multiday(date_str):
 
 def score_candidates(candidates, price_history, sector_flows,
                      sector_freshness, stock_multiday,
-                     sector_persistence=None):
+                     sector_persistence=None, afternoon=False):
     """
     评分维度（回溯优化版）:
       1. 启动信号 (35%): 板块刚启动 + 个股资金加速度 — 回溯最强预测因子
@@ -548,6 +548,20 @@ def score_candidates(candidates, price_history, sector_flows,
         if score_capital > 0.80 and score_start > 0.70:
             total -= 0.08
 
+        # ── P10: 同股同日重复入选衰减 — 奥士康/泰晶/宸展均重复亏损 ──
+        if code in _same_day_rankings:
+            prev_rank = _same_day_rankings[code]
+            if prev_rank > _same_day_rankings.get("_best_rank", 99):
+                total -= 0.10  # 排位下降 = 信号减弱
+
+        # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
+        if score_start > 0.80 and score_capital < 0.70:
+            total -= 0.08
+
+        # ── P12: 中涨跌弱资金 — 奥士康chg5.75% capital0.63次日-2.56% ──
+        if f3 > 5.0 and score_capital < 0.70:
+            total -= 0.06
+
         # ── P0: 高资金低启动 = 一日游脉冲(回溯4输家全命中此模式) ──
         if score_capital > 0.75 and score_start < 0.45:
             total -= 0.12
@@ -562,10 +576,11 @@ def score_candidates(candidates, price_history, sector_flows,
         if f3 < 3.0 and score_capital > 0.6:
             total += 0.05
 
-        # 高涨幅透支: 渐变惩罚 (chg > 5% 起扣, 越接近涨停扣越多)
-        if f3 > 5.0 and score_capital < 0.92:
-            overextension = (f3 - 5.0) / 4.5   # 0 at 5%, ~1 at 9.5%
-            penalty = overextension * 0.25       # max ~0.25
+        # 高涨幅透支: 渐变惩罚 (上午5%起扣, 下午4%起扣, 越接近涨停扣越多)
+        chg_floor = 4.0 if afternoon else 5.0  # P13: 下午收紧
+        if f3 > chg_floor and score_capital < 0.92:
+            overextension = (f3 - chg_floor) / (10.0 - chg_floor)
+            penalty = overextension * 0.25
             total -= min(0.25, penalty)
             # 超高超大单占比 + 高涨幅: 可能是出货
             if f3 > 7.0 and f184 > 15.0:
@@ -1016,10 +1031,19 @@ def _gen_reasons_list(s):
 # 主流程
 # ============================================================
 
+# 同日多次选股的排名追踪（P10用）
+_same_day_rankings = {}
+
+
 def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     """程序化接口：返回精选结果 dict（供 pipeline/web_api 调用）"""
+    global _same_day_rankings
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
+
+    # ── P13: 下午自动收紧 ──
+    hour = datetime.now().hour
+    afternoon_mode = hour >= 13
 
     # ── P2: 市场环境门控 ──
     try:
@@ -1052,9 +1076,14 @@ def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     stock_multiday = load_stock_multiday(date_str)
     scored = score_candidates(candidates, price_history, sector_flows,
                               sector_freshness, stock_multiday,
-                              sector_persistence)
+                              sector_persistence, afternoon=afternoon_mode)
+    # P10: 记录本次排名用于后续衰减
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
+        code = s.get("f12", "")
+        if code:
+            _same_day_rankings[code] = i + 1
+    _same_day_rankings["_best_rank"] = min(_same_day_rankings.values()) if _same_day_rankings else 99
 
     picks = []
     for s in scored[:top_picks]:
@@ -1145,11 +1174,11 @@ def run(date_str=None, top_sectors=5, top_picks=10):
 
     scored = score_candidates(candidates, price_history, sector_flows,
                               sector_freshness, stock_multiday,
-                              sector_persistence)
+                              sector_persistence,
+                              afternoon=datetime.now().hour >= 13)
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
 
-    # 5. 输出
     # 输出
     print_results(limit_up, scored, excluded, top_picks)
 
