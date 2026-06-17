@@ -54,27 +54,30 @@ MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
 # 权重配置 — 三市场景自适应
 # ============================================================
 WEIGHTS_BASE = {
-    "start_signal":  0.25,   # 启动信号（板块新鲜度+资金加速度）
-    "capital":       0.20,   # 主力资金强度（净流入+占比+超大单质量）
-    "trend":         0.15,   # 趋势确认（量比+换手率+短期斜率）
-    "sector":        0.10,   # 板块共振（排名+持续性+概念板块）
-    "position":      0.10,   # 位置健康（相对60日位置+MA站上）
-    "analyst":       0.05,   # 分析师共识（评级+EPS增长）
-    "multiday":      0.05,   # 多日累计（3/5/10日+连续性）
-    "technical":     0.04,   # 技术面（MA多头+突破）
+    "start_signal":  0.22,   # 启动信号（板块新鲜度+资金加速度）
+    "capital":       0.18,   # 主力资金强度（净流入+占比+超大单+大单）
+    "trend":         0.12,   # 趋势确认（量比+换手率+动量+短期斜率）
+    "sector":        0.09,   # 板块共振（排名+持续性+概念板块）
+    "position":      0.08,   # 位置健康（相对60日位置+MA站上）
+    "analyst":       0.04,   # 分析师共识（评级+EPS增长）
+    "multiday":      0.05,   # 多日累计（3/5/10日+连续性+加速度）
+    "technical":     0.04,   # 技术面（MA多头+突破+牛熊自适应）
     "dragon_tiger":  0.03,   # 龙虎榜（上榜+机构买入）
     "north_flow":    0.02,   # 北向资金环境
     "ratio_rank":    0.01,   # 主力占比排名
+    "intra_sector":  0.04,   # 🆕 行业内相对强度（来自 stock_picker）
+    "margin_net":    0.04,   # 🆕 融资净买入（来自 stock_picker）
+    "flow_accel":    0.04,   # 🆕 资金流入加速度（来自 stock_picker）
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
-    "trend": 0.18, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.07,
-    "start_signal": 0.22, "capital": 0.22,
+    "trend": 0.15, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
+    "start_signal": 0.20, "capital": 0.20, "intra_sector": 0.05, "margin_net": 0.05,
 }
 
 WEIGHTS_BEAR = {**WEIGHTS_BASE,
-    "analyst": 0.08, "north_flow": 0.04, "position": 0.13, "start_signal": 0.20,
-    "trend": 0.12, "dragon_tiger": 0.02, "capital": 0.18,
+    "analyst": 0.07, "north_flow": 0.04, "position": 0.11, "start_signal": 0.18,
+    "trend": 0.10, "dragon_tiger": 0.02, "capital": 0.16, "intra_sector": 0.06,
 }
 
 WEIGHTS = WEIGHTS_BASE  # 运行时根据 market_diagnosis 替换
@@ -342,6 +345,63 @@ def load_ratio_rank(date_str):
         ratio_rank[code] = round(1.0 - i / total, 4)
     print(f"  占比排名: {len(ratio_rank)} 条映射")
     return ratio_rank
+
+
+def load_fund_flow_cross_ref(date_str):
+    """加载 fund_flow.json 全市场数据，用于行业内排名(f100) + 融资净买入(f168)
+    返回 (intra_sector_rank, margin_net_map)
+      intra_sector_rank: {code: percentile_score}  行业内主力净流入排名
+      margin_net_map:    {code: {f168, percentile}} 融资净买入 + 全市场排名
+    """
+    rows = load_json(date_str, "fund_flow")
+    if not rows:
+        print(f"  全市场 fund_flow 不可用，行业内排名/融资因子降级为中性")
+        return {}, {}
+
+    # ── 行业内相对强度：按 f100 分组，计算每只股票的主力净流入 percentile ──
+    industry_groups = defaultdict(list)
+    for r in rows:
+        ind = r.get("f100", "") or ""
+        f62 = _to_float(r.get("f62"))
+        if isinstance(f62, (int, float)):
+            industry_groups[ind].append(f62)
+
+    intra_sector_rank = {}
+    for r in rows:
+        code = r.get("f12", "")
+        ind = r.get("f100", "") or ""
+        f62 = _to_float(r.get("f62"))
+        group_vals = industry_groups.get(ind, [f62])
+        if len(group_vals) > 1 and max(group_vals) > min(group_vals):
+            intra_sector_rank[code] = sum(1 for v in group_vals if v <= f62) / len(group_vals)
+        else:
+            intra_sector_rank[code] = 0.5
+
+    # ── 融资净买入：全市场 f168 percentile ──
+    f168_pairs = []
+    for r in rows:
+        f168 = r.get("f168")
+        if isinstance(f168, (int, float)):
+            f168_pairs.append((r.get("f12", ""), f168))
+        elif isinstance(f168, str):
+            try:
+                f168_f = float(f168)
+                f168_pairs.append((r.get("f12", ""), f168_f))
+            except (ValueError, TypeError):
+                pass
+    f168_vals = [v for _, v in f168_pairs]
+    margin_net_map = {}
+    if f168_vals and max(f168_vals) > min(f168_vals):
+        for code, f168 in f168_pairs:
+            pct = sum(1 for v in f168_vals if v <= f168) / len(f168_vals)
+            margin_net_map[code] = {"f168": f168, "percentile": round(pct, 4)}
+    else:
+        for code, f168 in f168_pairs:
+            margin_net_map[code] = {"f168": f168, "percentile": 0.5}
+
+    print(f"  全市场交叉引用: {len(intra_sector_rank)} 只行业内排名, "
+          f"{len(margin_net_map)} 只融资数据")
+    return intra_sector_rank, margin_net_map
 
 
 def load_stock_multiday(date_str):
@@ -814,30 +874,42 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
                               sector_freshness, sector_persistence,
                               stock_multiday, analyst_data, dt_data,
                               north_data, ratio_rank,
+                              intra_sector_rank=None, margin_net_map=None,
+                              regime="range",
                               sentiment_bonus=0.0, date_str="",
                               afternoon=False):
     """
-    多因子综合评分（板块+全数据源增强版）:
+    多因子综合评分（板块+全数据源增强版，含 stock_picker 集成维度）:
 
-    维度一: 启动信号 (25%)  — 板块新鲜度 + 资金加速度 + 5日加速
-    维度二: 主力资金 (20%)  — 净流入 + 占比 + 超大单质量
-    维度三: 趋势确认 (15%)  — 量比 + 换手率 + 短期斜率
-    维度四: 板块共振 (10%)  — 板块排名 + 持续性 + 概念板块
-    维度五: 位置健康 (10%)  — 相对60日位置 + MA站上
-    维度六: 分析师   (5%)   — 评级共识 + EPS增长
-    维度七: 多日累计 (5%)   — 3/5/10日流入 + 连续性
-    维度八: 技术面   (4%)   — MA多头 + 突破
+    维度一: 启动信号 (22%)  — 板块新鲜度 + 资金加速度 + 5日加速
+    维度二: 主力资金 (18%)  — 净流入 + 占比 + 超大单 + 大单 + 超大单占比
+    维度三: 趋势确认 (12%)  — 量比 + 换手率 + 动量 + 短期斜率
+    维度四: 板块共振 (9%)   — 板块排名 + 持续性 + 概念板块
+    维度五: 位置健康 (8%)   — 相对60日位置 + MA站上
+    维度六: 分析师   (4%)   — 评级共识 + EPS增长
+    维度七: 多日累计 (5%)   — 3/5/10日累计 + 连续性
+    维度八: 技术面   (4%)   — MA多头 + 突破(含牛熊自适应)
     维度九: 龙虎榜   (3%)   — 上榜 + 机构买入
     维度十: 北向资金 (2%)   — 外资方向
     维度十一: 占比排名(1%)  — 全市场主力占比排名
+    维度十二: 行业内排名(4%)— 🆕 行业内主力净流入 percentile
+    维度十三: 融资净买入(4%)— 🆕 杠杆资金态度 f168
+    维度十四: 流入加速度(4%)— 🆕 3日均 vs 10日均流入比
 
     + P0-P27 调整因子
     """
     if not candidates:
         return []
+    if intra_sector_rank is None:
+        intra_sector_rank = {}
+    if margin_net_map is None:
+        margin_net_map = {}
 
     f62_vals = [_to_float(s.get("f62")) for s in candidates]
+    f66_vals = [_to_float(s.get("f66")) for s in candidates]
+    f72_vals = [_to_float(s.get("f72")) for s in candidates]
     f184_vals = [_to_float(s.get("f184")) for s in candidates]
+    f69_vals = [_to_float(s.get("f69")) for s in candidates]
 
     scored = []
     for s in candidates:
@@ -847,8 +919,10 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
         f205_calc = md.get("f62_10d", 0.0)
         f3 = _to_float(s.get("f3"))
         f62 = _to_float(s.get("f62"))
-        f184 = _to_float(s.get("f184"))
         f66 = _to_float(s.get("f66"))
+        f72 = _to_float(s.get("f72"))
+        f184 = _to_float(s.get("f184"))
+        f69 = _to_float(s.get("f69"))
         f8 = _to_float(s.get("f8"))
         f10 = _to_float(s.get("f10"))
         price = _to_float(s.get("f2"))
@@ -898,15 +972,20 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
         score_start = max(0.1, min(1.0, score_start))
 
         # ═══════════════════════════════════════════
-        # 维度二: 主力资金强度 (20%)
+        # 维度二: 主力资金强度 (18%, 增强: f62+f66+f72+f184+f69)
         # ═══════════════════════════════════════════
-        s_flow = _pct_rank(f62_vals, f62)
-        s_ratio = _pct_rank(f184_vals, f184)
+        s_flow       = _pct_rank(f62_vals, f62)
+        s_super_flow = _pct_rank(f66_vals, f66)
+        s_big_flow   = _pct_rank(f72_vals, f72)
+        s_ratio      = _pct_rank(f184_vals, f184)
+        s_super_ratio = _pct_rank(f69_vals, f69)
         if f62 > 0:
-            super_ratio = max(0.0, min(1.0, f66 / f62))
+            super_quality = max(0.0, min(1.0, f66 / f62))
         else:
-            super_ratio = 0.0
-        score_capital_raw = s_flow * 0.40 + s_ratio * 0.35 + super_ratio * 0.25
+            super_quality = 0.0
+        # 融合: 主力净流入 30% + 超大单 20% + 大单 15% + 占比 20% + 超大单占比 10% + 质量 5%
+        score_capital_raw = (s_flow * 0.30 + s_super_flow * 0.20 + s_big_flow * 0.15 +
+                             s_ratio * 0.20 + s_super_ratio * 0.10 + super_quality * 0.05)
         score_capital = min(0.85, score_capital_raw)
 
         # P1: 买卖比
@@ -921,26 +1000,16 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
                 buy_sell_bonus = -0.08
 
         # ═══════════════════════════════════════════
-        # 维度三: 趋势确认 (15%)
+        # 维度三: 趋势确认 (12%, 增强: 量比+换手率+动量+短期斜率)
         # ═══════════════════════════════════════════
-        score_trend = 0.0
-        if f10 >= 2.5:
-            score_trend += 0.40
-        elif f10 >= 1.5:
-            score_trend += 0.30
-        elif f10 >= 1.2:
-            score_trend += 0.18
-        if 5.0 <= f8 <= 15.0:
-            score_trend += 0.20
-        elif 3.0 <= f8 < 5.0:
-            score_trend += 0.12
+        s_vol_ratio = _range_score(f10, 1.5, 4.0, 0.8, 8.0)
+        s_turnover  = _range_score(f8, 5.0, 18.0, 2.0, 25.0)
+        s_momentum  = _range_score(f3, 2.5, 7.0, -2.0, 9.5)   # 🆕 动量: 温和上涨最佳
         short_trend = _calc_short_trend(closes)
-        if short_trend > 0.02:
-            score_trend += 0.15
-        elif short_trend > 0:
-            score_trend += 0.08
+        s_short = max(0.0, min(1.0, short_trend * 25 + 0.5))    # 归一化到 0~1
+        score_trend = s_vol_ratio * 0.35 + s_turnover * 0.25 + s_momentum * 0.25 + s_short * 0.15
         if _detect_oversold_bounce(closes, f3):
-            score_trend -= 0.25
+            score_trend = max(0.0, score_trend - 0.15)
         score_trend = max(0.0, min(1.0, score_trend))
 
         # ═══════════════════════════════════════════
@@ -986,7 +1055,7 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
         score_analyst = s_consensus * 0.65 + s_eps_growth * 0.35
 
         # ═══════════════════════════════════════════
-        # 维度七: 多日累计 (5%)
+        # 维度七: 多日累计 (5%, 增强: +加速度)
         # ═══════════════════════════════════════════
         cum3 = f62 + md.get("f62_5d", 0)
         cum5 = f62 + md.get("f62_5d", 0)
@@ -1017,9 +1086,14 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
                           s_flow_10day * 0.20 + s_flow_consistency * 0.25)
 
         # ═══════════════════════════════════════════
-        # 维度八: 技术面 (4%)
+        # 维度八: 技术面 (4%, 增强: 牛熊自适应突破)
         # ═══════════════════════════════════════════
         ma_align, breakout_score, breakout_20d = _calc_technical_score(price, closes)
+        # 🆕 牛熊自适应: 熊市突破更珍贵, 牛市突破打折
+        if regime == "bear" and breakout_20d:
+            breakout_score = 1.0   # 逆势突破权重最大化
+        elif regime == "bull":
+            breakout_score = min(1.0, breakout_score * 0.8)
         score_technical = ma_align * 0.5 + breakout_score * 0.5
 
         # ═══════════════════════════════════════════
@@ -1061,7 +1135,45 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
         s_ratio_rank = ratio_rank.get(code, 0.5)
 
         # ═══════════════════════════════════════════
-        # 综合加权
+        # 维度十二: 行业内相对强度 (4%) 🆕 stock_picker
+        # ═══════════════════════════════════════════
+        s_intra_sector = intra_sector_rank.get(code, 0.5)
+
+        # ═══════════════════════════════════════════
+        # 维度十三: 融资净买入 (4%) 🆕 stock_picker
+        # ═══════════════════════════════════════════
+        mn = margin_net_map.get(code, {})
+        f168 = mn.get("f168", 0)
+        if f168 == 0:
+            s_margin_net = 0.5  # 无融资交易，中性
+        else:
+            s_margin_net = mn.get("percentile", 0.5)
+
+        # ═══════════════════════════════════════════
+        # 维度十四: 资金流入加速度 (4%) 🆕 stock_picker
+        # 加速度 = 3日均流入 / 10日均流入
+        # ═══════════════════════════════════════════
+        if md.get("daily_f62"):
+            daily = md["daily_f62"]
+            d1 = daily[0] if len(daily) >= 1 else 0
+            d2 = daily[1] if len(daily) >= 2 else 0
+            avg_3d = (f62 + d1 + d2) / 3 if (f62 + d1 + d2) != 0 else 0
+            all_days = [f62] + daily[:9]
+            avg_10d = sum(all_days) / len(all_days) if all_days else 0
+            if avg_10d > 0 and avg_3d > 0:
+                accel_ratio = avg_3d / avg_10d
+                accel_ratio = max(0.1, min(4.0, accel_ratio))
+            elif avg_3d > 0:
+                accel_ratio = 2.0
+            else:
+                accel_ratio = 0.5
+            s_flow_accel = _range_score(accel_ratio, 1.3, 2.5, 0.3, 4.0)
+        else:
+            s_flow_accel = 0.5
+            accel_ratio = 1.0
+
+        # ═══════════════════════════════════════════
+        # 综合加权 (14 维度)
         # ═══════════════════════════════════════════
         total = (
             score_start      * WEIGHTS["start_signal"]
@@ -1075,6 +1187,9 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
             + s_dragon_tiger * WEIGHTS["dragon_tiger"]
             + s_north_flow   * WEIGHTS["north_flow"]
             + s_ratio_rank   * WEIGHTS["ratio_rank"]
+            + s_intra_sector * WEIGHTS["intra_sector"]
+            + s_margin_net   * WEIGHTS["margin_net"]
+            + s_flow_accel   * WEIGHTS["flow_accel"]
         )
 
         # ═══════════════════════════════════════════
@@ -1289,6 +1404,9 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
             "_s_dragon_tiger": round(s_dragon_tiger, 3),
             "_s_north_flow": round(s_north_flow, 3),
             "_s_ratio_rank": round(s_ratio_rank, 3),
+            "_s_intra_sector": round(s_intra_sector, 3),       # 🆕
+            "_s_margin_net": round(s_margin_net, 3),           # 🆕
+            "_s_flow_accel": round(s_flow_accel, 3),           # 🆕
             "_f62_5d": f204_calc,
             "_f62_10d": f205_calc,
             "_cum3": round(cum3 / 1e8, 2),
@@ -1301,6 +1419,10 @@ def score_candidates_enhanced(candidates, price_history, sector_flows,
             "_s_consensus": round(s_consensus, 3),
             "_s_eps_growth": round(s_eps_growth, 3),
             "_s_flow_consistency": round(s_flow_consistency, 3),
+            "_s_momentum": round(s_momentum, 3),               # 🆕
+            "_s_super_flow": round(s_super_flow, 3),           # 🆕
+            "_s_big_flow": round(s_big_flow, 3),               # 🆕
+            "_accel_ratio": round(accel_ratio, 2),             # 🆕
         })
 
     scored.sort(key=lambda x: x["_score"], reverse=True)
@@ -1498,6 +1620,9 @@ def save_results(scored, limit_up, date_str, top_n=10, weights=None, regime="ran
                 "dragon_tiger": s.get("_s_dragon_tiger", 0),
                 "north_flow": s.get("_s_north_flow", 0),
                 "ratio_rank": s.get("_s_ratio_rank", 0),
+                "intra_sector": s.get("_s_intra_sector", 0),
+                "margin_net": s.get("_s_margin_net", 0),
+                "flow_accel": s.get("_s_flow_accel", 0),
             },
             "sector_code": s.get("_sector_code", ""),
             "sector_name": s.get("_sector_name", ""),
@@ -1549,6 +1674,7 @@ _ENHANCED_PICKS_FIELDS = [
     "换手率", "量比", "总市值",
     "启动得分", "资金得分", "趋势得分", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "龙虎榜得分", "北向得分", "占比排名得分",
+    "行业内得分", "融资得分", "加速度得分",
     "分析师家数", "均线排列", "突破20日",
     "所属板块",
     "选中理由1", "选中理由2", "选中理由3",
@@ -1599,6 +1725,9 @@ def _save_picks_csv(candidates, picks_dir, ts):
             "龙虎榜得分": s.get("_s_dragon_tiger", ""),
             "北向得分": s.get("_s_north_flow", ""),
             "占比排名得分": s.get("_s_ratio_rank", ""),
+            "行业内得分": s.get("_s_intra_sector", ""),
+            "融资得分": s.get("_s_margin_net", ""),
+            "加速度得分": s.get("_s_flow_accel", ""),
             "分析师家数": s.get("_analyst_num", ""),
             "均线排列": s.get("_ma_align", ""),
             "突破20日": "是" if s.get("_breakout_20d") else "",
@@ -1701,12 +1830,13 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
         sector_flows[code] = 0.5 + (top_sectors - i) * 0.1
 
     # [3] 加载全数据源
-    print(f"\n[3/5] 加载全数据源（分析师/龙虎榜/北向/占比排名/多日历史）...")
+    print(f"\n[3/5] 加载全数据源（分析师/龙虎榜/北向/占比排名/多日历史/行业内排名/融资）...")
     analyst_data = load_analyst_data(date_str)
     dt_data = load_dragon_tiger_data(date_str)
     north_data = load_north_flow_data(date_str)
     ratio_rank = load_ratio_rank(date_str)
     stock_multiday = load_stock_multiday(date_str)
+    intra_sector_rank, margin_net_map = load_fund_flow_cross_ref(date_str)  # 🆕
 
     # [4] 加载历史价格 + 分流
     print(f"\n[4/5] 加载历史价格 + 选股分流...")
@@ -1725,6 +1855,8 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
         sector_freshness, sector_persistence,
         stock_multiday, analyst_data, dt_data,
         north_data, ratio_rank,
+        intra_sector_rank= intra_sector_rank, margin_net_map=margin_net_map,
+        regime=regime,
         sentiment_bonus=sentiment_bonus, date_str=date_str,
         afternoon=afternoon,
     )
@@ -1768,10 +1900,14 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
                 "dragon_tiger": s.get("_s_dragon_tiger", 0),
                 "north_flow": s.get("_s_north_flow", 0),
                 "ratio_rank": s.get("_s_ratio_rank", 0),
+                "intra_sector": s.get("_s_intra_sector", 0),     # 🆕
+                "margin_net": s.get("_s_margin_net", 0),         # 🆕
+                "flow_accel": s.get("_s_flow_accel", 0),         # 🆕
             },
             "sector_name": s.get("_sector_name", ""),
             "analyst_num": s.get("_analyst_num", 0),
             "breakout_20d": s.get("_breakout_20d", False),
+            "ma_align": s.get("_ma_align", 0),
             "reasons": _gen_reasons(s),
         })
 
@@ -1785,6 +1921,7 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
             "main_ratio": round(_to_float(s.get("f184")), 1),
             "turnover": round(_to_float(s.get("f8")), 1),
             "sector_name": s.get("_sector_name", ""),
+            "mcap_yi": round(_to_float(s.get("f20")) / 1e8, 2),
         })
 
     return {
@@ -1839,12 +1976,13 @@ def run(date_str=None, top_sectors=5, top_picks=10):
         sector_flows[code] = 0.5 + (top_sectors - i) * 0.1
 
     # [3] 全数据源
-    print(f"\n[3/5] 加载全数据源...")
+    print(f"\n[3/5] 加载全数据源（含行业内排名/融资）...")
     analyst_data = load_analyst_data(date_str)
     dt_data = load_dragon_tiger_data(date_str)
     north_data = load_north_flow_data(date_str)
     ratio_rank = load_ratio_rank(date_str)
     stock_multiday = load_stock_multiday(date_str)
+    intra_sector_rank, margin_net_map = load_fund_flow_cross_ref(date_str)
 
     # [4] 历史价格 + 分流
     print(f"\n[4/5] 加载历史价格 + 选股分流...")
@@ -1862,6 +2000,8 @@ def run(date_str=None, top_sectors=5, top_picks=10):
         sector_freshness, sector_persistence,
         stock_multiday, analyst_data, dt_data,
         north_data, ratio_rank,
+        intra_sector_rank= intra_sector_rank, margin_net_map=margin_net_map,
+        regime=regime,
         sentiment_bonus=sentiment_bonus, date_str=date_str,
         afternoon=afternoon,
     )
