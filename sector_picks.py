@@ -408,7 +408,8 @@ def load_sector_multiday(date_str):
 
 def score_candidates(candidates, price_history, sector_flows,
                      sector_freshness, stock_multiday,
-                     sector_persistence=None, afternoon=False):
+                     sector_persistence=None, afternoon=False,
+                     sentiment_bonus=0.0, date_str=""):
     """
     评分维度（回溯优化版）:
       1. 启动信号 (35%): 板块刚启动 + 个股资金加速度 — 回溯最强预测因子
@@ -587,6 +588,16 @@ def score_candidates(candidates, price_history, sector_flows,
             elif rank_trend < -0.5:
                 total -= 0.06  # 排名持续下降
 
+        # ── P16: 涨停基因 — 近30日有涨停+缩量回调=强基因 ──
+        limit_up_gene = _check_limit_up_gene(code, date_str)
+        if limit_up_gene >= 0.5:
+            total += 0.05  # 涨停+缩量回调=筹码锁定好
+        elif limit_up_gene >= 0.2:
+            total += 0.02  # 有涨停基因但无缩量确认
+
+        # ── P17: 情绪周期 — 冰点期次日反弹概率高 ──
+        total += sentiment_bonus
+
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
             total -= 0.08
@@ -746,11 +757,110 @@ def _calc_short_trend(closes):
     recent = closes[:5]
     if len(recent) < 2:
         return 0.0
-    # 简单斜率
     changes = [(recent[i] - recent[i+1]) / recent[i+1] for i in range(len(recent) - 1)]
     avg_chg = sum(changes) / len(changes)
-    trend = max(-1.0, min(1.0, avg_chg * 50))  # 缩放
-    return trend
+    return max(-1.0, min(1.0, avg_chg * 50))
+
+
+# ── P16+P17: 涨停基因 + 情绪周期 ──
+
+def _check_limit_up_gene(code, date_str):
+    """检查近30日涨停基因: 有涨停 + 涨停后缩量回调≤5天 → 筹码锁定好"""
+    from datetime import datetime as dt, timedelta
+    d = dt.strptime(date_str, "%Y%m%d")
+    had_limit_up = False
+    pullback_ok = False
+    limit_up_day = None
+    cursor = d - timedelta(days=1)
+    days_back = 0
+    while days_back < 30:
+        prev_str = cursor.strftime("%Y%m%d")
+        path = os.path.join(DATA_ROOT, prev_str, "fund_flow.json")
+        cursor -= timedelta(days=1)
+        days_back += 1
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        for r in rows:
+            if r.get("f12") != code:
+                continue
+            f3 = _to_float(r.get("f3"))
+            if f3 >= 9.8:  # 涨停
+                had_limit_up = True
+                limit_up_day = prev_str
+                break
+        if had_limit_up:
+            break
+    if not had_limit_up:
+        return 0.0  # 无涨停基因
+
+    # 检查涨停后5天是否缩量回调
+    if not limit_up_day:
+        return 0.3  # 有涨停但无法查后续
+    limit_d = dt.strptime(limit_up_day, "%Y%m%d")
+    check_d = limit_d + timedelta(days=1)
+    volume_after = []
+    for _ in range(5):
+        ds = check_d.strftime("%Y%m%d")
+        path = os.path.join(DATA_ROOT, ds, "fund_flow.json")
+        check_d += timedelta(days=1)
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        for r in rows:
+            if r.get("f12") == code:
+                vol = _to_float(r.get("f8"))  # 换手率
+                chg = _to_float(r.get("f3"))
+                if vol > 0:
+                    volume_after.append((vol, chg))
+                break
+    if volume_after:
+        avg_vol = sum(v for v, _ in volume_after) / len(volume_after)
+        max_drop = min(chg for _, chg in volume_after) if volume_after else 0
+        if avg_vol < 10 and max_drop > -5:  # 缩量且未大跌
+            pullback_ok = True
+
+    return 0.5 if pullback_ok else 0.2  # 涨停+缩量回调=强基因 / 有涨停=弱基因
+
+
+def _calc_market_sentiment(date_str):
+    """评估市场情绪: 冰点/发酵/高潮/退潮, 返回 bonus/penalty"""
+    rows = load_json(date_str, "fund_flow")
+    if not rows or len(rows) < 1000:
+        return 0.0, "unknown"
+
+    limit_up_count = 0
+    limit_down_count = 0
+    total = len(rows)
+    pos_flow_count = 0
+    for r in rows:
+        f3 = _to_float(r.get("f3"))
+        if f3 >= 9.8:
+            limit_up_count += 1
+        elif f3 <= -9.8:
+            limit_down_count += 1
+        if _to_float(r.get("f62")) > 0:
+            pos_flow_count += 1
+
+    up_ratio = limit_up_count / total * 100
+    down_ratio = limit_down_count / total * 100
+    zha_ban_rate = down_ratio / max(up_ratio, 0.01)  # 炸板率近似
+
+    # 情绪判断
+    if up_ratio > 3.0 and zha_ban_rate < 0.3:
+        sentiment, bonus = "高潮", -0.03  # 过于亢奋次日易分歧
+    elif up_ratio > 1.5 and zha_ban_rate < 0.5:
+        sentiment, bonus = "发酵", 0.04   # 赚钱效应扩散
+    elif up_ratio < 0.5 and down_ratio > 2.0:
+        sentiment, bonus = "冰点", 0.06   # 情绪极差→次日反弹概率高
+    elif up_ratio > 1.0 and zha_ban_rate > 0.6:
+        sentiment, bonus = "退潮", -0.05  # 炸板率高→亏钱效应
+    else:
+        sentiment, bonus = "震荡", 0.0
+
+    return bonus, sentiment
 
 
 # ============================================================
@@ -1108,9 +1218,11 @@ def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
 
     sector_freshness, _, sector_persistence = load_sector_multiday(date_str)
     stock_multiday = load_stock_multiday(date_str)
+    sentiment_bonus, _ = _calc_market_sentiment(date_str)
     scored = score_candidates(candidates, price_history, sector_flows,
                               sector_freshness, stock_multiday,
-                              sector_persistence, afternoon=afternoon_mode)
+                              sector_persistence, afternoon=afternoon_mode,
+                              sentiment_bonus=sentiment_bonus, date_str=date_str)
     # P10+P14: 记录排名历史用于衰减 + 稳定性追踪
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
@@ -1207,11 +1319,14 @@ def run(date_str=None, top_sectors=5, top_picks=10):
     # 启动信号数据
     sector_freshness, _, sector_persistence = load_sector_multiday(date_str)
     stock_multiday = load_stock_multiday(date_str)
+    sentiment_bonus, sentiment_label = _calc_market_sentiment(date_str)
+    print(f"  市场情绪: {sentiment_label} ({sentiment_bonus:+.2f})")
 
     scored = score_candidates(candidates, price_history, sector_flows,
                               sector_freshness, stock_multiday,
                               sector_persistence,
-                              afternoon=datetime.now().hour >= 13)
+                              afternoon=datetime.now().hour >= 13,
+                              sentiment_bonus=sentiment_bonus, date_str=date_str)
     # P10+P14: 记录排名历史
     now = datetime.now()
     for i, s in enumerate(scored):
