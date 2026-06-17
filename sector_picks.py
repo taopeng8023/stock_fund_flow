@@ -138,11 +138,22 @@ def load_sector_top_codes(date_str, top_n=5):
 
 
 def load_market_data(date_str):
-    """加载全市场个股数据作为交叉校验基准"""
+    """加载全市场个股数据作为交叉校验基准，缺失时自动采集"""
     rows = load_json(date_str, "fund_flow")
     if rows is None:
-        print(f"  ⚠ 全市场数据不可用: data/{date_str}/fund_flow.json")
-        return {}
+        print(f"  全市场数据缺失, 自动采集...")
+        import subprocess
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        cp = subprocess.run(
+            [sys.executable, os.path.join(project_dir, "fetch_data.py"),
+             f"--date={date_str}"],
+            cwd=project_dir,
+        )
+        if cp.returncode == 0:
+            rows = load_json(date_str, "fund_flow")
+        if rows is None:
+            print(f"  ⚠ 全市场数据不可用: data/{date_str}/fund_flow.json")
+            return {}
     return {r.get("f12", ""): r for r in rows}
 
 

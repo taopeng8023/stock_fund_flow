@@ -14,12 +14,21 @@ BJS = BJS_TZ
 
 
 def load_market_data(date_str):
-    """加载当日全量个股数据"""
+    """加载当日全量个股数据，缺失时自动采集"""
     rows = load_json(date_str, "fund_flow")
     if rows is None:
-        print(f"数据文件不存在: data/{date_str}/fund_flow.json")
-        print(f"请先运行: python fetch_data.py --date={date_str}")
-        return None
+        print(f"数据文件不存在, 自动采集 {date_str}...")
+        import subprocess, sys
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        cp = subprocess.run(
+            [sys.executable, os.path.join(project_dir, "fetch_data.py"),
+             f"--date={date_str}"],
+            cwd=project_dir,
+        )
+        if cp.returncode != 0:
+            print(f"自动采集失败，请手动运行: python fetch_data.py --date={date_str}")
+            return None
+        rows = load_json(date_str, "fund_flow")
     return rows
 
 

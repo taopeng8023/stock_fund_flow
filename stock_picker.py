@@ -95,9 +95,20 @@ def is_main_board(code):
 def load_local_data(date_str):
     rows = load_json(date_str, "fund_flow")
     if rows is None:
-        print(f"  数据文件不存在: data/{date_str}/fund_flow.json")
-        print(f"  请先运行: python fetch_data.py")
-        return None
+        print(f"  数据文件不存在: data/{date_str}/fund_flow.json, 自动采集...")
+        import subprocess, sys
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        cp = subprocess.run(
+            [sys.executable, os.path.join(project_dir, "fetch_data.py"),
+             f"--date={date_str}"],
+            cwd=project_dir,
+        )
+        if cp.returncode != 0:
+            print(f"  自动采集失败，请手动运行: python fetch_data.py --date={date_str}")
+            return None
+        rows = load_json(date_str, "fund_flow")
+        if rows is None:
+            return None
     pos = sum(1 for r in rows if isinstance(r.get("f62"), (int, float)) and r["f62"] > 0)
     print(f"  读取本地数据: data/{date_str}/fund_flow.json")
     print(f"  全量: {len(rows)} 只, 正流入: {pos} 只")
