@@ -639,6 +639,32 @@ def score_candidates(candidates, price_history, sector_flows,
         elif sentiment_bonus < -0.03:  # 高潮/退潮期
             total -= 0.03  # 逆势谨慎
 
+        # ── P25: 隔夜-日内分解 (东吴证券, IR 2.09, 月胜率77.9%) ──
+        if f18 > 0 and f17 > 0:
+            overnight = (f17 - f18) / f18 * 100   # 隔夜涨跌幅
+            intraday = (price - f17) / f17 * 100  # 日内涨跌幅
+            # 隔夜涨+日内不跌 = 主力锁仓不卖
+            if overnight > 1 and intraday > -1:
+                total += 0.05
+            # 隔夜跌+日内反转 = 散户割肉主力接盘
+            elif overnight < -2 and intraday > 2:
+                total += 0.04
+            # 隔夜大涨+日内回落 = 出货信号
+            elif overnight > 3 and intraday < -1:
+                total -= 0.06
+
+        # ── P26: VWAP错杀检测 (中金财富) ──
+        if f15 > 0 and f16 > 0:
+            vwap_approx = (f15 + f16 + price) / 3
+            if price < vwap_approx * 0.98 and f62 > 0:
+                total += 0.04  # 收盘低于均价, 尾盘错杀次日修复
+            elif price > vwap_approx * 1.03 and f3 > 5:
+                total -= 0.04  # 收盘远高于均价, 尾盘拉升透支
+
+        # ── P27: 换手率质量 (SPS因子, IR 3.59, 月胜率83.6%) ──
+        if 5 <= f8 <= 15 and f10 > 1.5:
+            total += 0.03  # 活跃但非过度换手 + 放量确认
+
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
             total -= 0.08
