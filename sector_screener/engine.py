@@ -7,6 +7,7 @@ from sector_screener.scorers import (
     score_dragon_tiger, score_north_flow, score_ratio_rank,
     score_intra_sector, score_margin_net, score_flow_accel,
     score_block_trade, score_org_research, score_earnings, score_lockup,
+    score_margin_short, score_margin_long, score_volume_quality,
     apply_p_factors, get_tracker,
 )
 
@@ -87,8 +88,11 @@ def score_candidates(candidates, context):
         s_org      = score_org_research(s, context)
         s_earn     = score_earnings(s, context)
         s_lockup   = score_lockup(s, context)
+        s_mshort   = score_margin_short(s, context)
+        s_mlong    = score_margin_long(s, context)
+        s_vq       = score_volume_quality(s, context)
 
-        # 加权求和 (18维)
+        # 加权求和 (21维)
         total = (
             s_start    * weights.get("start_signal", 0)
             + s_capital * weights.get("capital", 0)
@@ -108,6 +112,9 @@ def score_candidates(candidates, context):
             + s_org      * weights.get("org_research", 0)
             + s_earn     * weights.get("earnings", 0)
             + s_lockup   * weights.get("lockup_expiry", 0)
+            + s_mshort   * weights.get("margin_short", 0)
+            + s_mlong    * weights.get("margin_long", 0)
+            + s_vq       * weights.get("volume_quality", 0)
         )
 
         # P因子调整
@@ -135,6 +142,9 @@ def score_candidates(candidates, context):
             "org_research":  round(s_org      * weights.get("org_research", 0), 4),
             "earnings":      round(s_earn     * weights.get("earnings", 0), 4),
             "lockup_expiry": round(s_lockup   * weights.get("lockup_expiry", 0), 4),
+            "margin_short":  round(s_mshort   * weights.get("margin_short", 0), 4),
+            "margin_long":   round(s_mlong    * weights.get("margin_long", 0), 4),
+            "volume_quality":round(s_vq       * weights.get("volume_quality", 0), 4),
         }
 
         # 信号触发明细

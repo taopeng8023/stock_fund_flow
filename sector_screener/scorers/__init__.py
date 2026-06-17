@@ -18,3 +18,6 @@ from .block_trade import score_block_trade
 from .org_research import score_org_research
 from .earnings_forecast import score_earnings
 from .lockup_expiry import score_lockup
+from .margin_short import score_margin_short
+from .margin_long import score_margin_long
+from .volume_quality import score_volume_quality

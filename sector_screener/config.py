@@ -25,36 +25,41 @@ MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
 # 14 维度权重 — 三市场景自适应
 # ═══════════════════════════════════════
 WEIGHTS_BASE = {
-    "start_signal":  0.22,
-    "capital":       0.18,
-    "trend":         0.12,
-    "sector":        0.09,
-    "position":      0.08,
+    "start_signal":  0.19,
+    "capital":       0.16,
+    "trend":         0.10,
+    "sector":        0.07,
+    "position":      0.07,
     "analyst":       0.04,
-    "multiday":      0.05,
+    "multiday":      0.04,
     "technical":     0.04,
     "dragon_tiger":  0.03,
     "north_flow":    0.02,
     "ratio_rank":    0.01,
-    "intra_sector":  0.04,
-    "margin_net":    0.04,
-    "flow_accel":    0.04,
+    "intra_sector":  0.03,
+    "margin_net":    0.03,
+    "flow_accel":    0.03,
     "block_trade":   0.02,   # 🆕 大宗交易溢价信号
     "org_research":  0.02,   # 🆕 机构调研热度
     "earnings":      0.02,   # 🆕 业绩预告类型
     "lockup_expiry": 0.02,   # 🆕 限售解禁风险
+    "margin_short":  0.02,   # 🆕 融券压力(已有字段f170/f172)
+    "margin_long":   0.02,   # 🆕 融资力度(已有字段f174/f175/f169)
+    "volume_quality":0.02,   # 🆕 成交额质量(已有字段f5/f6)
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
-    "trend": 0.13, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
-    "start_signal": 0.18, "capital": 0.18, "intra_sector": 0.05, "margin_net": 0.05,
+    "trend": 0.12, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
+    "start_signal": 0.17, "capital": 0.17, "intra_sector": 0.05, "margin_net": 0.04,
     "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
+    "margin_long": 0.03, "volume_quality": 0.02,
 }
 
 WEIGHTS_BEAR = {**WEIGHTS_BASE,
-    "analyst": 0.07, "north_flow": 0.04, "position": 0.11, "start_signal": 0.18,
-    "trend": 0.10, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
+    "analyst": 0.07, "north_flow": 0.04, "position": 0.10, "start_signal": 0.16,
+    "trend": 0.09, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
     "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
+    "margin_short": 0.04, "volume_quality": 0.01,
 }
 
 # ═══════════════════════════════════════
