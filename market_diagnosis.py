@@ -378,6 +378,15 @@ def diagnose_risks(breadth, flow, north, regime_result):
         if breadth["median"] < -1:
             alerts.append("放量暴跌: 超40%个股量比>3且普跌，恐慌性抛售")
 
+    # 中等风险：非极端但市场偏弱
+    if not alerts:
+        if breadth["up_ratio"] < 0.40:
+            alerts.append(f"市场偏弱: 上涨个股仅{breadth['up_ratio']:.0%}")
+        if flow and flow.get("pos_flow_ratio", 0) < 0.40:
+            alerts.append(f"主力参与不足: 正流入个股仅{flow['pos_flow_ratio']:.0%}")
+        if breadth["limit_down"] > 30:
+            alerts.append(f"跌停较多: {breadth['limit_down']}只")
+
     # 确定风险等级
     critical_keywords = ["极端普跌", "极端普涨", "千股跌停", "流动性危机", "系统性"]
     if any(k in a for a in alerts for k in critical_keywords):
@@ -403,7 +412,7 @@ def position_advice(regime_result, risk_result):
         "bear_bias": 0.35, "bear": 0.20,
     }.get(regime, 0.50)
 
-    risk_discount = {"low": 1.0, "medium": 0.80, "high": 0.55, "critical": 0.30}
+    risk_discount = {"low": 0.90, "medium": 0.75, "high": 0.50, "critical": 0.25}
     adj_position = base_position * risk_discount.get(risk_level, 1.0)
 
     return {
