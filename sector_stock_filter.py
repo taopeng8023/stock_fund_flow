@@ -414,9 +414,9 @@ def score_candidates(candidates, price_history, sector_flows,
     """
     评分维度（回溯优化版）:
       1. 启动信号 (35%): 板块刚启动 + 个股资金加速度 — 回溯最强预测因子
-      2. 主力资金强度 (30%): 主力净流入 + 占比 + 超大单质量
-      3. 趋势确认 (15%): 仅量价确认（不含涨跌幅，避免与启动信号重叠）
-      4. 板块共振 (10%): 所属板块今日资金强度
+      2. 主力资金强度 (22%): 净流入+占比+超大单(cap 0.85防均值回归)
+      3. 趋势确认 (20%): 量比+换手率+短期斜率+超跌检测
+      4. 板块共振 (13%): 所属板块今日资金强度
       5. 位置健康 (10%): 不在超跌区也不在高位
       趋势确认仅用量比+换手率+短期斜率, f184 独占资金维度
       特殊调整: 沉默吸筹 +0.05 / 高涨幅透支渐变惩罚(5%起扣)
@@ -484,7 +484,8 @@ def score_candidates(candidates, price_history, sector_flows,
             super_ratio = max(0.0, min(1.0, f66 / f62))
         else:
             super_ratio = 0.0
-        score_capital = s_flow * 0.40 + s_ratio * 0.35 + super_ratio * 0.25
+        score_capital_raw = s_flow * 0.40 + s_ratio * 0.35 + super_ratio * 0.25
+        score_capital = min(0.85, score_capital_raw)  # 极端值均值回归
 
         # ── 3. 趋势确认 (15%, 仅量价确认) ──
         score_trend = 0.0
@@ -514,10 +515,15 @@ def score_candidates(candidates, price_history, sector_flows,
         # ── 5. 位置健康 (10%) ──
         score_position = _calc_position_score(price, closes)
 
-        # ── 综合 ──
-        total = (score_start * 0.35 + score_capital * 0.30 +
-                 score_trend * 0.15 + score_sector * 0.10 +
+        # ── 综合（资金权重 30%→22%, 趋势 15%→20%, 板块 10%→13%）──
+        total = (score_start * 0.35 + score_capital * 0.22 +
+                 score_trend * 0.20 + score_sector * 0.13 +
                  score_position * 0.10)
+
+        # ── 3.2 资金 vs 启动对立惩罚 ──
+        # 资金极端(>0.80) + 启动刚启动(>0.70) = 矛盾信号
+        if score_capital > 0.80 and score_start > 0.70:
+            total -= 0.08
 
         # ── 特殊调整 ──
         # 沉默吸筹: chg < 3% + 资金强 → 主力悄悄进货
@@ -1010,7 +1016,7 @@ def run(date_str=None, top_sectors=5, top_picks=10):
 
     print(f"\n{'═' * 70}")
     print(f"  板块成分股精选 [{date_str}]")
-    print(f"  策略: 主板 · 启动信号(35%) · 主力(30%) · 趋势(15%) · 板块(10%) · 位置(10%)")
+    print(f"  策略: 主板 · 启动(35%) · 主力(22%) · 趋势(20%) · 板块(13%) · 位置(10%)")
     print(f"{'═' * 70}\n")
 
     # 1. 获取 Top N 行业板块代码
