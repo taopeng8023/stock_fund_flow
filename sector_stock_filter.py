@@ -344,8 +344,8 @@ def split_stocks(stocks, price_history, market_map=None):
 # ============================================================
 
 def load_stock_multiday(date_str):
-    """从历史 fund_flow.json 计算每只个股的 5日/10日累计主力净流入
-    返回 {code: {f62_5d, f62_10d}}
+    """从历史 fund_flow.json 计算每只个股的 5日/10日累计 + 连续正流入天数
+    返回 {code: {f62_5d, f62_10d, pos_days_3d}}
     """
     from datetime import datetime as dt, timedelta
     d = dt.strptime(date_str, "%Y%m%d")
@@ -368,9 +368,11 @@ def load_stock_multiday(date_str):
             code = r.get("f12", "")
             f62 = _to_float(r.get("f62"))
             if code not in result:
-                result[code] = {"f62_5d": 0.0, "f62_10d": 0.0}
+                result[code] = {"f62_5d": 0.0, "f62_10d": 0.0, "pos_days_3d": 0}
             if days_found <= 5:
                 result[code]["f62_5d"] += f62
+                if days_found <= 3 and f62 > 0:
+                    result[code]["pos_days_3d"] += 1
             result[code]["f62_10d"] += f62
 
     print(f"  个股多日累计: {len(result)} 只, 历史{min(days_found, 10)}天")
@@ -393,24 +395,29 @@ def load_sector_multiday(date_str):
     rank_10d = {r.get("f12"): i + 1 for i, r in enumerate(by_f205)}
     total = len(rows)
 
-    # 板块启动信号: 今日排名远高于 5日/10日排名 → 刚启动
+    # 板块启动信号 + 持续性
     sector_freshness = {}
+    sector_persistence = {}
     for r in rows:
         code = r.get("f12", "")
         r_today = rank_today.get(code, total)
         r_5d = rank_5d.get(code, total)
         r_10d = rank_10d.get(code, total)
         # 提升幅度: 5日排名 - 今日排名（正值=今天排名上升）
-        jump_5d = (r_5d - r_today) / total  # -1~1，正值表示今天比5日均排名更高=刚启动
+        jump_5d = (r_5d - r_today) / total
         jump_10d = (r_10d - r_today) / total
         freshness = max(0.0, min(1.0, (jump_5d * 0.6 + jump_10d * 0.4 + 0.3)))
         sector_freshness[code] = round(freshness, 3)
+        # P4: 持续性 — 5日排名也在前30% = 持续热，否则一日热
+        persistence = 1.0 if r_5d <= total * 0.3 else (0.7 if r_5d <= total * 0.5 else 0.4)
+        sector_persistence[code] = persistence
 
-    return sector_freshness, rank_today
+    return sector_freshness, rank_today, sector_persistence
 
 
 def score_candidates(candidates, price_history, sector_flows,
-                     sector_freshness, stock_multiday):
+                     sector_freshness, stock_multiday,
+                     sector_persistence=None):
     """
     评分维度（回溯优化版）:
       1. 启动信号 (35%): 板块刚启动 + 个股资金加速度 — 回溯最强预测因子
@@ -487,6 +494,17 @@ def score_candidates(candidates, price_history, sector_flows,
         score_capital_raw = s_flow * 0.40 + s_ratio * 0.35 + super_ratio * 0.25
         score_capital = min(0.85, score_capital_raw)  # 极端值均值回归
 
+        # ── P1: 买卖比 — 区分真买盘 vs 多空博弈 ──
+        f164 = _to_float(s.get("f164"))  # 主力买入
+        f166 = _to_float(s.get("f166"))  # 主力卖出
+        buy_sell_bonus = 0.0
+        if f166 > 0 and f164 > 0:
+            ratio = f164 / f166
+            if ratio > 2.0:
+                buy_sell_bonus = 0.05   # 买入远超卖出，真买盘
+            elif ratio < 1.2:
+                buy_sell_bonus = -0.08  # 买卖接近，多空博弈非真趋势
+
         # ── 3. 趋势确认 (15%, 仅量价确认) ──
         score_trend = 0.0
         if f10 >= 2.5:
@@ -509,8 +527,12 @@ def score_candidates(candidates, price_history, sector_flows,
             score_trend -= 0.25
         score_trend = max(0.0, min(1.0, score_trend))
 
-        # ── 4. 板块共振 (10%) ──
+        # ── 4. 板块共振 (10%) + P4 板块持续性 ──
         score_sector = sector_flows.get(sector_code, 0.5)
+        # P4: 板块持续性 — 持续热 vs 一日热
+        if sector_persistence:
+            persist = sector_persistence.get(sector_code, 0.7)
+            score_sector = score_sector * persist  # 一日热板块降权
 
         # ── 5. 位置健康 (10%) ──
         score_position = _calc_position_score(price, closes)
@@ -520,10 +542,22 @@ def score_candidates(candidates, price_history, sector_flows,
                  score_trend * 0.20 + score_sector * 0.13 +
                  score_position * 0.10)
 
+        # P1: 买卖比调整
+        total += buy_sell_bonus
+
         # ── 3.2 资金 vs 启动对立惩罚 ──
         # 资金极端(>0.80) + 启动刚启动(>0.70) = 矛盾信号
         if score_capital > 0.80 and score_start > 0.70:
             total -= 0.08
+
+        # ── P0: 高资金低启动 = 一日游脉冲(回溯4输家全命中此模式) ──
+        if score_capital > 0.75 and score_start < 0.45:
+            total -= 0.12
+
+        # ── P3: 资金连续性 — 近3天仅今日正流入 = 一日游 ──
+        pos_days = md.get("pos_days_3d", 0)
+        if pos_days < 2:
+            total -= 0.06
 
         # ── 特殊调整 ──
         # 沉默吸筹: chg < 3% + 资金强 → 主力悄悄进货
@@ -941,6 +975,17 @@ def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
 
+    # ── P2: 市场环境门控 ──
+    try:
+        from market_diagnosis import get_diagnosis
+        diag = get_diagnosis(date_str)
+        if diag:
+            risk = diag.get("risks", {}).get("level", "low")
+            if risk in ("high", "critical"):
+                return {"error": f"市场风险过高({risk})，暂停选股", "date": date_str}
+    except Exception:
+        pass  # diagnosis 不可用时跳过门控
+
     sector_codes = load_sector_top_codes(date_str, top_sectors)
     if not sector_codes:
         return {"error": "无板块数据", "date": date_str}
@@ -957,10 +1002,11 @@ def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     for i, code in enumerate(sector_codes):
         sector_flows[code] = 0.5 + (top_sectors - i) * 0.1
 
-    sector_freshness, _ = load_sector_multiday(date_str)
+    sector_freshness, _, sector_persistence = load_sector_multiday(date_str)
     stock_multiday = load_stock_multiday(date_str)
     scored = score_candidates(candidates, price_history, sector_flows,
-                              sector_freshness, stock_multiday)
+                              sector_freshness, stock_multiday,
+                              sector_persistence)
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
 
@@ -1049,11 +1095,12 @@ def run(date_str=None, top_sectors=5, top_picks=10):
         sector_flows[code] = 0.5 + (top_sectors - i) * 0.1  # 排名越前板块分越高
 
     # 启动信号数据
-    sector_freshness, _ = load_sector_multiday(date_str)
+    sector_freshness, _, sector_persistence = load_sector_multiday(date_str)
     stock_multiday = load_stock_multiday(date_str)
 
     scored = score_candidates(candidates, price_history, sector_flows,
-                              sector_freshness, stock_multiday)
+                              sector_freshness, stock_multiday,
+                              sector_persistence)
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
 
