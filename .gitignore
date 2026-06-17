@@ -11,3 +11,4 @@ __pycache__/
 *.db
 performance.json
 data/
+data/

@@ -11,6 +11,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -27,7 +28,12 @@ DB_PATH = os.path.join(PROJECT_DIR, ".vntrader", "database.db")
 
 
 def create_app():
-    app = FastAPI(title="A股量化选股系统", version="2.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        stop_scheduler()
+
+    app = FastAPI(title="A股量化选股系统", version="2.0", lifespan=lifespan)
     app.include_router(api_router)
 
     ui_dir = os.path.join(PROJECT_DIR, "vnpy_bridge", "web_ui")
@@ -41,10 +47,6 @@ def create_app():
 
     if os.path.isdir(ui_dir):
         app.mount("/static", StaticFiles(directory=os.path.join(ui_dir, "static")), name="static")
-
-    @app.on_event("shutdown")
-    def on_shutdown():
-        stop_scheduler()
 
     return app
 
