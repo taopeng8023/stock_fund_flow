@@ -137,26 +137,6 @@ def load_sector_top_codes(date_str, top_n=5):
     return codes
 
 
-def load_market_data(date_str):
-    """加载全市场个股数据作为交叉校验基准，缺失时自动采集"""
-    rows = load_json(date_str, "fund_flow")
-    if rows is None:
-        print(f"  全市场数据缺失, 自动采集...")
-        import subprocess
-        project_dir = os.path.dirname(os.path.abspath(__file__))
-        cp = subprocess.run(
-            [sys.executable, os.path.join(project_dir, "fetch_data.py"),
-             f"--date={date_str}"],
-            cwd=project_dir,
-        )
-        if cp.returncode == 0:
-            rows = load_json(date_str, "fund_flow")
-        if rows is None:
-            print(f"  ⚠ 全市场数据不可用: data/{date_str}/fund_flow.json")
-            return {}
-    return {r.get("f12", ""): r for r in rows}
-
-
 def load_past_closes(date_str, codes, days=60):
     """加载历史收盘价序列，用于计算相对位置"""
     from datetime import datetime as dt, timedelta
@@ -269,7 +249,7 @@ def _check_uptrend(price, closes, chg_today, vol_ratio):
 # 涨停 / 候选 分流
 # ============================================================
 
-def split_stocks(stocks, price_history, market_map=None):
+def split_stocks(stocks, price_history):
     """
     将成分股分为三组:
       - limit_up:    涨停股 → 观察池
@@ -680,7 +660,7 @@ def _fmt_yi(v):
     return f"{v/1e4:+.0f}万"
 
 
-def print_results(limit_up_pool, scored_candidates, excluded_pool, top_n=10, market_map=None):
+def print_results(limit_up_pool, scored_candidates, excluded_pool, top_n=10):
     """格式化输出精选结果"""
     date_str = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
 
@@ -1077,28 +1057,27 @@ def run(date_str=None, top_sectors=5, top_picks=10):
     print(f"{'═' * 70}\n")
 
     # 1. 获取 Top N 行业板块代码
-    print(f"[1/5] 获取 Top {top_sectors} 行业板块...")
+    print(f"[1/4] 获取 Top {top_sectors} 行业板块...")
     sector_codes = load_sector_top_codes(date_str, top_sectors)
     if not sector_codes:
         print("  ✗ 无板块数据, 请先运行 python fetch_data.py")
         return None
 
     # 2. 加载成分股明细
-    print(f"\n[2/5] 加载成分股明细...")
+    print(f"\n[2/4] 加载成分股明细...")
     stocks = load_sector_stocks(date_str, sector_codes)
     if not stocks:
         print("  ✗ 无成分股数据, 请先运行 python fetchers/sector_flow.py")
         return None
 
-    # 3. 加载全市场基准
-    print(f"\n[3/5] 加载全市场数据 + 历史价格...")
-    market_map = load_market_data(date_str)
+    # 3. 加载历史价格
+    print(f"\n[3/4] 加载历史价格数据...")
     codes_set = {s.get("f12", "") for s in stocks}
     price_history = load_past_closes(date_str, codes_set)
 
     # 4. 涨停分流 + 候选精选
-    print(f"\n[4/5] 选股分流 (涨停→观察 / 候选→评分)...")
-    limit_up, candidates, excluded = split_stocks(stocks, price_history, market_map)
+    print(f"\n[4/4] 选股分流 (涨停→观察 / 候选→评分)...")
+    limit_up, candidates, excluded = split_stocks(stocks, price_history)
 
     # 板块资金流强度（用于板块共振评分）
     sector_flows = {}
@@ -1116,8 +1095,8 @@ def run(date_str=None, top_sectors=5, top_picks=10):
         s["_rank"] = i + 1
 
     # 5. 输出
-    print(f"\n[5/5] 输出结果...")
-    print_results(limit_up, scored, excluded, top_picks, market_map)
+    # 输出
+    print_results(limit_up, scored, excluded, top_picks)
 
     # 保存
     save_results(scored, limit_up, date_str, top_picks)
