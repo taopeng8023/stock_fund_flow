@@ -33,7 +33,7 @@ def run(date_str=None, db_path=None):
 
     # 3. 选股分析
     print(f"[pipeline] 多因子选股...")
-    from stock_picker import get_picks
+    from sector_enhanced_picks import get_picks
     pick_result = get_picks(date_str, top_n=5)
     if pick_result:
         save_picks(date_str, pick_result["picks"], pick_result["regime"])

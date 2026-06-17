@@ -1933,8 +1933,15 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
         "limit_up_count": len(limit_up),
         "excluded_count": len(excluded),
         "picks": picks,
+        "scored": scored,       # 全量评分列表, 兼容 stock_picker.get_picks 调用方
         "limit_up": limit_up_list,
     }
+
+
+# 向后兼容: 原 stock_picker.get_picks 接口 (参数名 top_n → top_picks)
+def get_picks(date_str=None, top_n=5):
+    """向后兼容 stock_picker.get_picks(date_str, top_n) 的调用签名"""
+    return get_enhanced_picks(date_str=date_str, top_sectors=5, top_picks=top_n)
 
 
 def run(date_str=None, top_sectors=5, top_picks=10):

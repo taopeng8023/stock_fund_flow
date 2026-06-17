@@ -126,7 +126,7 @@ def job_stock_picks():
     _load_log()
     date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
     try:
-        from stock_picker import get_picks
+        from sector_enhanced_picks import get_picks
         from vnpy_bridge.database import init_db, save_picks
         init_db()
         result = get_picks(date_str, top_n=5)
@@ -153,7 +153,7 @@ def job_performance():
         # 优先从缓存读（job_stock_picks 已计算），避免重复调用
         pr = _pick_cache.get(date_str)
         if pr is None:
-            from stock_picker import get_picks as gp
+            from sector_enhanced_picks import get_picks as gp
             pr = gp(date_str, top_n=5)
         recorded = 0
         if pr:

@@ -186,7 +186,7 @@ def step_stock_picks(date: str = Query(None), top_n: int = Query(5)):
         from fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
-        from stock_picker import get_picks
+        from sector_enhanced_picks import get_picks
         from vnpy_bridge.database import init_db, save_picks
         init_db()
         result = get_picks(date, top_n=top_n)
@@ -215,7 +215,7 @@ def step_performance(date: str = Query(None)):
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from performance import update, record_picks, get_summary
-        from stock_picker import get_picks as gp
+        from sector_enhanced_picks import get_picks as gp
         pr = gp(date, top_n=5)
         picks_recorded = 0
         if pr:
