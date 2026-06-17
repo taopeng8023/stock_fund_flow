@@ -412,127 +412,126 @@ def load_sector_multiday(date_str):
 def score_candidates(candidates, price_history, sector_flows,
                      sector_freshness, stock_multiday):
     """
-    评分维度（主力介入 + 趋势向上 + 刚启动 + 未透支）:
-      1. 主力资金强度 (35%): 主力净流入 + 占比 + 超大单质量
-      2. 趋势确认 (25%): 量价配合 + 主力控盘 + 非超跌
-      3. 启动信号 (25%): 板块刚启动 + 个股资金加速度（历史累计）
+    评分维度（回溯优化版）:
+      1. 启动信号 (35%): 板块刚启动 + 个股资金加速度 — 回溯最强预测因子
+      2. 主力资金强度 (30%): 主力净流入 + 占比 + 超大单质量
+      3. 趋势确认 (15%): 仅量价确认（不含涨跌幅，避免与启动信号重叠）
       4. 板块共振 (10%): 所属板块今日资金强度
-      5. 位置健康 (5%):  不在超跌区也不在高位
+      5. 位置健康 (10%): 不在超跌区也不在高位
+      特殊调整: 沉默吸筹 +0.05 / 高涨幅透支 -0.08
     """
     if not candidates:
         return []
 
     f62_vals = [_to_float(s.get("f62")) for s in candidates]
     f184_vals = [_to_float(s.get("f184")) for s in candidates]
-    f204_vals = [_to_float(s.get("f204")) for s in candidates]
 
     scored = []
     for s in candidates:
         code = s.get("f12", "")
+        md = stock_multiday.get(code, {})
+        f204_calc = md.get("f62_5d", 0.0)
+        f205_calc = md.get("f62_10d", 0.0)
+        f3 = _to_float(s.get("f3"))
         f62 = _to_float(s.get("f62"))
         f184 = _to_float(s.get("f184"))
-        f72 = _to_float(s.get("f72"))
         f66 = _to_float(s.get("f66"))
-        # 历史累计（从 fund_flow.json 计算，非 API 字段）
-        md = stock_multiday.get(code, {})
-        f204_calc = md.get("f62_5d", 0.0)   # 前5日累计主力净流入
-        f205_calc = md.get("f62_10d", 0.0)  # 前10日累计
-        f3 = _to_float(s.get("f3"))
-        f8 = _to_float(s.get("f8"))
         f10 = _to_float(s.get("f10"))
         price = _to_float(s.get("f2"))
         sector_code = s.get("_sector_code", "")
         closes = price_history.get(code, [])
 
-        # ── 1. 主力资金强度 (35%) ──
+        # ── 1. 启动信号 (35%, 回溯最强预测因子) ──
+        score_start = 0.0
+
+        # 板块刚启动
+        sect_fresh = sector_freshness.get(sector_code, 0.5)
+        score_start += sect_fresh * 0.40
+
+        # 个股资金加速度
+        if f62 > 0:
+            total_5d = abs(f204_calc) + f62
+            if total_5d > 0:
+                today_ratio_5d = f62 / total_5d
+                if 0.35 <= today_ratio_5d <= 0.55:
+                    score_start += 0.35
+                elif 0.25 <= today_ratio_5d < 0.35:
+                    score_start += 0.25
+                elif 0.55 < today_ratio_5d <= 0.70:
+                    score_start += 0.20
+                elif today_ratio_5d > 0.70:
+                    score_start += 0.10
+            else:
+                score_start += 0.15
+        else:
+            score_start += 0.15
+
+        # 5日加速
+        total_10d = abs(f205_calc) + f62 + abs(f204_calc)
+        if total_10d > 0:
+            ratio_5d_10d = abs(f62 + f204_calc) / total_10d
+            if ratio_5d_10d > 0.50 and (f62 + f204_calc) > 0:
+                score_start += 0.25
+
+        score_start = max(0.1, min(1.0, score_start))
+
+        # ── 2. 主力资金强度 (30%) ──
         s_flow = _pct_rank(f62_vals, f62)
         s_ratio = _pct_rank(f184_vals, f184)
         if f62 > 0:
             super_ratio = max(0.0, min(1.0, f66 / f62))
         else:
             super_ratio = 0.0
-        score_capital = s_flow * 0.35 + s_ratio * 0.35 + super_ratio * 0.30
+        score_capital = s_flow * 0.40 + s_ratio * 0.35 + super_ratio * 0.25
 
-        # ── 2. 趋势确认 (25%) ──
+        # ── 3. 趋势确认 (15%, 仅量价确认) ──
         score_trend = 0.0
-        if 2.0 <= f3 <= 6.0:
-            score_trend += 0.30
-        elif 0.5 <= f3 < 2.0:
-            score_trend += 0.20
-        elif 6.0 < f3 < 8.0:
+        if f10 >= 2.5:
+            score_trend += 0.35
+        elif f10 >= 1.5:
+            score_trend += 0.25
+        elif f10 >= 1.2:
             score_trend += 0.15
-        if f10 >= 2.0:
-            score_trend += 0.20
-        elif f10 >= 1.3:
-            score_trend += 0.12
         if f184 >= 5.0:
-            score_trend += 0.20
+            score_trend += 0.35
         elif f184 >= 3.0:
-            score_trend += 0.12
+            score_trend += 0.25
+        elif f184 >= 1.5:
+            score_trend += 0.15
         short_trend = _calc_short_trend(closes)
-        is_bouncing = _detect_oversold_bounce(closes, f3)
-        if short_trend > 0.03 and not is_bouncing:
-            score_trend += 0.20
-        elif short_trend > 0 and not is_bouncing:
-            score_trend += 0.10
-        elif is_bouncing:
-            score_trend -= 0.30
-        if closes and len(closes) >= 5:
-            recent_drop = (closes[0] - closes[4]) / closes[4] if closes[4] > 0 else 0
-            if recent_drop < -0.08:
-                score_trend -= 0.25
+        if short_trend > 0.02:
+            score_trend += 0.15
+        elif short_trend > 0:
+            score_trend += 0.08
+        if _detect_oversold_bounce(closes, f3):
+            score_trend -= 0.25
         score_trend = max(0.0, min(1.0, score_trend))
-
-        # ── 3. 启动信号 (25%): 板块刚启动 + 个股资金加速 ──
-        score_start = 0.0
-
-        # 板块启动信号: 今日排名 vs 5日/10日排名
-        sect_fresh = sector_freshness.get(sector_code, 0.5)
-        score_start += sect_fresh * 0.45
-
-        # 个股资金加速度: 今日流入 vs 前5日/10日累计（从历史数据计算）
-        if f62 > 0:
-            total_5d = abs(f204_calc) + f62  # 今日 + 前5日
-            if total_5d > 0:
-                today_ratio_5d = f62 / total_5d
-                if 0.30 <= today_ratio_5d <= 0.60:
-                    score_start += 0.30   # 今日占比适中，新资金入场
-                elif 0.20 <= today_ratio_5d < 0.30:
-                    score_start += 0.20
-                elif today_ratio_5d > 0.60:
-                    score_start += 0.15   # 太集中可能一日游
-            else:
-                score_start += 0.15
-        else:
-            score_start += 0.15
-
-        # 5日 vs 10日 加速: 近5日流入占比 > 50% → 近期加速
-        total_10d = abs(f205_calc) + f62 + abs(f204_calc)
-        if total_10d > 0:
-            recent_5d = f62 + f204_calc  # 近5日（今日+前5日）
-            ratio_5d_10d = abs(recent_5d) / total_10d
-            if ratio_5d_10d > 0.55 and recent_5d > 0:
-                score_start += 0.25   # 近5日占比大，资金在加速
-
-        score_start = max(0.1, min(1.0, score_start))
 
         # ── 4. 板块共振 (10%) ──
         score_sector = sector_flows.get(sector_code, 0.5)
 
-        # ── 5. 位置健康 (5%) ──
+        # ── 5. 位置健康 (10%) ──
         score_position = _calc_position_score(price, closes)
 
         # ── 综合 ──
-        total = (score_capital * 0.35 + score_trend * 0.25 +
-                 score_start * 0.25 + score_sector * 0.10 +
-                 score_position * 0.05)
+        total = (score_start * 0.35 + score_capital * 0.30 +
+                 score_trend * 0.15 + score_sector * 0.10 +
+                 score_position * 0.10)
+
+        # ── 特殊调整 ──
+        # 沉默吸筹: chg < 3% + 资金强
+        if f3 < 3.0 and score_capital > 0.6:
+            total += 0.05
+        # 高涨幅透支: chg > 6.5% + 资金非极强
+        if f3 > 6.5 and score_capital < 0.9:
+            total -= 0.08
 
         scored.append({
             **s,
             "_score": round(total, 4),
+            "_score_start": round(score_start, 3),
             "_score_capital": round(score_capital, 3),
             "_score_trend": round(score_trend, 3),
-            "_score_start": round(score_start, 3),
             "_score_sector": round(score_sector, 3),
             "_score_position": round(score_position, 3),
             "_f62_5d": f204_calc,
@@ -632,7 +631,7 @@ def print_results(limit_up_pool, scored_candidates, excluded_pool, top_n=10, mar
     print(f"  🔥 板块成分股精选（主板 · 次日溢价 · 非涨停）")
     print(f"  {date_str}")
     print(f"{'═' * 90}")
-    print(f"  {'排名':<4} {'代码':<8} {'名称':<8} {'得分':<6} {'涨跌%':<7} {'主力流入':<12} {'占比%':<6} {'价格位置':<8} {'趋势':<6} {'板块共振':<8}")
+    print(f"  {'排名':<4} {'代码':<8} {'名称':<8} {'得分':<6} {'涨跌%':<7} {'主力流入':<12} {'占比%':<6} {'启动':<6} {'资金':<6} {'板块':<6}")
     print(f"  {'─' * 85}")
 
     for i, s in enumerate(scored_candidates[:top_n], 1):
@@ -642,16 +641,15 @@ def print_results(limit_up_pool, scored_candidates, excluded_pool, top_n=10, mar
         chg = _to_float(s.get("f3"))
         f62 = _to_float(s.get("f62"))
         f184 = _to_float(s.get("f184"))
-        pos = s.get("_score_position", 0)
-        trend = s.get("_score_trend", 0)
+        start_s = s.get("_score_start", 0)
+        capital_s = s.get("_score_capital", 0)
         sector_s = s.get("_score_sector", 0)
 
-        pos_bar = _pos_bar(pos)
-        trend_icon = "↗" if trend > 0.6 else ("→" if trend > 0.4 else "↘")
+        start_icon = "🔥" if start_s > 0.6 else ("✨" if start_s > 0.4 else "  ")
 
         print(f"  {i:<4} {code:<8} {name:<8s} {score:.4f} "
               f"{chg:>+6.2f}% {_fmt_yi(f62):>12} {f184:>5.1f}% "
-              f"{pos:.2f}{pos_bar:<4} {trend_icon:<6} {sector_s:.3f}")
+              f"{start_s:.2f}{start_icon:<4} {capital_s:.2f} {sector_s:.3f}")
 
     if not scored_candidates:
         print(f"    无符合条件的候选股")
@@ -932,7 +930,7 @@ def run(date_str=None, top_sectors=5, top_picks=10):
 
     print(f"\n{'═' * 70}")
     print(f"  板块成分股精选 [{date_str}]")
-    print(f"  策略: 主板 · 次日溢价 · 非涨停 · 低位 · 上升趋势")
+    print(f"  策略: 主板 · 启动信号(35%) · 主力(30%) · 趋势(15%) · 板块(10%) · 位置(10%)")
     print(f"{'═' * 70}\n")
 
     # 1. 获取 Top N 行业板块代码
