@@ -377,23 +377,29 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
 
 
 def _save_sector_stocks_csv(stocks, sector_code, sector_name, sector_dir, date_str, file_ts):
-    """保存板块成分股排行CSV: 今日排名 + 5日排名 + 10日排名"""
+    """保存板块成分股排行CSV: 今日/5日/10日 三套排名+资金流数值"""
     import csv
     sorted_stocks = sorted(stocks, key=lambda s: _to_float(s.get("f62")), reverse=True)
     path = os.path.join(sector_dir, f"sector_stocks_{sector_code}_{date_str}_{file_ts}.csv")
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["今日排名", "5日排名", "10日排名", "代码", "名称",
-                     "涨跌幅", "最新价", "主力净流入", "主力占比",
-                     "超大单净流入", "大单净流入", "换手率", "量比", "总市值"])
+        w.writerow([
+            "今日排名", "今日主力净流入",
+            "5日排名", "5日主力净流入",
+            "10日排名", "10日主力净流入",
+            "代码", "名称",
+            "涨跌幅", "最新价", "主力占比",
+            "超大单净流入", "大单净流入",
+            "换手率", "量比", "总市值",
+        ])
         for i, s in enumerate(sorted_stocks, 1):
             w.writerow([
-                i,
-                s.get("_rank_5d", ""),
-                s.get("_rank_10d", ""),
+                i, _to_float(s.get("f62")),
+                s.get("_rank_5d", ""), _to_float(s.get("f164")),
+                s.get("_rank_10d", ""), _to_float(s.get("f174")),
                 s.get("f12", ""), s.get("f14", ""),
                 _to_float(s.get("f3")), _to_float(s.get("f2")),
-                _to_float(s.get("f62")), _to_float(s.get("f184")),
+                _to_float(s.get("f184")),
                 _to_float(s.get("f66")), _to_float(s.get("f72")),
                 _to_float(s.get("f8")), _to_float(s.get("f10")),
                 _to_float(s.get("f20")),
