@@ -91,8 +91,8 @@ class DashboardState(rx.State):
                 self.risk_level = r.get("level", "-")
                 self.risk_alerts = r.get("alerts", [])[:5]
                 p = d.get("position", {})
-                self.position_raw = f"{p.get('raw', 0):.0%}"
-                self.position_adj = f"{p.get('adjusted', 0):.0%}"
+                self.position_raw = f"{p.get('base', 0)}%"
+                self.position_adj = f"{p.get('adjusted', 0)}%"
                 self.position_advice = p.get("advice", "")
                 self.diag_loaded = True
         except Exception as e:
