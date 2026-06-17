@@ -611,6 +611,34 @@ def score_candidates(candidates, price_history, sector_flows,
         elif pct_5d < 0.30:
             total += 0.03
 
+        # ── P21: BIAS乖离率反转（业界Sharpe 2.99）──
+        if closes and len(closes) >= 5:
+            ma5 = sum(closes[:5]) / 5
+            bias = (price - ma5) / ma5 * 100
+            if -3 < bias < 0 and f3 > 0:  # 微幅负乖离+今日收阳
+                total += 0.04  # 回踩均线反弹
+            elif bias < -8:  # 深度超卖
+                total += 0.06 if f62 > 0 else 0.02  # 超卖反弹, 有主力更好
+
+        # ── P22: 残差动量增强（业界多头年化23.9%）──
+        if closes and len(closes) >= 10:
+            stock_chg_10d = (closes[0] - closes[9]) / closes[9] * 100 if closes[9] > 0 else 0
+            # 独立于大盘的温和上涨
+            if 3 < stock_chg_10d < 15:
+                total += 0.04
+
+        # ── P23: 小单极端情绪（散户恐慌=买点, 散户贪婪=卖点）──
+        if f87 > 40 and f3 < 2:  # 小单占比>40%但股价不涨 = 散户接盘
+            total -= 0.06
+        elif f87 < 5 and f62 > 0 and f3 > 0:  # 小单占比<5% = 主力完全控盘
+            total += 0.03
+
+        # ── P24: 环境自适应（结合情绪周期调整）──
+        if sentiment_bonus > 0.03:  # 冰点/发酵期
+            total += 0.02  # 顺势加码
+        elif sentiment_bonus < -0.03:  # 高潮/退潮期
+            total -= 0.03  # 逆势谨慎
+
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
             total -= 0.08
