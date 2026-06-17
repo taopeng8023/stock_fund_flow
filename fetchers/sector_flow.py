@@ -468,6 +468,37 @@ def _print_top_large(stocks, n=5):
 
 # ── 主入口 ──
 
+
+def _save_multiday_rankings(rows, date_str):
+    """导出行业板块今日/5日/10日 三份独立排行CSV"""
+    import csv
+    date_dir = get_date_dir(date_str)
+    
+    # 按三个维度排序
+    rankings = [
+        ("f62", "industry_flow.csv", "今日排行"),
+        ("f204", "industry_flow_5d.csv", "5日排行"),
+        ("f205", "industry_flow_10d.csv", "10日排行"),
+    ]
+    for fid, fname, label in rankings:
+        sorted_rows = sorted(rows, key=lambda r: _to_float(r.get(fid)), reverse=True)
+        path = os.path.join(date_dir, fname)
+        headers = ["排名", "代码", "名称", "主力净流入", "主力占比", "5日主力净流入", "10日主力净流入"]
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(headers)
+            for i, r in enumerate(sorted_rows, 1):
+                w.writerow([
+                    i,
+                    r.get("f12", ""), r.get("f14", ""),
+                    _to_float(r.get("f62")),
+                    _to_float(r.get("f184")),
+                    _to_float(r.get("f204")),
+                    _to_float(r.get("f205")),
+                ])
+        print(f"  {label}: {os.path.basename(path)} ({len(sorted_rows)} 条)")
+
+
 def fetch(date_str=None, top_detail_n=5):
     """获取行业板块 + 概念板块资金流，钻取 top N 行业成分股大单详情"""
     results = {}
@@ -479,6 +510,7 @@ def fetch(date_str=None, top_detail_n=5):
             save_data(rows, filename, CSV_FIELDS, CSV_HEADERS, date_str)
         results[filename] = rows
         if filename == "industry_flow":
+            _save_multiday_rankings(rows, date_str)
             industry_rows = rows
 
     # ── 数据验真 ──
