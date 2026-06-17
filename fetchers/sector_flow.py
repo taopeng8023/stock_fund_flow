@@ -34,7 +34,7 @@ CSV_HEADERS = ["代码", "名称", "主力净流入", "主力占比",
 
 # ── 成分股级别字段 ──
 # f164=5日主力净流入, f174=10日主力净流入（个股适用）
-STOCK_DETAIL_FIELDS = ("f12,f14,f2,f3,f8,f10,f20,f62,f184,"
+STOCK_DETAIL_FIELDS = ("f12,f14,f2,f3,f8,f10,f15,f16,f17,f18,f20,f62,f184,"
                        "f66,f69,f72,f75,f78,f81,f84,f87,"
                        "f164,f174,f100,f124,"
                        "f165,f166,f167")
@@ -395,12 +395,15 @@ def _save_sector_stocks_csv(stocks, sector_code, sector_name, sector_dir, date_s
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow([
-            # 今日
+            # 今日排名+资金流
             "今日排名", "今日主力净流入", "今日超大单净流入", "今日大单净流入",
+            "今日中单净流入", "今日小单净流入", "今日主力占比",
             # 5日
             "5日排名", "5日主力净流入", "5日超大单净流入", "5日大单净流入",
             # 10日
             "10日排名", "10日主力净流入", "10日超大单净流入", "10日大单净流入",
+            # OHLC (P25隔夜分解+P26VWAP用)
+            "开盘价", "最高价", "最低价", "昨收",
             # 基础信息
             "代码", "名称", "涨跌幅", "最新价",
             "换手率", "量比", "总市值",
@@ -408,8 +411,10 @@ def _save_sector_stocks_csv(stocks, sector_code, sector_name, sector_dir, date_s
         for i, s in enumerate(sorted_stocks, 1):
             w.writerow([
                 i, _to_float(s.get("f62")), _to_float(s.get("f66")), _to_float(s.get("f72")),
+                _to_float(s.get("f78")), _to_float(s.get("f84")), _to_float(s.get("f184")),
                 s.get("_rank_5d", ""), _to_float(s.get("f164")), _to_float(s.get("f166")), _to_float(s.get("f168")),
                 s.get("_rank_10d", ""), _to_float(s.get("f174")), _to_float(s.get("f176")), _to_float(s.get("f178")),
+                _to_float(s.get("f17")), _to_float(s.get("f15")), _to_float(s.get("f16")), _to_float(s.get("f18")),
                 s.get("f12", ""), s.get("f14", ""),
                 _to_float(s.get("f3")), _to_float(s.get("f2")),
                 _to_float(s.get("f8")), _to_float(s.get("f10")),
