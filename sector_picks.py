@@ -72,50 +72,47 @@ def load_sector_stocks(sector_codes, date_str=None):
 
 
 def _load_sector_names(date_str):
-    """从 industry_flow.json 加载 BK代码→板块名称 映射"""
-    rows = load_json(date_str, "industry_flow")
-    if rows:
-        return {r.get("f12", ""): r.get("f14", "") for r in rows}
-    # 回退: 从 sector_top5_detail.json
-    summary_path = os.path.join(DATA_ROOT, date_str, "sector_top5_detail.json")
-    if os.path.exists(summary_path):
-        with open(summary_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return {s["code"]: s["name"] for s in data.get("top_sectors", [])}
-    return {}
-
-
-def load_sector_top_codes(date_str, top_n=5):
-    """从 sector_top5_detail.json 或 industry_flow.json 获取主力净流入 Top N 板块代码"""
-    # 找最新的 sector_top5_detail_*.json
-    import glob
+    """从 industry_flow_*.csv 加载 BK代码→板块名称 映射"""
+    import glob, csv
     patterns = [
-        os.path.join(DATA_ROOT, date_str, "sectors", "sector_top5_detail_*.json"),
-        os.path.join(DATA_ROOT, date_str, "sector_top5_detail_*.json"),
-        os.path.join(DATA_ROOT, date_str, "sectors", "sector_top5_detail.json"),
-        os.path.join(DATA_ROOT, date_str, "sector_top5_detail.json"),
+        os.path.join(DATA_ROOT, date_str, "industry_flow_*.csv"),
+        os.path.join(DATA_ROOT, date_str, "industry_flow.csv"),
     ]
     all_matches = []
     for pat in patterns:
         all_matches.extend(glob.glob(pat))
-    summary_path = sorted(all_matches, key=os.path.getmtime, reverse=True)[0] if all_matches else ""
+    csv_path = sorted(all_matches, key=os.path.getmtime, reverse=True)[0] if all_matches else ""
+    if csv_path and os.path.exists(csv_path):
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            return {r["代码"]: r["名称"] for r in csv.DictReader(f)}
+    return {}
+
+
+def load_sector_top_codes(date_str, top_n=5):
+    """从 industry_flow_*.csv 获取主力净流入 Top N 板块代码"""
+    import glob, csv
+    # 找最新的 industry_flow_*.csv
+    patterns = [
+        os.path.join(DATA_ROOT, date_str, "industry_flow_*.csv"),
+        os.path.join(DATA_ROOT, date_str, "industry_flow.csv"),
+    ]
+    all_matches = []
+    for pat in patterns:
+        all_matches.extend(glob.glob(pat))
+    csv_path = sorted(all_matches, key=os.path.getmtime, reverse=True)[0] if all_matches else ""
     codes = []
-    if summary_path and os.path.exists(summary_path):
-        with open(summary_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for s in data.get("top_sectors", [])[:top_n]:
-            codes.append(s["code"])
-            print(f"  Top板块: {s['code']} {s['name']} 主力{s['sector_main_flow_yi']}亿")
+    if csv_path and os.path.exists(csv_path):
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        # 按主力净流入降序取 top N
+        sorted_rows = sorted(rows, key=lambda r: _to_float(r.get("主力净流入")), reverse=True)
+        for r in sorted_rows[:top_n]:
+            code = r.get("代码", "")
+            codes.append(code)
+            flow_yi = _to_float(r.get("主力净流入")) / 1e8
+            print(f"  Top板块: {code} {r.get('名称','')} 主力{flow_yi:.2f}亿")
     else:
-        # 回退: 从 industry_flow.json 按 f62 排序取 top N
-        rows = load_json(date_str, "industry_flow")
-        if rows:
-            sorted_rows = sorted(rows, key=lambda r: _to_float(r.get("f62")), reverse=True)
-            for r in sorted_rows[:top_n]:
-                code = r.get("f12", "")
-                codes.append(code)
-                print(f"  Top板块: {code} {r.get('f14','')} "
-                      f"主力{_to_float(r.get('f62'))/1e8:.2f}亿")
+        print(f"  ✗ 未找到行业板块CSV: data/{date_str}/industry_flow_*.csv")
 
     return codes
 
@@ -355,25 +352,37 @@ def load_stock_multiday(date_str):
 
 def load_sector_multiday(date_str):
     """加载行业板块今日/5日/10日主力净流入，计算排名变化"""
-    rows = load_json(date_str, "industry_flow")
+    import glob, csv
+    patterns = [
+        os.path.join(DATA_ROOT, date_str, "industry_flow_*.csv"),
+        os.path.join(DATA_ROOT, date_str, "industry_flow.csv"),
+    ]
+    all_matches = []
+    for pat in patterns:
+        all_matches.extend(glob.glob(pat))
+    csv_path = sorted(all_matches, key=os.path.getmtime, reverse=True)[0] if all_matches else ""
+    if not csv_path:
+        return {}, {}, {}
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
     if not rows:
-        return {}, {}
+        return {}, {}, {}
 
-    # 按 f62 排名（今日）、f204 排名（5日累计）、f205 排名（10日累计）
-    by_f62 = sorted(rows, key=lambda r: _to_float(r.get("f62")), reverse=True)
-    by_f204 = sorted(rows, key=lambda r: _to_float(r.get("f164")), reverse=True)
-    by_f205 = sorted(rows, key=lambda r: _to_float(r.get("f174")), reverse=True)
+    # 按主力净流入排名
+    by_f62 = sorted(rows, key=lambda r: _to_float(r.get("主力净流入")), reverse=True)
+    by_5d = sorted(rows, key=lambda r: _to_float(r.get("5日主力净流入")), reverse=True)
+    by_10d = sorted(rows, key=lambda r: _to_float(r.get("10日主力净流入")), reverse=True)
 
-    rank_today = {r.get("f12"): i + 1 for i, r in enumerate(by_f62)}
-    rank_5d = {r.get("f12"): i + 1 for i, r in enumerate(by_f204)}
-    rank_10d = {r.get("f12"): i + 1 for i, r in enumerate(by_f205)}
+    rank_today = {r.get("代码"): i + 1 for i, r in enumerate(by_f62)}
+    rank_5d = {r.get("代码"): i + 1 for i, r in enumerate(by_5d)}
+    rank_10d = {r.get("代码"): i + 1 for i, r in enumerate(by_10d)}
     total = len(rows)
 
     # 板块启动信号 + 持续性
     sector_freshness = {}
     sector_persistence = {}
     for r in rows:
-        code = r.get("f12", "")
+        code = r.get("代码", "")
         r_today = rank_today.get(code, total)
         r_5d = rank_5d.get(code, total)
         r_10d = rank_10d.get(code, total)
