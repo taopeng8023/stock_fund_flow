@@ -930,8 +930,81 @@ def _gen_reasons_list(s):
 # 主流程
 # ============================================================
 
+def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
+    """程序化接口：返回精选结果 dict（供 pipeline/web_api 调用）"""
+    if date_str is None:
+        date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
+
+    sector_codes = load_sector_top_codes(date_str, top_sectors)
+    if not sector_codes:
+        return {"error": "无板块数据", "date": date_str}
+
+    stocks = load_sector_stocks(date_str, sector_codes)
+    if not stocks:
+        return {"error": "无成分股数据", "date": date_str}
+
+    codes_set = {s.get("f12", "") for s in stocks}
+    price_history = load_past_closes(date_str, codes_set)
+    limit_up, candidates, excluded = split_stocks(stocks, price_history)
+
+    sector_flows = {}
+    for i, code in enumerate(sector_codes):
+        sector_flows[code] = 0.5 + (top_sectors - i) * 0.1
+
+    sector_freshness, _ = load_sector_multiday(date_str)
+    stock_multiday = load_stock_multiday(date_str)
+    scored = score_candidates(candidates, price_history, sector_flows,
+                              sector_freshness, stock_multiday)
+    for i, s in enumerate(scored):
+        s["_rank"] = i + 1
+
+    picks = []
+    for s in scored[:top_picks]:
+        picks.append({
+            "rank": s.get("_rank", 0),
+            "code": s.get("f12", ""),
+            "name": s.get("f14", ""),
+            "score": s.get("_score", 0),
+            "chg_pct": round(_to_float(s.get("f3")), 2),
+            "price": round(_to_float(s.get("f2")), 2),
+            "main_flow": _to_float(s.get("f62")),
+            "main_ratio": round(_to_float(s.get("f184")), 1),
+            "large_flow": _to_float(s.get("f72")),
+            "turnover": round(_to_float(s.get("f8")), 1),
+            "vol_ratio": round(_to_float(s.get("f10")), 2),
+            "mcap_yi": round(_to_float(s.get("f20")) / 1e8, 2),
+            "score_start": s.get("_score_start", 0),
+            "score_capital": s.get("_score_capital", 0),
+            "score_trend": s.get("_score_trend", 0),
+            "score_sector": s.get("_score_sector", 0),
+            "sector_name": s.get("_sector_name", ""),
+        })
+
+    limit_up_list = []
+    for s in sorted(limit_up, key=lambda x: _to_float(x.get("f62")), reverse=True):
+        limit_up_list.append({
+            "code": s.get("f12", ""),
+            "name": s.get("f14", ""),
+            "chg_pct": round(_to_float(s.get("f3")), 2),
+            "main_flow": _to_float(s.get("f62")),
+            "main_ratio": round(_to_float(s.get("f184")), 1),
+            "turnover": round(_to_float(s.get("f8")), 1),
+            "sector_name": s.get("_sector_name", ""),
+        })
+
+    return {
+        "date": date_str,
+        "top_sectors": top_sectors,
+        "candidates_count": len(scored),
+        "limit_up_count": len(limit_up),
+        "excluded_count": len(excluded),
+        "picks": picks,
+        "limit_up": limit_up_list,
+    }
+
+
 def run(date_str=None, top_sectors=5, top_picks=10):
-    """执行板块成分股精选全流程"""
+    """执行板块成分股精选全流程（CLI 模式，含文件输出）"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
 

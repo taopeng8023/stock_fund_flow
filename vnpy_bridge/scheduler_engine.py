@@ -171,6 +171,26 @@ def job_performance():
         print(f"[scheduler] performance error: {e}")
 
 
+def job_sector_picks():
+    """板块成分股精选"""
+    _load_log()
+    date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
+    try:
+        from sector_stock_filter import get_sector_picks
+        result = get_sector_picks(date_str, top_sectors=5, top_picks=10)
+        summary = {
+            "date": date_str,
+            "candidates": result.get("candidates_count", 0),
+            "limit_up": result.get("limit_up_count", 0),
+            "top3": [f"{p['code']} {p['name']} {p['score']}" for p in result.get("picks", [])[:3]],
+        }
+        _log_execution("sector-picks", "success", summary)
+        print(f"[scheduler] sector-picks: {result.get('candidates_count', 0)} candidates")
+    except Exception as e:
+        _log_execution("sector-picks", "failed", error=e)
+        print(f"[scheduler] sector-picks error: {e}")
+
+
 def job_full_pipeline():
     """一键执行全管线（按顺序）"""
     _load_log()
@@ -180,6 +200,7 @@ def job_full_pipeline():
         ("import-data", job_import_data),
         ("diagnosis", job_diagnosis),
         ("stock-picks", job_stock_picks),
+        ("sector-picks", job_sector_picks),
         ("performance", job_performance),
     ]
     results = {}
@@ -202,7 +223,8 @@ JOB_DEFS = [
     {"id": "diagnosis",    "name": "③ 盘面诊断",   "desc": "市场宽度/资金流/板块/北向/情绪/风险/仓位", "fn": job_diagnosis},
     {"id": "stock-picks",  "name": "④ 多因子选股", "desc": "24因子模型全市场打分，输出TOP 5精选个股", "fn": job_stock_picks},
     {"id": "performance",  "name": "⑤ 绩效追踪",   "desc": "记录当日选股 + 用今日数据回测历史选股", "fn": job_performance},
-    {"id": "run-all",      "name": "一键执行全管线", "desc": "按顺序执行上述5个步骤", "fn": job_full_pipeline},
+    {"id": "sector-picks", "name": "⑥ 板块精选",   "desc": "Top N 行业成分股启动信号评分, 输出主板候选", "fn": job_sector_picks},
+    {"id": "run-all",      "name": "一键执行全管线", "desc": "按顺序执行上述6个步骤", "fn": job_full_pipeline},
 ]
 
 

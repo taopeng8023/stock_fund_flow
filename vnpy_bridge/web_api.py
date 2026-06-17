@@ -246,6 +246,73 @@ def trigger_pipeline(date: str = Query(None)):
     return {"success": False, "error": "执行失败"}
 
 
+# ── 板块成分股精选 ──
+
+@api_router.get("/sector_picks")
+def sector_picks(date: str = Query(None), top_sectors: int = Query(5), top: int = Query(10)):
+    """板块成分股精选: Top N 行业 → 成分股 → 启动信号评分"""
+    if date is None:
+        from datetime import datetime as dt
+        from fetchers.base import BJS_TZ
+        date = dt.now(BJS_TZ).strftime("%Y%m%d")
+    try:
+        from sector_stock_filter import get_sector_picks
+        result = get_sector_picks(date, top_sectors, top)
+        return {"success": True, **result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@api_router.get("/backtest/run")
+def backtest_run(pick_date: str = Query(...), eval_date: str = Query(None)):
+    """运行回溯: 用 eval_date 数据验证 pick_date 选股"""
+    try:
+        from backtest import run as backtest_run_fn
+        result = backtest_run_fn(pick_date, eval_date)
+        return {"success": True, "total": len(result) if result else 0}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@api_router.get("/backtest/summary")
+def backtest_summary(pick_date: str = Query(...), eval_date: str = Query(...)):
+    """获取回溯汇总 JSON"""
+    import json, os
+    from fetchers.base import DATA_ROOT
+    path = os.path.join(DATA_ROOT, "backtest", f"summary_{pick_date}_{eval_date}.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return {"success": True, "summary": json.load(f)}
+    return {"success": False, "error": "回溯文件不存在"}
+
+
+@api_router.get("/data/health")
+def data_health(date: str = Query(None)):
+    """数据健康检查: 指定日期的数据文件完整性"""
+    import os
+    from fetchers.base import DATA_ROOT, BJS_TZ
+    if date is None:
+        from datetime import datetime as dt
+        date = dt.now(BJS_TZ).strftime("%Y%m%d")
+    date_dir = os.path.join(DATA_ROOT, date)
+    if not os.path.isdir(date_dir):
+        return {"success": False, "error": f"日期目录不存在: {date}"}
+
+    files = {}
+    for fname in ["fund_flow", "industry_flow", "concept_flow",
+                  "north_flow", "dragon_tiger", "analyst_forecast", "rank_ratio"]:
+        jp = os.path.join(date_dir, f"{fname}.json")
+        if os.path.exists(jp):
+            import json
+            with open(jp) as f:
+                data = json.load(f)
+            files[fname] = {"exists": True, "rows": len(data) if isinstance(data, list) else "?"}
+        else:
+            files[fname] = {"exists": False, "rows": 0}
+
+    return {"success": True, "date": date, "files": files}
+
+
 # ── Scheduler Management (APScheduler) ──
 
 @api_router.get("/scheduler/jobs")
