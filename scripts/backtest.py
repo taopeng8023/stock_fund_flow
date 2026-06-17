@@ -13,7 +13,7 @@ from datetime import datetime
 
 # 确保从项目根目录导入
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from fetchers.base import DATA_ROOT, BJS_TZ, load_json
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json
 
 
 def find_picks_file(date_str):

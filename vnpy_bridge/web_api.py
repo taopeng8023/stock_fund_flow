@@ -95,7 +95,7 @@ def performance_summary():
 def scheduler_status():
     """获取调度器状态"""
     import os
-    from fetchers.base import DATA_ROOT
+    from data_collector.fetchers.base import DATA_ROOT
     # 检查数据目录中的最新日期
     dates = sorted([d for d in os.listdir(DATA_ROOT)
                     if os.path.isdir(os.path.join(DATA_ROOT, d)) and d.isdigit()],
@@ -115,7 +115,7 @@ def step_fetch_data(date: str = Query(None)):
         date_str = date
     else:
         from datetime import datetime as dt
-        from fetchers.base import BJS_TZ
+        from data_collector.fetchers.base import BJS_TZ
         date_str = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -134,7 +134,7 @@ def step_import_data(date: str = Query(None)):
     """步骤2: 将 fund_flow.json 导入 vnpy 数据库"""
     if date is None:
         from datetime import datetime as dt
-        from fetchers.base import BJS_TZ
+        from data_collector.fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from vnpy_bridge.data_adapter import import_date
@@ -150,7 +150,7 @@ def step_diagnosis(date: str = Query(None)):
     """步骤3: 盘面诊断（市场宽度/资金流/板块/情绪/风险/仓位）"""
     if date is None:
         from datetime import datetime as dt
-        from fetchers.base import BJS_TZ
+        from data_collector.fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from market_diagnosis import get_diagnosis
@@ -183,7 +183,7 @@ def step_stock_picks(date: str = Query(None), top_n: int = Query(5)):
     """步骤4: 多因子选股"""
     if date is None:
         from datetime import datetime as dt
-        from fetchers.base import BJS_TZ
+        from data_collector.fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from sector_enhanced_picks import get_picks
@@ -211,7 +211,7 @@ def step_performance(date: str = Query(None)):
     """步骤5: 绩效追踪（记录选股 + 回测历史）"""
     if date is None:
         from datetime import datetime as dt
-        from fetchers.base import BJS_TZ
+        from data_collector.fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from performance import update, record_picks, get_summary
@@ -253,7 +253,7 @@ def sector_picks(date: str = Query(None), top_sectors: int = Query(5), top: int 
     """板块成分股精选: Top N 行业 → 成分股 → 启动信号评分"""
     if date is None:
         from datetime import datetime as dt
-        from fetchers.base import BJS_TZ
+        from data_collector.fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from sector_picks import get_sector_picks
@@ -278,7 +278,7 @@ def backtest_run(pick_date: str = Query(...), eval_date: str = Query(None)):
 def backtest_summary(pick_date: str = Query(...), eval_date: str = Query(...)):
     """获取回溯汇总 JSON"""
     import json, os
-    from fetchers.base import DATA_ROOT
+    from data_collector.fetchers.base import DATA_ROOT
     path = os.path.join(DATA_ROOT, "backtest", f"summary_{pick_date}_{eval_date}.json")
     if os.path.exists(path):
         with open(path) as f:
@@ -290,7 +290,7 @@ def backtest_summary(pick_date: str = Query(...), eval_date: str = Query(...)):
 def data_health(date: str = Query(None)):
     """数据健康检查: 指定日期的数据文件完整性"""
     import os
-    from fetchers.base import DATA_ROOT, BJS_TZ
+    from data_collector.fetchers.base import DATA_ROOT, BJS_TZ
     if date is None:
         from datetime import datetime as dt
         date = dt.now(BJS_TZ).strftime("%Y%m%d")

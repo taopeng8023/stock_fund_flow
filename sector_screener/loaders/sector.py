@@ -2,7 +2,7 @@
 import csv
 import glob
 import os
-from fetchers.base import DATA_ROOT, load_json
+from data_collector.fetchers.base import DATA_ROOT, load_json
 from sector_screener.config import to_float
 
 
@@ -49,7 +49,7 @@ def _load_sector_names(date_str):
 
 def load_sector_stocks(sector_codes, date_str=None):
     """实时从东方财富 API 拉取板块成分股 + 5日/10日排名"""
-    from fetchers.sector_flow import fetch_sector_stocks
+    from data_collector.fetchers.sector_flow import fetch_sector_stocks
     all_stocks = []
     seen = set()
     sector_names = _load_sector_names(date_str) if date_str else {}

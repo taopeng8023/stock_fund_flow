@@ -3,7 +3,7 @@ import json
 import os
 import statistics
 from datetime import datetime, timedelta
-from fetchers.base import DATA_ROOT
+from data_collector.fetchers.base import DATA_ROOT
 from sector_screener.config import to_float
 
 

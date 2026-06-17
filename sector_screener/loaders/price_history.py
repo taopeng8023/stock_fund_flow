@@ -1,7 +1,7 @@
 """历史收盘价加载 — 用于趋势检测 + 位置评分 + 技术面"""
 from collections import defaultdict
 from datetime import datetime, timedelta
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 from sector_screener.config import to_float
 
 

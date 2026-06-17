@@ -19,7 +19,7 @@ HEADERS = {
     "Referer": "https://data.eastmoney.com/report/stock.jshtml",
 }
 
-PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_ROOT = os.path.join(PROJECT_DIR, "data")
 BJS_TZ = timezone(timedelta(hours=8))
 

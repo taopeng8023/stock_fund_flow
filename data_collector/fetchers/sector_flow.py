@@ -18,7 +18,7 @@ except ImportError:
     _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _parent not in sys.path:
         sys.path.insert(0, _parent)
-    from fetchers.base import push2_get, save_data, get_date_dir
+    from data_collector.fetchers.base import push2_get, save_data, get_date_dir
 
 # ── 板块级别字段 ──
 # f164=5日主力净流入, f174=10日主力净流入, f124=时间戳

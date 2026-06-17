@@ -2,7 +2,7 @@
 import csv
 import os
 from datetime import datetime
-from fetchers.base import DATA_ROOT
+from data_collector.fetchers.base import DATA_ROOT
 from sector_screener.config import to_float
 
 _PICKS_FIELDS = [

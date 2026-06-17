@@ -8,7 +8,7 @@
 import sys
 import json
 from datetime import datetime
-from fetchers.base import DATA_ROOT, BJS_TZ, load_json
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json
 
 from sector_screener.config import WEIGHTS_BASE, WEIGHTS_BULL, WEIGHTS_BEAR
 from sector_screener.loaders import (

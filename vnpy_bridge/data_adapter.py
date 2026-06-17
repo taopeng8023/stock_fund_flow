@@ -9,7 +9,7 @@ from vnpy.trader.object import BarData
 from vnpy.trader.constant import Exchange, Interval
 from vnpy_sqlite.sqlite_database import SqliteDatabase
 
-from fetchers.base import DATA_ROOT, BJS_TZ
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ
 
 
 def code_to_vt(code):

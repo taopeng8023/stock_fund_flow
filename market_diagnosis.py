@@ -8,7 +8,7 @@ import sys
 import os
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
-from fetchers.base import DATA_ROOT, BJS_TZ, load_json, format_amount
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json, format_amount
 
 BJS = BJS_TZ
 
@@ -601,7 +601,7 @@ def main():
 
 def diagnose_sentiment(rows, date_str=None):
     """市场情绪分析：计算情绪温度计 0-100"""
-    from fetchers.market_sentiment import compute_sentiment, fetch_indices
+    from data_collector.fetchers.market_sentiment import compute_sentiment, fetch_indices
     index_data = fetch_indices()
     return compute_sentiment(rows, index_data=index_data)
 

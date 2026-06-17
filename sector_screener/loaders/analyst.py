@@ -1,5 +1,5 @@
 """分析师预测数据加载"""
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 
 
 def load_analyst_data(date_str):

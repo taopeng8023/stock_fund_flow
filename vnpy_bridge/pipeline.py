@@ -4,7 +4,7 @@ Daily pipeline orchestrator wrapping existing modules, saving results to vnpy da
 import sys
 import os
 from datetime import datetime
-from fetchers.base import BJS_TZ
+from data_collector.fetchers.base import BJS_TZ
 
 
 def run(date_str=None, db_path=None):

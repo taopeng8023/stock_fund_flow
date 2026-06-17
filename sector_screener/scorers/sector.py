@@ -1,5 +1,5 @@
 """维度四: 板块共振 — 单日排名 + 持续性 + 概念板块叠加"""
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 
 
 def score_sector(stock, context):

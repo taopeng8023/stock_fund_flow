@@ -1,6 +1,6 @@
 """全市场 fund_flow 交叉引用 — 行业内排名(f100) + 融资净买入(f168)"""
 from collections import defaultdict
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 from sector_screener.config import to_float
 
 

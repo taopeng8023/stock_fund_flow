@@ -11,7 +11,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED
 
-from fetchers.base import BJS_TZ
+from data_collector.fetchers.base import BJS_TZ
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HISTORY_FILE = os.path.join(PROJECT_DIR, ".scheduler_history.json")

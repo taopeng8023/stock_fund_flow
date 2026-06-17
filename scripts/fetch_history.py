@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from fetchers.base import DATA_ROOT, BJS_TZ
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ
 
 TRADING_CALENDAR_HOLIDAYS_2026 = {
     # 元旦
@@ -116,7 +116,7 @@ def main():
         return
 
     # 回填
-    from fetchers import fund_flow
+    from data_collector.fetchers import fund_flow
     success = 0
     failed = []
 

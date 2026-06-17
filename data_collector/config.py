@@ -1,6 +1,6 @@
 """采集器注册表 — 定义采集顺序和依赖"""
 from datetime import timezone, timedelta
-from fetchers.base import today_str, BJS_TZ
+from data_collector.fetchers.base import today_str, BJS_TZ
 
 # 采集器注册表: 按顺序执行
 # 每个采集器: {name, module, required, description}

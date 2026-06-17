@@ -1,5 +1,5 @@
 """北向资金数据加载"""
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 
 
 def load_north_flow_data(date_str):

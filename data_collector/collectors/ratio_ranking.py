@@ -1,5 +1,5 @@
 """主力占比排名采集器 — f184 降序，前300正流入"""
-from fetchers import ratio_ranking
+from data_collector.fetchers import ratio_ranking
 
 NAME = "主力占比排名"
 DESCRIPTION = "f184 降序，前300只正流入股"

@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from datetime import datetime
-from fetchers.base import DATA_ROOT, BJS_TZ, load_json
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json
 
 PERF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "performance.json")
 

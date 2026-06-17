@@ -7,7 +7,7 @@
 """
 import sys
 from datetime import datetime
-from fetchers.base import today_str, BJS_TZ
+from data_collector.fetchers.base import today_str, BJS_TZ
 from data_collector.pipeline import run_pipeline, run_with_retry
 from data_collector.output import print_summary
 

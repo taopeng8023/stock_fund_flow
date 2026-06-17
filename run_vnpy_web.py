@@ -21,7 +21,7 @@ from vnpy_bridge.database import init_db
 from vnpy_bridge.web_api import api_router
 from vnpy_bridge.scheduler_engine import start_scheduler, stop_scheduler
 
-from fetchers.base import DATA_ROOT, BJS_TZ
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(PROJECT_DIR, ".vntrader", "database.db")

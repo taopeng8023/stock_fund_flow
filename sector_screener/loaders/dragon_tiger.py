@@ -1,6 +1,6 @@
 """龙虎榜数据加载"""
 from datetime import datetime, timedelta
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 
 
 def load_dragon_tiger_data(date_str):

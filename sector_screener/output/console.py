@@ -7,7 +7,7 @@ def print_results(limit_up_pool, scored_candidates, excluded_pool,
                   top_n=10, regime="range", weights=None):
     """格式化输出精选结果"""
     from datetime import datetime
-    from fetchers.base import BJS_TZ
+    from data_collector.fetchers.base import BJS_TZ
     date_str = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
     regime_labels = {"bull": "🐂 牛市", "bear": "🐻 熊市", "range": "📊 震荡市"}
     regime_label = regime_labels.get(regime, regime)

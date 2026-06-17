@@ -1,5 +1,5 @@
 """北向资金采集器 — 沪深港通市场层面资金流向"""
-from fetchers import north_flow
+from data_collector.fetchers import north_flow
 
 NAME = "北向资金"
 DESCRIPTION = "沪深港通市场层面资金流向"

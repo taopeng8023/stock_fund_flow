@@ -1,5 +1,5 @@
 """主力占比排名数据加载"""
-from fetchers.base import load_json
+from data_collector.fetchers.base import load_json
 
 
 def load_ratio_rank(date_str):

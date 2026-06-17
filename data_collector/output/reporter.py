@@ -1,7 +1,7 @@
 """采集完成汇总报告"""
 import os
 from datetime import datetime
-from fetchers.base import DATA_ROOT, BJS_TZ
+from data_collector.fetchers.base import DATA_ROOT, BJS_TZ
 
 
 def print_summary(results, date_str, aborted=False):
