@@ -1,9 +1,8 @@
 """
 选股回溯 — 用次日数据验证选股表现
 用法:
-  python backtest.py --pick=20260616                         自动取今日验证
-  python backtest.py --pick=20260616 --eval=20260617         指定验证日
-  python backtest.py --pick=20260616 --file=picks_190308.csv 指定选股文件
+  python scripts/backtest.py --pick=20260616
+  python scripts/backtest.py --pick=20260616 --eval=20260617
 """
 import csv
 import json
@@ -11,6 +10,9 @@ import os
 import sys
 import glob
 from datetime import datetime
+
+# 确保从项目根目录导入
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fetchers.base import DATA_ROOT, BJS_TZ, load_json
 
 

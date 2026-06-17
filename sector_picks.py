@@ -3,10 +3,10 @@
 策略定位: 板块共振 + 主力介入 + 低位待涨 + 排除涨停 + 涨停观察池
 
 用法:
-  python sector_stock_filter.py                    默认读取今天数据
-  python sector_stock_filter.py --date=20260616    指定日期
-  python sector_stock_filter.py --sectors=5         取前 N 个行业板块
-  python sector_stock_filter.py --top=10            输出前 N 只精选股
+  python sector_picks.py                    默认读取今天数据
+  python sector_picks.py --date=20260616    指定日期
+  python sector_picks.py --sectors=5         取前 N 个行业板块
+  python sector_picks.py --top=10            输出前 N 只精选股
 """
 import sys
 import os
@@ -794,7 +794,7 @@ def save_results(scored, limit_up, date_str, top_n=10):
             "sector_name": s.get("_sector_name", ""),
         })
 
-    json_path = os.path.join(date_dir, "sector_stock_filter.json")
+    json_path = os.path.join(date_dir, "sector_picks.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 

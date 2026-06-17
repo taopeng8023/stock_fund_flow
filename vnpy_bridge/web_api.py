@@ -256,7 +256,7 @@ def sector_picks(date: str = Query(None), top_sectors: int = Query(5), top: int 
         from fetchers.base import BJS_TZ
         date = dt.now(BJS_TZ).strftime("%Y%m%d")
     try:
-        from sector_stock_filter import get_sector_picks
+        from sector_picks import get_sector_picks
         result = get_sector_picks(date, top_sectors, top)
         return {"success": True, **result}
     except Exception as e:
@@ -267,7 +267,7 @@ def sector_picks(date: str = Query(None), top_sectors: int = Query(5), top: int 
 def backtest_run(pick_date: str = Query(...), eval_date: str = Query(None)):
     """运行回溯: 用 eval_date 数据验证 pick_date 选股"""
     try:
-        from backtest import run as backtest_run_fn
+        from scripts.backtest import run as backtest_run_fn
         result = backtest_run_fn(pick_date, eval_date)
         return {"success": True, "total": len(result) if result else 0}
     except Exception as e:

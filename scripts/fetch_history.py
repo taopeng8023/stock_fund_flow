@@ -1,13 +1,15 @@
 """
 历史数据回填 — 补全 fund_flow.json 等核心数据的历史交易日记录
 用法:
-  python fetch_history.py --start=20260501 --end=20260617    回填指定日期范围
-  python fetch_history.py --days=60                           回填最近60个交易日
-  python fetch_history.py --dry-run                           仅列出需要回填的日期
+  python scripts/fetch_history.py --start=20260501 --end=20260617
+  python scripts/fetch_history.py --days=60
+  python scripts/fetch_history.py --dry-run
 """
 import sys
 import os
 from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fetchers.base import DATA_ROOT, BJS_TZ
 
 TRADING_CALENDAR_HOLIDAYS_2026 = {

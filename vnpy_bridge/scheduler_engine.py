@@ -176,7 +176,7 @@ def job_sector_picks():
     _load_log()
     date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
     try:
-        from sector_stock_filter import get_sector_picks
+        from sector_picks import get_sector_picks
         result = get_sector_picks(date_str, top_sectors=5, top_picks=10)
         summary = {
             "date": date_str,
