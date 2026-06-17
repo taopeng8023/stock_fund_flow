@@ -581,14 +581,26 @@ def score_candidates(candidates, price_history, sector_flows,
         # ── P17: 情绪周期 — 冰点期次日反弹概率高 ──
         total += sentiment_bonus
 
-        # ── P18+P19: 板块内5日/10日排名（来自 API fid=f204/f205）──
+        # ── P18+P19+P20: 三周期共振（今日/5日/10日排名联动）──
         total_stocks = max(len(candidates), 1)
         rank_5d = _to_float(s.get("_rank_5d"))
         rank_10d = _to_float(s.get("_rank_10d"))
-        if rank_5d > 0 and rank_5d / total_stocks < 0.30:
-            total += 0.04  # P18: 5日排名在板块内前30%
-        if rank_10d > 0 and rank_10d / total_stocks < 0.30:
-            total += 0.03  # P19: 10日排名在板块内前30%
+        pct_5d = rank_5d / total_stocks if rank_5d > 0 else 0.5
+        pct_10d = rank_10d / total_stocks if rank_10d > 0 else 0.5
+        pct_today = s.get("_rank", 99) / total_stocks
+
+        # P20: 三周期全强(今日+5日+10日都在前30%) → 持续龙头 +0.06
+        if pct_today < 0.30 and pct_5d < 0.30 and pct_10d < 0.30:
+            total += 0.06
+        # P18: 近期启动(今日+5日前30%, 10日不要求) → 刚启动黄金信号 +0.08
+        elif pct_today < 0.30 and pct_5d < 0.30:
+            total += 0.08
+        # P19: 单日反弹(今日前30%但5日+10日都在后50%) → 一日游风险 -0.10
+        elif pct_today < 0.30 and pct_5d > 0.50 and pct_10d > 0.50:
+            total -= 0.10
+        # 5日单独在前30% → +0.03
+        elif pct_5d < 0.30:
+            total += 0.03
 
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
