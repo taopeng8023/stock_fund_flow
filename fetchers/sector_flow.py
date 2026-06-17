@@ -21,12 +21,12 @@ except ImportError:
     from fetchers.base import push2_get, save_data, get_date_dir
 
 # ── 板块级别字段 ──
-# f160=5日主力净流入, f174=10日主力净流入, f124=时间戳
+# f164=5日主力净流入, f174=10日主力净流入, f124=时间戳
 SECTOR_FIELDS = ("f12,f14,f2,f3,f62,f184,"
                  "f66,f69,f72,f75,f78,f81,f84,f87,"
-                 "f160,f174,f124")
+                 "f164,f174,f124")
 CSV_FIELDS = ["f12", "f14", "f62", "f184", "f66", "f69", "f72", "f75",
-              "f78", "f81", "f84", "f87", "f160", "f174"]
+              "f78", "f81", "f84", "f87", "f164", "f174"]
 CSV_HEADERS = ["代码", "名称", "主力净流入", "主力占比",
                "超大单净流入", "超大单占比", "大单净流入", "大单占比",
                "中单净流入", "中单占比", "小单净流入", "小单占比",
@@ -61,6 +61,22 @@ _BKZJ_REFERENCE = {
     "expected_total_min": 120,   # 一级行业至少 120 个
     "expected_total_max": 135,   # 一级行业至多 135 个
 }
+
+
+
+def _save_industry_csv(rows, filename_base, date_str):
+    """仅保存CSV(不生成JSON), 带时间戳"""
+    import csv
+    from datetime import datetime as dt
+    date_dir = get_date_dir(date_str)
+    ts = dt.now().strftime("%H%M%S")
+    csv_path = os.path.join(date_dir, f"{filename_base}_{ts}.csv")
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_HEADERS)
+        for row in rows:
+            writer.writerow([row.get(k, "") for k in CSV_FIELDS])
+    print(f"  {filename_base}_{ts}.csv ({len(rows)} 条)")
 
 
 def fetch_sector(fs, label, date_str):
@@ -299,7 +315,7 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
         name = sector.get("f14", "")
         main_flow = _to_float(sector.get("f62"))
         main_ratio = _to_float(sector.get("f184"))
-        flow_5d = _to_float(sector.get("f160"))
+        flow_5d = _to_float(sector.get("f164"))
         flow_10d = _to_float(sector.get("f174"))
 
         print(f"\n  [{rank}] {name}({code}) "
@@ -477,7 +493,7 @@ def _save_multiday_rankings(rows, date_str):
     # 按三个维度排序
     rankings = [
         ("f62", "industry_flow.csv", "今日排行"),
-        ("f160", "industry_flow_5d.csv", "5日排行"),
+        ("f164", "industry_flow_5d.csv", "5日排行"),
         ("f174", "industry_flow_10d.csv", "10日排行"),
     ]
     for fid, fname, label in rankings:
@@ -493,8 +509,8 @@ def _save_multiday_rankings(rows, date_str):
                     r.get("f12", ""), r.get("f14", ""),
                     _to_float(r.get("f62")),
                     _to_float(r.get("f184")),
-                    _to_float(r.get("f204")),
-                    _to_float(r.get("f205")),
+                    _to_float(r.get("f164")),
+                    _to_float(r.get("f174")),
                 ])
         print(f"  {label}: {os.path.basename(path)} ({len(sorted_rows)} 条)")
 
@@ -507,7 +523,7 @@ def fetch(date_str=None, top_detail_n=5):
     for fs, filename, label in SECTORS:
         rows = fetch_sector(fs, label, date_str)
         if rows:
-            save_data(rows, filename, CSV_FIELDS, CSV_HEADERS, date_str)
+            _save_industry_csv(rows, filename, date_str)
         results[filename] = rows
         if filename == "industry_flow":
             _save_multiday_rankings(rows, date_str)
