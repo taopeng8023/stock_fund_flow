@@ -548,22 +548,44 @@ def score_candidates(candidates, price_history, sector_flows,
         if score_capital > 0.80 and score_start > 0.70:
             total -= 0.08
 
-        # ── P10+P14: 盘中追踪 — 同股重复衰减 + 稳定性评分 ──
+        # ── P10+P14+P15: 盘中追踪 — 重复衰减 + 稳定性分级 + 排名动量 ──
         tracker = _stability_tracker.get(code, {})
         prev_ranks = tracker.get("ranks", [])
-        if prev_ranks:  # 之前批次已入选过
-            total -= 0.10  # P10: 重复入选衰减
+        appearances = len(prev_ranks)
 
-        if len(prev_ranks) >= 3:  # 出现3次以上 → 稳定
+        if prev_ranks:
+            total -= 0.10  # P10: 重复入选基础衰减
+
+        if appearances >= 5:  # 极稳定（≥5次出现）
+            import statistics
+            all_ranks = prev_ranks + [s.get("_rank", 99)]
+            try:
+                std = statistics.stdev(all_ranks)
+                if std < 2.0:
+                    total += 0.08  # P14a: 排名极稳定 ±2位
+                elif std < 3.0:
+                    total += 0.04  # P14b: 排名较稳定 ±3位
+            except statistics.StatisticsError:
+                pass
+        elif appearances >= 3:  # 较稳定（3-4次）
             import statistics
             all_ranks = prev_ranks + [s.get("_rank", 99)]
             try:
                 if statistics.stdev(all_ranks) < 2.5:
-                    total += 0.06  # P14: 排名稳定 ±2.5位以内
+                    total += 0.06  # P14c: 排名稳定 ±2.5位
             except statistics.StatisticsError:
                 pass
-        elif not prev_ranks and tracker.get("first_hour", 9) > 14:
-            total -= 0.04  # P14: 尾盘首现
+        elif appearances == 0 and tracker.get("first_hour", 9) > 14:
+            total -= 0.04  # 尾盘首现
+
+        # ── P15: 排名动量 — 最近5次排名趋势 ──
+        if appearances >= 5:
+            recent = prev_ranks[-5:]  # 最近5次
+            rank_trend = (recent[0] - recent[-1]) / 5  # +值=排名上升
+            if rank_trend > 0.5:
+                total += 0.04  # 排名持续上升
+            elif rank_trend < -0.5:
+                total -= 0.06  # 排名持续下降
 
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
