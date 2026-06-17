@@ -51,31 +51,24 @@ def load_sector_stocks(date_str, sector_codes):
     seen = set()
     sector_names = _load_sector_names(date_str)  # BK代码→中文名映射
 
-    # 优先从 sectors/ 子目录读取
+    # 优先从 sectors/ 子目录读取，取最新时间戳的文件
     sector_root = os.path.join(DATA_ROOT, date_str, "sectors")
     if not os.path.isdir(sector_root):
         sector_root = os.path.join(DATA_ROOT, date_str)
 
     for code in sector_codes:
-        candidates = [
-            os.path.join(sector_root, f"sector_detail_{code}_{date_str}.json"),
-            os.path.join(sector_root, f"sector_detail_{code}_None.json"),
-            os.path.join(DATA_ROOT, date_str, f"sector_detail_{code}_{date_str}.json"),
-            os.path.join(DATA_ROOT, date_str, f"sector_detail_{code}_None.json"),
+        import glob
+        # 查找所有匹配文件，按时间戳降序取最新
+        patterns = [
+            os.path.join(sector_root, f"sector_detail_{code}_*.json"),
+            os.path.join(DATA_ROOT, date_str, f"sector_detail_{code}_*.json"),
         ]
-        path = None
-        for p in candidates:
-            if os.path.exists(p):
-                path = p
-                break
-        if path is None:
-            import glob
-            pattern = os.path.join(sector_root, f"sector_detail_{code}_*.json")
-            matches = glob.glob(pattern)
-            if not matches:
-                pattern = os.path.join(DATA_ROOT, date_str, f"sector_detail_{code}_*.json")
-                matches = glob.glob(pattern)
-            path = matches[0] if matches else None
+        all_matches = []
+        for pat in patterns:
+            all_matches.extend(glob.glob(pat))
+        # 去重 + 按修改时间降序
+        all_matches = sorted(set(all_matches), key=os.path.getmtime, reverse=True)
+        path = all_matches[0] if all_matches else None
 
         if path is None:
             print(f"  ⚠ 板块成分股文件不存在: sector_detail_{code}_*.json")
@@ -111,13 +104,20 @@ def _load_sector_names(date_str):
 
 def load_sector_top_codes(date_str, top_n=5):
     """从 sector_top5_detail.json 或 industry_flow.json 获取主力净流入 Top N 板块代码"""
-    # 优先从 sectors/ 子目录读，fallback 到日期根目录
-    for sub in ["sectors", ""]:
-        summary_path = os.path.join(DATA_ROOT, date_str, sub, "sector_top5_detail.json")
-        if os.path.exists(summary_path):
-            break
+    # 找最新的 sector_top5_detail_*.json
+    import glob
+    patterns = [
+        os.path.join(DATA_ROOT, date_str, "sectors", "sector_top5_detail_*.json"),
+        os.path.join(DATA_ROOT, date_str, "sector_top5_detail_*.json"),
+        os.path.join(DATA_ROOT, date_str, "sectors", "sector_top5_detail.json"),
+        os.path.join(DATA_ROOT, date_str, "sector_top5_detail.json"),
+    ]
+    all_matches = []
+    for pat in patterns:
+        all_matches.extend(glob.glob(pat))
+    summary_path = sorted(all_matches, key=os.path.getmtime, reverse=True)[0] if all_matches else ""
     codes = []
-    if os.path.exists(summary_path):
+    if summary_path and os.path.exists(summary_path):
         with open(summary_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         for s in data.get("top_sectors", [])[:top_n]:

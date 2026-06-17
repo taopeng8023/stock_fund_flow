@@ -232,11 +232,12 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
     if not industry_rows:
         return {}
 
-    # 日期归一化
+    # 日期归一化 + 时间戳（一天多次采集不覆盖）
     date_dir = get_date_dir(date_str)
     if date_str is None:
         date_str = os.path.basename(date_dir)
-    # 板块输出子目录
+    from datetime import datetime as _dt
+    file_ts = _dt.now().strftime("%H%M%S")
     sector_dir = os.path.join(date_dir, "sectors")
     os.makedirs(sector_dir, exist_ok=True)
 
@@ -294,8 +295,8 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
             "top_large_stocks": _top_stocks(stocks, "f72", 10),
         }
 
-        _save_sector_summary(sector_dir, code, name, main_flow, main_ratio, stocks, date_str)
-        with open(os.path.join(sector_dir, f"sector_summary_{code}_{date_str}.json"), "w", encoding="utf-8") as f:
+        _save_sector_summary(sector_dir, code, name, main_flow, main_ratio, stocks, date_str, file_ts)
+        with open(os.path.join(sector_dir, f"sector_summary_{code}_{date_str}_{file_ts}.json"), "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
         result[code] = {"name": name, "stocks": stocks, "summary": summary}
@@ -306,31 +307,31 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
         _print_top_large(stocks, 5)
 
     # 保存 top N 汇总
-    _save_top_summary(sector_dir, result, date_str)
+    _save_top_summary(sector_dir, result, date_str, file_ts)
 
     return result
 
 
-def _save_sector_summary(date_dir, code, name, main_flow, main_ratio, stocks, date_str):
+def _save_sector_summary(date_dir, code, name, main_flow, main_ratio, stocks, date_str, file_ts):
     """保存单个板块的摘要和成分股明细（JSON + CSV 双格式，按主力净流入降序）"""
     # JSON 明细（全字段）
-    detail_path = os.path.join(date_dir, f"sector_detail_{code}_{date_str}.json")
+    detail_path = os.path.join(date_dir, f"sector_detail_{code}_{date_str}_{file_ts}.json")
     with open(detail_path, "w", encoding="utf-8") as f:
         json.dump(stocks, f, ensure_ascii=False, indent=2)
 
     # CSV 表格（选字段，按主力净流入降序，便于直观查看）
     if stocks:
-        _save_stock_csv(stocks, code, name, date_dir, date_str)
+        _save_stock_csv(stocks, code, name, date_dir, date_str, file_ts)
 
 
-def _save_stock_csv(stocks, sector_code, sector_name, date_dir, date_str):
+def _save_stock_csv(stocks, sector_code, sector_name, date_dir, date_str, file_ts):
     """导出成分股 CSV：按 f62 降序排列，包含主力/大单/中单/小单全字段"""
     import csv
 
     # 按主力净流入降序
     sorted_stocks = sorted(stocks, key=lambda s: _to_float(s.get("f62")), reverse=True)
 
-    csv_path = os.path.join(date_dir, f"sector_stocks_{sector_code}_{date_str}.csv")
+    csv_path = os.path.join(date_dir, f"sector_stocks_{sector_code}_{date_str}_{file_ts}.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
 
@@ -356,10 +357,11 @@ def _save_stock_csv(stocks, sector_code, sector_name, date_dir, date_str):
     print(f"    CSV 已保存: {os.path.basename(csv_path)} ({len(sorted_stocks)} 行)")
 
 
-def _save_top_summary(date_dir, result, date_str):
+def _save_top_summary(date_dir, result, date_str, file_ts):
     """保存 Top N 汇总 JSON"""
     all_summary = {
         "date": date_str,
+        "time": file_ts,
         "top_sectors": [
             {
                 "rank": i + 1,
@@ -378,7 +380,7 @@ def _save_top_summary(date_dir, result, date_str):
             for i, (code, info) in enumerate(result.items())
         ],
     }
-    summary_file = os.path.join(date_dir, "sector_top5_detail.json")
+    summary_file = os.path.join(date_dir, f"sector_top5_detail_{file_ts}.json")
     with open(summary_file, "w", encoding="utf-8") as f:
         json.dump(all_summary, f, ensure_ascii=False, indent=2)
     print(f"\n  ✓ Top {len(result)} 板块成分股明细已保存至 {summary_file}")
