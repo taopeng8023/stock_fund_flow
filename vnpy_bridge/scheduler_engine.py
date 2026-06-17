@@ -24,6 +24,7 @@ if not os.path.exists(HISTORY_FILE):
 
 _scheduler = None
 _execution_log = []
+_pick_cache = {}  # {date_str: pick_result} 避免重复调用 get_picks
 
 
 def _load_log():
@@ -130,6 +131,7 @@ def job_stock_picks():
         init_db()
         result = get_picks(date_str, top_n=5)
         if result:
+            _pick_cache[date_str] = result  # 缓存供绩效追踪复用
             save_picks(date_str, result["picks"], result["regime"])
             summary = [{"rank": p["rank"], "code": p["code"], "name": p["name"],
                         "score": round(p["score"], 4)} for p in result["picks"]]
@@ -148,8 +150,11 @@ def job_performance():
     date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
     try:
         from performance import update, record_picks, get_summary
-        from stock_picker import get_picks as gp
-        pr = gp(date_str, top_n=5)
+        # 优先从缓存读（job_stock_picks 已计算），避免重复调用
+        pr = _pick_cache.get(date_str)
+        if pr is None:
+            from stock_picker import get_picks as gp
+            pr = gp(date_str, top_n=5)
         recorded = 0
         if pr:
             record_picks(pr["scored"][:5], date_str)

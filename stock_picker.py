@@ -274,19 +274,21 @@ def load_multi_day_history(date_str):
             h = history[code]
             h["daily_f62"].append(f62)
 
-            # 累计正流入
-            if f62 > 0:
-                if i < 2:
-                    h["f62_3d"] += f62
-                    h["f66_3d"] += f66
+            # 累计净流入（含正负，反映真实资金方向）
+            if i < 2:
+                h["f62_3d"] += f62
+                h["f66_3d"] += f66
+                if f62 > 0:
                     h["pos_3d"] += 1
-                if i < 4:
-                    h["f62_5d"] += f62
-                    h["f66_5d"] += f66
+            if i < 4:
+                h["f62_5d"] += f62
+                h["f66_5d"] += f66
+                if f62 > 0:
                     h["pos_5d"] += 1
-                if i < 9:
-                    h["f62_10d"] += f62
-                    h["f66_10d"] += f66
+            if i < 9:
+                h["f62_10d"] += f62
+                h["f66_10d"] += f66
+                if f62 > 0:
                     h["pos_10d"] += 1
 
     print(f"  多日历史覆盖: {len(history)} 只股票")
@@ -338,13 +340,13 @@ def load_multi_day_sector_history(date_str):
                 f62 = r.get("f62", 0) or 0
 
                 h = sector_hist[name]
-                if f62 > 0:
-                    if i < 2:
-                        h["f62_3d"] += f62
-                    if i < 4:
-                        h["f62_5d"] += f62
-                    if i < 9:
-                        h["f62_10d"] += f62
+                # 累计净流入（含负值，反映真实资金方向）
+                if i < 2:
+                    h["f62_3d"] += f62
+                if i < 4:
+                    h["f62_5d"] += f62
+                if i < 9:
+                    h["f62_10d"] += f62
 
         result[source] = dict(sector_hist)
 
@@ -1241,8 +1243,15 @@ def get_picks(date_str=None, top_n=5):
     dt_data = load_dragon_tiger_data(date_str)
     north_data = load_north_flow_data(date_str)
 
-    # 市场环境检测 → 选择自适应权重
-    regime, regime_score, regime_detail = detect_market_regime(date_str, rows)
+    # 市场环境检测 → 选择自适应权重（统一使用 market_diagnosis）
+    from market_diagnosis import get_diagnosis
+    diag = get_diagnosis(date_str)
+    if diag:
+        regime = diag["regime"]["regime"]
+        regime_detail = diag
+    else:
+        # 回退: 自底向上检测
+        regime, _, regime_detail = detect_market_regime(date_str, rows)
     global WEIGHTS
     if regime == "bull":
         WEIGHTS = WEIGHTS_BULL

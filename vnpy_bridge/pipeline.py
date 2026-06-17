@@ -40,15 +40,12 @@ def run(date_str=None, db_path=None):
         results["picks"] = pick_result["picks"]
         print(f"  选股完成: {len(pick_result['picks'])} 只")
 
-    # 4. 绩效追踪（记录选股；回测需等次日数据，当日不计算next_ret）
+    # 4. 绩效追踪（复用选股结果，不再重复调用 get_picks）
     print(f"[pipeline] 绩效追踪...")
     try:
         from performance import update, record_picks
-        from stock_picker import get_picks as gp
-        pr = gp(date_str, top_n=5)
-        if pr:
-            record_picks(pr["scored"][:5], date_str)
-        # 仅在有历史待回测记录时运行 update
+        if pick_result:
+            record_picks(pick_result["scored"][:5], date_str)
         update(date_str)
         from performance import get_summary
         results["performance"] = get_summary()

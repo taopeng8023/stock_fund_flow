@@ -418,7 +418,8 @@ def score_candidates(candidates, price_history, sector_flows,
       3. 趋势确认 (15%): 仅量价确认（不含涨跌幅，避免与启动信号重叠）
       4. 板块共振 (10%): 所属板块今日资金强度
       5. 位置健康 (10%): 不在超跌区也不在高位
-      特殊调整: 沉默吸筹 +0.05 / 高涨幅透支 -0.08
+      趋势确认仅用量比+换手率+短期斜率, f184 独占资金维度
+      特殊调整: 沉默吸筹 +0.05 / 高涨幅透支渐变惩罚(5%起扣)
     """
     if not candidates:
         return []
@@ -436,6 +437,7 @@ def score_candidates(candidates, price_history, sector_flows,
         f62 = _to_float(s.get("f62"))
         f184 = _to_float(s.get("f184"))
         f66 = _to_float(s.get("f66"))
+        f8 = _to_float(s.get("f8"))
         f10 = _to_float(s.get("f10"))
         price = _to_float(s.get("f2"))
         sector_code = s.get("_sector_code", "")
@@ -487,17 +489,16 @@ def score_candidates(candidates, price_history, sector_flows,
         # ── 3. 趋势确认 (15%, 仅量价确认) ──
         score_trend = 0.0
         if f10 >= 2.5:
-            score_trend += 0.35
+            score_trend += 0.40
         elif f10 >= 1.5:
-            score_trend += 0.25
+            score_trend += 0.30
         elif f10 >= 1.2:
-            score_trend += 0.15
-        if f184 >= 5.0:
-            score_trend += 0.35
-        elif f184 >= 3.0:
-            score_trend += 0.25
-        elif f184 >= 1.5:
-            score_trend += 0.15
+            score_trend += 0.18
+        # 换手率质量: 5-15% 最佳（活跃但非过度换手）
+        if 5.0 <= f8 <= 15.0:
+            score_trend += 0.20
+        elif 3.0 <= f8 < 5.0:
+            score_trend += 0.12
         short_trend = _calc_short_trend(closes)
         if short_trend > 0.02:
             score_trend += 0.15
@@ -519,12 +520,18 @@ def score_candidates(candidates, price_history, sector_flows,
                  score_position * 0.10)
 
         # ── 特殊调整 ──
-        # 沉默吸筹: chg < 3% + 资金强
+        # 沉默吸筹: chg < 3% + 资金强 → 主力悄悄进货
         if f3 < 3.0 and score_capital > 0.6:
             total += 0.05
-        # 高涨幅透支: chg > 6.5% + 资金非极强
-        if f3 > 6.5 and score_capital < 0.9:
-            total -= 0.08
+
+        # 高涨幅透支: 渐变惩罚 (chg > 5% 起扣, 越接近涨停扣越多)
+        if f3 > 5.0 and score_capital < 0.92:
+            overextension = (f3 - 5.0) / 4.5   # 0 at 5%, ~1 at 9.5%
+            penalty = overextension * 0.25       # max ~0.25
+            total -= min(0.25, penalty)
+            # 超高超大单占比 + 高涨幅: 可能是出货
+            if f3 > 7.0 and f184 > 15.0:
+                total -= 0.05
 
         scored.append({
             **s,
