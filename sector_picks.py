@@ -548,11 +548,22 @@ def score_candidates(candidates, price_history, sector_flows,
         if score_capital > 0.80 and score_start > 0.70:
             total -= 0.08
 
-        # ── P10: 同股同日重复入选衰减 — 奥士康/泰晶/宸展均重复亏损 ──
-        if code in _same_day_rankings:
-            prev_rank = _same_day_rankings[code]
-            if prev_rank > _same_day_rankings.get("_best_rank", 99):
-                total -= 0.10  # 排位下降 = 信号减弱
+        # ── P10+P14: 盘中追踪 — 同股重复衰减 + 稳定性评分 ──
+        tracker = _stability_tracker.get(code, {})
+        prev_ranks = tracker.get("ranks", [])
+        if prev_ranks:  # 之前批次已入选过
+            total -= 0.10  # P10: 重复入选衰减
+
+        if len(prev_ranks) >= 3:  # 出现3次以上 → 稳定
+            import statistics
+            all_ranks = prev_ranks + [s.get("_rank", 99)]
+            try:
+                if statistics.stdev(all_ranks) < 2.5:
+                    total += 0.06  # P14: 排名稳定 ±2.5位以内
+            except statistics.StatisticsError:
+                pass
+        elif not prev_ranks and tracker.get("first_hour", 9) > 14:
+            total -= 0.04  # P14: 尾盘首现
 
         # ── P11: 高启动低资金 — 宸展光电start0.87 capital0.58均亏 ──
         if score_start > 0.80 and score_capital < 0.70:
@@ -1031,18 +1042,19 @@ def _gen_reasons_list(s):
 # 主流程
 # ============================================================
 
-# 同日多次选股的排名追踪（P10用）
-_same_day_rankings = {}
+# 同日多次选股追踪（P10 + P14 共用）
+_stability_tracker = {}  # {code: {"ranks": [...], "times": [...], "first_hour": int}}
 
 
 def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     """程序化接口：返回精选结果 dict（供 pipeline/web_api 调用）"""
-    global _same_day_rankings
+    global _stability_tracker
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
 
     # ── P13: 下午自动收紧 ──
-    hour = datetime.now().hour
+    now = datetime.now()
+    hour = now.hour
     afternoon_mode = hour >= 13
 
     # ── P2: 市场环境门控 ──
@@ -1077,13 +1089,15 @@ def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     scored = score_candidates(candidates, price_history, sector_flows,
                               sector_freshness, stock_multiday,
                               sector_persistence, afternoon=afternoon_mode)
-    # P10: 记录本次排名用于后续衰减
+    # P10+P14: 记录排名历史用于衰减 + 稳定性追踪
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
         code = s.get("f12", "")
         if code:
-            _same_day_rankings[code] = i + 1
-    _same_day_rankings["_best_rank"] = min(_same_day_rankings.values()) if _same_day_rankings else 99
+            if code not in _stability_tracker:
+                _stability_tracker[code] = {"ranks": [], "times": [], "first_hour": hour}
+            _stability_tracker[code]["ranks"].append(i + 1)
+            _stability_tracker[code]["times"].append(now.strftime("%H:%M"))
 
     picks = []
     for s in scored[:top_picks]:
@@ -1176,8 +1190,16 @@ def run(date_str=None, top_sectors=5, top_picks=10):
                               sector_freshness, stock_multiday,
                               sector_persistence,
                               afternoon=datetime.now().hour >= 13)
+    # P10+P14: 记录排名历史
+    now = datetime.now()
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
+        code = s.get("f12", "")
+        if code:
+            if code not in _stability_tracker:
+                _stability_tracker[code] = {"ranks": [], "times": [], "first_hour": now.hour}
+            _stability_tracker[code]["ranks"].append(i + 1)
+            _stability_tracker[code]["times"].append(now.strftime("%H:%M"))
 
     # 输出
     print_results(limit_up, scored, excluded, top_picks)
