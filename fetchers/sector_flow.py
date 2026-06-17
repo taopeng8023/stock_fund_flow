@@ -244,24 +244,33 @@ def fetch_sector_stocks(sector_code, sector_name, date_str):
     # ── 获取10日排行（fid=f174）──
     rank_10d, val_10d = _fetch_ranked(sector_code, "f174", total)
 
-    # 标记每个股票的5日/10日排名 + 实际数值
+    # 标记每个股票的5日/10日排名 + 资金流明细
     for s in all_rows:
         code = s.get("f12", "")
         s["_rank_5d"] = rank_5d.get(code, 0)
         s["_rank_10d"] = rank_10d.get(code, 0)
         if code in val_5d:
-            s["f164"] = val_5d[code]
+            for k, v in val_5d[code].items():
+                s[k] = v
         if code in val_10d:
-            s["f174"] = val_10d[code]
+            for k, v in val_10d[code].items():
+                s[k] = v
 
     print(f"    5日/10日排名已标记 ({len(rank_5d)}/{len(rank_10d)} 只)")
     return all_rows
 
 
 def _fetch_ranked(sector_code, fid, expected_total):
-    """调用 API 按 fid 排序获取排名 + 实际数值"""
-    rank_map = {}   # {code: rank}
-    value_map = {}  # {code: fid_value}
+    """调用 API 按 fid 排序获取排名 + 全部资金流明细字段"""
+    rank_map = {}
+    value_map = {}  # {code: {field: value}}
+    # 5日/10日的完整字段集
+    if fid == "f164":
+        extra_fields = "f164,f165,f166,f167,f168,f169"
+    elif fid == "f174":
+        extra_fields = "f174,f175,f176,f177,f178,f179"
+    else:
+        extra_fields = fid
     page = 1
     collected = 0
     fs = f"b:{sector_code}"
@@ -269,7 +278,7 @@ def _fetch_ranked(sector_code, fid, expected_total):
         params = {
             "pn": str(page), "pz": "100", "po": "1",
             "np": "1", "fltt": "2", "invt": "2",
-            "fid": fid, "fs": fs, "fields": f"f12,{fid}",
+            "fid": fid, "fs": fs, "fields": f"f12,{extra_fields}",
         }
         try:
             data = push2_get(params)
@@ -280,9 +289,11 @@ def _fetch_ranked(sector_code, fid, expected_total):
         for i, r in enumerate(data["data"]["diff"]):
             code = r.get("f12", "")
             rank_map[code] = collected + i + 1
-            val = r.get(fid)
-            if val is not None and val != "-":
-                value_map[code] = _to_float(val)
+            vals = {}
+            for f in extra_fields.split(","):
+                v = r.get(f)
+                vals[f] = _to_float(v) if (v is not None and v != "-") else 0.0
+            value_map[code] = vals
         collected += len(data["data"]["diff"])
         if collected >= data["data"].get("total", 0):
             break
@@ -384,23 +395,23 @@ def _save_sector_stocks_csv(stocks, sector_code, sector_name, sector_dir, date_s
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow([
-            "今日排名", "今日主力净流入",
-            "5日排名", "5日主力净流入",
-            "10日排名", "10日主力净流入",
-            "代码", "名称",
-            "涨跌幅", "最新价", "主力占比",
-            "超大单净流入", "大单净流入",
+            # 今日
+            "今日排名", "今日主力净流入", "今日超大单净流入", "今日大单净流入",
+            # 5日
+            "5日排名", "5日主力净流入", "5日超大单净流入", "5日大单净流入",
+            # 10日
+            "10日排名", "10日主力净流入", "10日超大单净流入", "10日大单净流入",
+            # 基础信息
+            "代码", "名称", "涨跌幅", "最新价",
             "换手率", "量比", "总市值",
         ])
         for i, s in enumerate(sorted_stocks, 1):
             w.writerow([
-                i, _to_float(s.get("f62")),
-                s.get("_rank_5d", ""), _to_float(s.get("f164")),
-                s.get("_rank_10d", ""), _to_float(s.get("f174")),
+                i, _to_float(s.get("f62")), _to_float(s.get("f66")), _to_float(s.get("f72")),
+                s.get("_rank_5d", ""), _to_float(s.get("f164")), _to_float(s.get("f166")), _to_float(s.get("f168")),
+                s.get("_rank_10d", ""), _to_float(s.get("f174")), _to_float(s.get("f176")), _to_float(s.get("f178")),
                 s.get("f12", ""), s.get("f14", ""),
                 _to_float(s.get("f3")), _to_float(s.get("f2")),
-                _to_float(s.get("f184")),
-                _to_float(s.get("f66")), _to_float(s.get("f72")),
                 _to_float(s.get("f8")), _to_float(s.get("f10")),
                 _to_float(s.get("f20")),
             ])
