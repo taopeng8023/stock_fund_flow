@@ -45,36 +45,19 @@ def is_main_board(code):
 # 数据加载
 # ============================================================
 
-def load_sector_stocks(date_str, sector_codes):
-    """加载指定板块的成分股明细数据（兼容 sector_detail_{code}_{date}.json 和 _None 后缀）"""
+def load_sector_stocks(sector_codes, date_str=None):
+    """实时从东方财富 API 拉取板块成分股 + 5日/10日排名（不落盘）"""
+    from fetchers.sector_flow import fetch_sector_stocks
     all_stocks = []
     seen = set()
-    sector_names = _load_sector_names(date_str)  # BK代码→中文名映射
-
-    # 优先从 sectors/ 子目录读取，取最新时间戳的文件
-    sector_root = os.path.join(DATA_ROOT, date_str, "sectors")
-    if not os.path.isdir(sector_root):
-        sector_root = os.path.join(DATA_ROOT, date_str)
+    sector_names = _load_sector_names(date_str) if date_str else {}
 
     for code in sector_codes:
-        import glob
-        # 查找所有匹配文件，按时间戳降序取最新
-        patterns = [
-            os.path.join(sector_root, f"sector_detail_{code}_*.json"),
-            os.path.join(DATA_ROOT, date_str, f"sector_detail_{code}_*.json"),
-        ]
-        all_matches = []
-        for pat in patterns:
-            all_matches.extend(glob.glob(pat))
-        # 去重 + 按修改时间降序
-        all_matches = sorted(set(all_matches), key=os.path.getmtime, reverse=True)
-        path = all_matches[0] if all_matches else None
-
-        if path is None:
-            print(f"  ⚠ 板块成分股文件不存在: sector_detail_{code}_*.json")
+        print(f"  实时拉取 {code} 成分股...", end=" ", flush=True)
+        stocks = fetch_sector_stocks(code, "", None)
+        if not stocks:
+            print("无数据")
             continue
-        with open(path, "r", encoding="utf-8") as f:
-            stocks = json.load(f)
         for s in stocks:
             stock_code = s.get("f12", "")
             if stock_code and stock_code not in seen:
@@ -82,7 +65,7 @@ def load_sector_stocks(date_str, sector_codes):
                 s["_sector_code"] = code
                 s["_sector_name"] = sector_names.get(code, code)
                 all_stocks.append(s)
-        print(f"  加载 {os.path.basename(path)}: {len(stocks)} 只成分股 ({sector_names.get(code, code)})")
+        print(f"{len(stocks)} 只")
 
     print(f"  去重后共计 {len(all_stocks)} 只个股（{len(sector_codes)} 个板块）")
     return all_stocks
@@ -1213,7 +1196,7 @@ def get_sector_picks(date_str=None, top_sectors=5, top_picks=10):
     if not sector_codes:
         return {"error": "无板块数据", "date": date_str}
 
-    stocks = load_sector_stocks(date_str, sector_codes)
+    stocks = load_sector_stocks(sector_codes, date_str)
     if not stocks:
         return {"error": "无成分股数据", "date": date_str}
 
@@ -1306,7 +1289,7 @@ def run(date_str=None, top_sectors=5, top_picks=10):
 
     # 2. 加载成分股明细
     print(f"\n[2/4] 加载成分股明细...")
-    stocks = load_sector_stocks(date_str, sector_codes)
+    stocks = load_sector_stocks(sector_codes, date_str)
     if not stocks:
         print("  ✗ 无成分股数据, 请先运行 python fetchers/sector_flow.py")
         return None

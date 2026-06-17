@@ -338,19 +338,12 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
             "top_large_stocks": _top_stocks(stocks, "f72", 10),
         }
 
-        _save_sector_summary(sector_dir, code, name, main_flow, main_ratio, stocks, date_str, file_ts)
-        with open(os.path.join(sector_dir, f"sector_summary_{code}_{date_str}_{file_ts}.json"), "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
-
         result[code] = {"name": name, "stocks": stocks, "summary": summary}
 
         print(f"    成分股 {len(stocks)} 只 | "
               f"大单净流入: {_fmt_yi(total_large)} | "
               f"大单流入>0: {pos_stocks}只 大单流出<0: {neg_stocks}只")
         _print_top_large(stocks, 5)
-
-    # 保存 top N 汇总
-    _save_top_summary(sector_dir, result, date_str, file_ts)
 
     return result
 
