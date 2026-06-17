@@ -99,7 +99,7 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
     print(f"\n[1/5] 获取 Top {top_sectors} 行业板块...")
     sector_codes = load_sector_top_codes(date_str, top_sectors)
     if not sector_codes:
-        print("  ✗ 无板块数据, 请先运行 python fetch_data.py")
+        print("  ✗ 无板块数据, 请先运行 python -m data_collector.main")
         return None
 
     # [2] 成分股 + 板块数据

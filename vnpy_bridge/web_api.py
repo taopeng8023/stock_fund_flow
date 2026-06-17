@@ -120,7 +120,7 @@ def step_fetch_data(date: str = Query(None)):
     try:
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cp = subprocess.run(
-            [sys.executable, os.path.join(project_dir, "fetch_data.py"), f"--date={date_str}"],
+            [sys.executable, "-m", "data_collector.main", f"--date={date_str}"],
             capture_output=True, text=True, timeout=120, cwd=project_dir
         )
         return {"success": cp.returncode == 0, "date": date_str,

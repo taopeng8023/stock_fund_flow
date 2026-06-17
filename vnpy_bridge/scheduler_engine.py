@@ -64,7 +64,7 @@ def job_fetch_data():
     date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
     try:
         cp = subprocess.run(
-            [sys.executable, os.path.join(PROJECT_DIR, "fetch_data.py"), f"--date={date_str}"],
+            [sys.executable, "-m", "data_collector.main", f"--date={date_str}"],
             capture_output=True, text=True, timeout=120, cwd=PROJECT_DIR
         )
         success = cp.returncode == 0

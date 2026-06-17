@@ -13,8 +13,8 @@ A股量化选股系统 — A-share quantitative stock selection system that fetc
 source .venv/bin/activate
 
 # Full data fetch (6 modules) for today or a specific date
-python fetch_data.py
-python fetch_data.py --date=20260520
+python -m data_collector.main
+python -m data_collector.main --date=20260520
 
 # Market diagnosis (regime detection, breadth, sentiment, risk, position advice)
 python market_diagnosis.py
@@ -82,7 +82,7 @@ python scheduler.py --run                # execute once immediately
 | Analysis | `market_diagnosis.py`, `stock_picker.py`, `performance.py` | Read raw JSON, compute signals, produce structured results |
 | vnpy bridge | `vnpy_bridge/` | Convert to vnpy BarData, Peewee ORM persistence, pipeline orchestration, web API |
 | Web UI | `vnpy_bridge/web_ui/index.html` | Single-page dashboard with Chart.js, tabbed panels |
-| Entry points | `run_vnpy_web.py` (web+scheduler), `fetch_data.py` (data only), `scheduler.py` (legacy) | |
+| Entry points | `run_vnpy_web.py` (web+scheduler), `data_collector/` (data only), `scheduler.py` (legacy) | |
 
 ### Key Design Decisions
 

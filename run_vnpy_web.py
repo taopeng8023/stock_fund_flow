@@ -73,7 +73,7 @@ def import_and_run(date_str=None):
         from vnpy_bridge.pipeline import run
         run(date_str, DB_PATH)
     else:
-        print(f"  数据不存在: {date_str}，请先运行 python fetch_data.py --date={date_str}")
+        print(f"  数据不存在: {date_str}，请先运行 python -m data_collector.main --date={date_str}")
 
 
 def main():
