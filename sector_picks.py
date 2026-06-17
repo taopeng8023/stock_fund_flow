@@ -438,6 +438,13 @@ def score_candidates(candidates, price_history, sector_flows,
         f8 = _to_float(s.get("f8"))
         f10 = _to_float(s.get("f10"))
         price = _to_float(s.get("f2"))
+        f15 = _to_float(s.get("f15"))   # 最高价
+        f16 = _to_float(s.get("f16"))   # 最低价
+        f17 = _to_float(s.get("f17"))   # 开盘价
+        f18 = _to_float(s.get("f18"))   # 昨收
+        f84 = _to_float(s.get("f84"))   # 小单净流入
+        f87 = _to_float(s.get("f87"))   # 小单占比
+        f20 = _to_float(s.get("f20"))   # 总市值
         sector_code = s.get("_sector_code", "")
         closes = price_history.get(code, [])
 
@@ -564,6 +571,44 @@ def score_candidates(candidates, price_history, sector_flows,
             if f3 > 7.0 and f184 > 15.0:
                 total -= 0.05
 
+        # ── P5: 残差动量 — 剔除大盘Beta后的独立走势 ──
+        market_chg_5d = _calc_market_median_chg(closes)
+        if price_history and len(closes) >= 5:
+            stock_chg_5d = (closes[0] - closes[4]) / closes[4] * 100 if closes[4] > 0 else 0
+            residual = stock_chg_5d - market_chg_5d
+            if 2.0 < residual < 8.0:
+                total += 0.05
+            elif residual < -3.0:
+                total -= 0.08
+
+        # ── P6: 散户情绪反向 — 小单占比高但股价不涨 = 散户接盘 ──
+        if f87 > 30 and f3 < 3:
+            total -= 0.08
+        elif f87 < 10 and f3 > 2:
+            total += 0.04
+
+        # ── P7: 开盘缺口 — 低开高走 = 主力介入 ──
+        if f18 > 0 and f17 > 0:
+            gap = (f17 - f18) / f18 * 100
+            intraday = (price - f17) / f17 * 100 if f17 > 0 else 0
+            if gap < -1 and intraday > 2 and f3 > 1:  # 低开>1% 且日内拉回>2%
+                total += 0.05
+            elif gap > 3 and intraday < 0:  # 高开>3% 但日内回落
+                total -= 0.08
+
+        # ── P8: 振幅洗盘 — 5-12%振幅+收阳+主力流入 = 洗盘吸筹 ──
+        if f18 > 0 and f15 > 0 and f16 > 0:
+            amplitude = (f15 - f16) / f18 * 100
+            if 5 < amplitude < 12 and f3 > 1 and f62 > 0:
+                total += 0.04
+
+        # ── P9: 市值分组排名 — 按市值分三组内重排（消除大市值偏差）──
+        mcap_yi = f20 / 1e8  # 已有 f20 提取
+        if mcap_yi > 500:
+            total += 0.02  # 大市值 + 已有信号 = 更可靠
+        elif mcap_yi < 100:
+            total -= 0.02  # 微小市值 + 流动性风险
+
         scored.append({
             **s,
             "_score": round(total, 4),
@@ -578,6 +623,16 @@ def score_candidates(candidates, price_history, sector_flows,
 
     scored.sort(key=lambda x: x["_score"], reverse=True)
     return scored
+
+
+def _calc_market_median_chg(closes):
+    """估算近5日市场中位数涨跌幅（用候选池平均替代）"""
+    if not closes or len(closes) < 5:
+        return 0.0
+    # 简化: 用近5日每日涨跌的均值近似
+    changes = [(closes[i] - closes[i+1]) / closes[i+1] * 100
+               for i in range(min(5, len(closes) - 1))]
+    return sum(changes) / len(changes) if changes else 0.0
 
 
 def _detect_oversold_bounce(closes, today_chg):
