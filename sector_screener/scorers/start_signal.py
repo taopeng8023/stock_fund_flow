@@ -13,11 +13,11 @@ def score_start_signal(stock, context):
 
     score = 0.0
 
-    # 板块新鲜度 (40%)
+    # 板块新鲜度 (30%, 回溯优化: 过高导致追热误判)
     sect_fresh = context.get("sector_freshness", {}).get(sector_code, 0.5)
-    score += sect_fresh * 0.40
+    score += sect_fresh * 0.30
 
-    # 个股资金加速度 (35%)
+    # 个股资金加速度 (40%, 个股动量>板块动量)
     if f62 > 0:
         total_5d = abs(f204_calc) + f62
         if total_5d > 0:

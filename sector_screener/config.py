@@ -25,12 +25,12 @@ MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
 # 14 维度权重 — 三市场景自适应
 # ═══════════════════════════════════════
 WEIGHTS_BASE = {
-    "start_signal":  0.19,
-    "capital":       0.16,
+    "start_signal":  0.15,   # 回溯优化: 过高导致排名倒置
+    "capital":       0.19,   # 真金白银 > 板块新鲜度
     "trend":         0.10,
     "sector":        0.07,
     "position":      0.07,
-    "analyst":       0.04,
+    "analyst":       0.05,   # 回溯优化: 有分析师覆盖的票次日更稳
     "multiday":      0.04,
     "technical":     0.04,
     "dragon_tiger":  0.03,

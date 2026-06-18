@@ -132,14 +132,21 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     if f3 > 5.0 and score_capital < 0.70:
         total -= 0.06
 
-    # P13: 高涨幅透支渐变惩罚
-    chg_floor = 4.0 if afternoon else 5.0
+    # P13: 高涨幅透支渐变惩罚 (回溯优化: 3%起扣, 增速更快)
+    chg_floor = 3.0 if afternoon else 4.0
     if f3 > chg_floor and score_capital < 0.92:
         overextension = (f3 - chg_floor) / (10.0 - chg_floor)
-        penalty = overextension * 0.25
-        total -= min(0.25, penalty)
+        penalty = overextension * 0.30  # 回溯: 0.25→0.30 惩罚力度加大
+        total -= min(0.30, penalty)
         if f3 > 7.0 and f184 > 15.0:
-            total -= 0.05
+            total -= 0.06  # 0.05→0.06
+
+    # P13b: 均值回归检测 (回溯: 昨日涨>3%且无分析师覆盖=次日回调高发)
+    a_num = context.get("analyst_data", {}).get(code, {}).get("org_num", 0)
+    if f3 > 3.0 and a_num < 3:
+        total -= 0.04  # 高涨幅无基本面背书 = 资金驱动, 次日回归概率高
+    elif f3 > 3.0 and a_num >= 5:
+        total += 0.02  # 有分析师覆盖的高涨幅 = 基本面驱动, 持续性更强
 
     # P16: 涨停基因
     limit_up_gene = _check_limit_up_gene(code, date_str)
