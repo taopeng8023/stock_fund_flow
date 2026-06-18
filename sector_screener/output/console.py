@@ -18,9 +18,9 @@ def print_results(limit_up_pool, scored_candidates, excluded_pool,
     print(f"{'═' * 100}")
     header = (f"  {'排名':<4} {'代码':<8} {'名称':<8} {'得分':<6} {'涨跌%':<7} "
               f"{'主力流入':<12} {'占比%':<6} {'启动':<6} {'资金':<6} "
-              f"{'分析师':<6} {'行业内':<6} {'融资':<6}")
+              f"{'分析师':<6} {'行业内':<6} {'融资':<6} {'日内':<6}")
     print(header)
-    print(f"  {'─' * 95}")
+    print(f"  {'─' * 100}")
 
     for i, s in enumerate(scored_candidates[:top_n], 1):
         code = s.get("f12", "")
@@ -34,11 +34,12 @@ def print_results(limit_up_pool, scored_candidates, excluded_pool,
         analyst_s = s.get("_score_analyst", 0)
         intra_s = s.get("_s_intra_sector", 0)
         margin_s = s.get("_s_margin_net", 0)
+        intraday_s = s.get("_s_intraday_trend", 0)
 
         print(f"  {i:<4} {code:<8} {name:<8s} {score:.4f} "
               f"{chg:>+6.2f}% {fmt_yi(f62):>12} {f184:>5.1f}% "
               f"{start_s:.2f}  {capital_s:.2f}  "
-              f"{analyst_s:.2f}  {intra_s:.2f}  {margin_s:.2f}")
+              f"{analyst_s:.2f}  {intra_s:.2f}  {margin_s:.2f}  {intraday_s:.2f}")
 
     if not scored_candidates:
         print(f"    无符合条件的候选股")
@@ -116,6 +117,11 @@ def print_diagnosis(top_stocks):
             signals.append(f"均线多头排列({s.get('_ma_align', 0):.0%})")
         if s.get("_cum3", 0) > 0:
             signals.append(f"3日累计净流入 {s.get('_cum3', 0):+.1f}亿")
+        rank_imp = s.get("_intraday_rank_first", 0) - s.get("_intraday_rank_last", 0)
+        if rank_imp > 10:
+            signals.append(f"日内排名飙升{rank_imp}位(资金集中)")
+        elif rank_imp > 5:
+            signals.append(f"日内排名上升{rank_imp}位")
 
         if chg > 8:
             risks.append(f"已近涨停({chg:.1f}%)")

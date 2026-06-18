@@ -12,7 +12,9 @@ _stability_tracker = {}
 
 
 def apply_p_factors(stock, score_start, score_capital, score_trend, total, context):
-    """对 total 进行 P0-P27 微调，返回调整后的 total"""
+    """对 total 进行 P0-P27 微调，返回调整后的 total。
+    P 因子累计净调整上限 ±0.15，避免喧宾夺主。"""
+    original_total = total
     code = stock.get("f12", "")
     f3 = to_float(stock.get("f3"))
     f62 = to_float(stock.get("f62"))
@@ -69,14 +71,23 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     elif f87 < 10 and f3 > 2:
         total += 0.04
 
-    # P7: 开盘缺口
+    # P7: 开盘缺口 + 隔夜-日内分解 (合并原 P25)
     if f18 > 0 and f17 > 0:
         gap = (f17 - f18) / f18 * 100
         intraday = (price - f17) / f17 * 100 if f17 > 0 else 0
+        # 低开高走 → 强日内反转
         if gap < -1 and intraday > 2 and f3 > 1:
-            total += 0.05
-        elif gap > 3 and intraday < 0:
+            total += 0.06
+        elif gap < -2 and intraday > 2:
+            total += 0.04
+        # 高开高走 → 强势延续
+        elif gap > 1 and intraday > -1:
+            total += 0.04
+        # 高开低走 → 诱多出货
+        elif gap > 3 and intraday < -1:
             total -= 0.08
+        elif gap > 3 and intraday < 0:
+            total -= 0.06
 
     # P8: 振幅洗盘
     if f18 > 0 and f15 > 0 and f16 > 0:
@@ -91,12 +102,16 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     elif mcap_yi < 100:
         total -= 0.02
 
-    # P10+P14+P15: 盘中追踪
-    tracker = _stability_tracker.get(code, {})
+    # P10+P14+P15: 盘中追踪（同一日期内按 date+code 追踪，跨天自动隔离）
+    tracker_key = f"{date_str}:{code}" if date_str else code
+    tracker = _stability_tracker.get(tracker_key, {})
     prev_ranks = tracker.get("ranks", [])
     appearances = len(prev_ranks)
-    if prev_ranks:
-        total -= 0.10
+    # P10: 非首次出现不再一刀切 -0.10，改为渐进式
+    if appearances >= 3:
+        total -= 0.03  # 多次出现轻微降权（避免过度集中）
+    elif appearances >= 1:
+        total -= 0.01
     if appearances >= 5:
         all_ranks = prev_ranks + [stock.get("_rank", 99)]
         try:
@@ -166,9 +181,9 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     pct_10d = rank_10d / total_stocks if rank_10d > 0 else 0.5
     pct_today = stock.get("_rank", 99) / total_stocks
     if pct_today < 0.30 and pct_5d < 0.30 and pct_10d < 0.30:
-        total += 0.06
+        total += 0.08   # 三周期共振最强
     elif pct_today < 0.30 and pct_5d < 0.30:
-        total += 0.08
+        total += 0.06   # 两周期共振次之
     elif pct_today < 0.30 and pct_5d > 0.50 and pct_10d > 0.50:
         total -= 0.10
     elif pct_5d < 0.30:
@@ -201,17 +216,6 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     elif sentiment_bonus < -0.03:
         total -= 0.03
 
-    # P25: 隔夜-日内分解
-    if f18 > 0 and f17 > 0:
-        overnight = (f17 - f18) / f18 * 100
-        intraday = (price - f17) / f17 * 100
-        if overnight > 1 and intraday > -1:
-            total += 0.05
-        elif overnight < -2 and intraday > 2:
-            total += 0.04
-        elif overnight > 3 and intraday < -1:
-            total -= 0.06
-
     # P26: VWAP错杀检测
     if f15 > 0 and f16 > 0:
         vwap_approx = (f15 + f16 + price) / 3
@@ -230,6 +234,13 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     if score_capital > 0.80 and score_start > 0.70:
         total -= 0.08  # 资金 vs 启动对立
 
+    # ── 累计 P 因子净调整上限 ±0.15 ──
+    net_adjustment = total - original_total
+    if net_adjustment > 0.15:
+        total = original_total + 0.15
+    elif net_adjustment < -0.15:
+        total = original_total - 0.15
+
     return total
 
 
@@ -244,8 +255,15 @@ def _market_median(candidates):
     return 0.0
 
 
+_limit_up_gene_cache = {}  # 单次运行内缓存, 避免重复文件 I/O
+
+
 def _check_limit_up_gene(code, date_str):
-    """近30日涨停基因"""
+    """近30日涨停基因 (带缓存)"""
+    cache_key = f"{date_str}:{code}"
+    if cache_key in _limit_up_gene_cache:
+        return _limit_up_gene_cache[cache_key]
+
     d = datetime.strptime(date_str, "%Y%m%d")
     had_limit_up = False
     limit_up_day = None
@@ -270,8 +288,10 @@ def _check_limit_up_gene(code, date_str):
         if had_limit_up:
             break
     if not had_limit_up:
+        _limit_up_gene_cache[cache_key] = 0.0
         return 0.0
     if not limit_up_day:
+        _limit_up_gene_cache[cache_key] = 0.3
         return 0.3
 
     limit_d = datetime.strptime(limit_up_day, "%Y%m%d")
@@ -296,7 +316,9 @@ def _check_limit_up_gene(code, date_str):
         avg_vol = sum(v for v, _ in volume_after) / len(volume_after)
         max_drop = min(chg for _, chg in volume_after) if volume_after else 0
         if avg_vol < 10 and max_drop > -5:
+            _limit_up_gene_cache[cache_key] = 0.5
             return 0.5
+    _limit_up_gene_cache[cache_key] = 0.2
     return 0.2
 
 

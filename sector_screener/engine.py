@@ -8,6 +8,7 @@ from sector_screener.scorers import (
     score_intra_sector, score_margin_net, score_flow_accel,
     score_block_trade, score_org_research, score_earnings, score_lockup,
     score_margin_short, score_margin_long, score_volume_quality,
+    score_intraday_trend,
     apply_p_factors, get_tracker,
 )
 
@@ -17,7 +18,8 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
                   north_data, ratio_rank, intra_sector_rank, margin_net_map,
                   regime, sentiment_bonus, date_str, afternoon,
                   block_trade=None, org_research=None,
-                  earnings_forecast=None, lockup_expiry=None):
+                  earnings_forecast=None, lockup_expiry=None,
+                  sector_intraday=None):
     """构建评分上下文 — 预计算所有候选池的 percentile 数组"""
     ctx = {
         "sector_freshness": sector_freshness,
@@ -42,7 +44,7 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
         "_f72_vals": [to_float(s.get("f72")) for s in candidates],
         "_f184_vals": [to_float(s.get("f184")) for s in candidates],
         "_f69_vals": [to_float(s.get("f69")) for s in candidates],
-        "_cum3_vals": _build_cum_vals(candidates, stock_multiday, "f62_5d"),
+        "_cum3_vals": _build_cum3_vals(candidates, stock_multiday),
         "_cum5_vals": _build_cum_vals(candidates, stock_multiday, "f62_5d"),
         "_cum10_vals": _build_cum_vals(candidates, stock_multiday, "f62_10d"),
         # 新数据源
@@ -50,6 +52,7 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
         "org_research": org_research or {},
         "earnings_forecast": earnings_forecast or {},
         "lockup_expiry": lockup_expiry or {},
+        "sector_intraday": sector_intraday or {},
     }
     return ctx
 
@@ -57,6 +60,18 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
 def _build_cum_vals(candidates, stock_multiday, key):
     return [to_float(s.get("f62")) + stock_multiday.get(s.get("f12", ""), {}).get(key, 0)
             for s in candidates]
+
+
+def _build_cum3_vals(candidates, stock_multiday):
+    """3日累计 = 今日 f62 + 最近2个交易日的 f62 之和"""
+    vals = []
+    for s in candidates:
+        code = s.get("f12", "")
+        md = stock_multiday.get(code, {})
+        daily = md.get("daily_f62", [])
+        cum3 = to_float(s.get("f62")) + sum(daily[:2])
+        vals.append(cum3)
+    return vals
 
 
 def score_candidates(candidates, context):
@@ -91,8 +106,9 @@ def score_candidates(candidates, context):
         s_mshort   = score_margin_short(s, context)
         s_mlong    = score_margin_long(s, context)
         s_vq       = score_volume_quality(s, context)
+        s_intraday = score_intraday_trend(s, context)
 
-        # 加权求和 (21维)
+        # 加权求和 (22维)
         total = (
             s_start    * weights.get("start_signal", 0)
             + s_capital * weights.get("capital", 0)
@@ -115,6 +131,7 @@ def score_candidates(candidates, context):
             + s_mshort   * weights.get("margin_short", 0)
             + s_mlong    * weights.get("margin_long", 0)
             + s_vq       * weights.get("volume_quality", 0)
+            + s_intraday * weights.get("intraday_trend", 0)
         )
 
         # P因子调整
@@ -145,6 +162,7 @@ def score_candidates(candidates, context):
             "margin_short":  round(s_mshort   * weights.get("margin_short", 0), 4),
             "margin_long":   round(s_mlong    * weights.get("margin_long", 0), 4),
             "volume_quality":round(s_vq       * weights.get("volume_quality", 0), 4),
+            "intraday_trend":round(s_intraday * weights.get("intraday_trend", 0), 4),
         }
 
         # 信号触发明细
@@ -177,6 +195,7 @@ def score_candidates(candidates, context):
             "_s_intra_sector": round(s_intra, 3),
             "_s_margin_net": round(s_margin, 3),
             "_s_flow_accel": round(s_accel, 3),
+            "_s_intraday_trend": round(s_intraday, 3),
             "_f62_5d": md.get("f62_5d", 0),
             "_f62_10d": md.get("f62_10d", 0),
             "_cum3": round(cum3 / 1e8, 2),
@@ -193,17 +212,19 @@ def score_candidates(candidates, context):
 
     scored.sort(key=lambda x: x["_score"], reverse=True)
 
-    # P10+P14: 记录排名到日内追踪器
+    # P10+P14: 记录排名到日内追踪器（日期+代码 维度）
     now = datetime.now()
     tracker = get_tracker()
+    date_str = context.get("_date_str", now.strftime("%Y%m%d"))
     for i, s in enumerate(scored):
         s["_rank"] = i + 1
         code = s.get("f12", "")
         if code:
-            if code not in tracker:
-                tracker[code] = {"ranks": [], "times": [], "first_hour": now.hour}
-            tracker[code]["ranks"].append(i + 1)
-            tracker[code]["times"].append(now.strftime("%H:%M"))
+            tracker_key = f"{date_str}:{code}"
+            if tracker_key not in tracker:
+                tracker[tracker_key] = {"ranks": [], "times": [], "first_hour": now.hour}
+            tracker[tracker_key]["ranks"].append(i + 1)
+            tracker[tracker_key]["times"].append(now.strftime("%H:%M"))
 
     return scored
 
@@ -260,6 +281,15 @@ def _detect_signals(s, s_start, s_capital, s_trend, s_analyst,
     if s_margin > 0.7:
         signals.append({"factor": "margin_net", "strength": "strong", "value": s_margin,
                         "desc": "融资净买入排名靠前"})
+
+    # 日内轨迹动量
+    rank_improve = s.get("_intraday_rank_first", 0) - s.get("_intraday_rank_last", 0)
+    if rank_improve > 15:
+        signals.append({"factor": "intraday_trend", "strength": "strong", "value": rank_improve,
+                        "desc": f"日内排名飙升{rank_improve}位(板块内资金集中)"})
+    elif rank_improve > 8:
+        signals.append({"factor": "intraday_trend", "strength": "moderate", "value": rank_improve,
+                        "desc": f"日内排名上升{rank_improve}位"})
 
     # 龙虎榜
     if s_dt > 0.6:

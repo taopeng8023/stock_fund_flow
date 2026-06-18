@@ -56,12 +56,6 @@ def score_technical(stock, context):
 
     ma_align, breakout_score, breakout_20d = _calc_technical(price, closes)
 
-    # 牛熊自适应
-    if regime == "bear" and breakout_20d:
-        breakout_score = 1.0
-    elif regime == "bull":
-        breakout_score = min(1.0, breakout_score * 0.8)
-
     # 附加属性 (供 p_factors 使用)
     stock["_ma_align"] = ma_align
     stock["_breakout_20d"] = breakout_20d

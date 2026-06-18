@@ -12,7 +12,7 @@ from data_collector.fetchers.base import DATA_ROOT, BJS_TZ, load_json
 
 from sector_screener.config import WEIGHTS_BASE, WEIGHTS_BULL, WEIGHTS_BEAR
 from sector_screener.loaders import (
-    load_sector_top_codes, load_sector_stocks, load_sector_multiday,
+    load_sector_top_codes, load_sector_stocks, load_sector_multiday, load_sector_intraday,
     load_fund_flow_cross_ref, load_analyst_data, load_dragon_tiger_data,
     load_north_flow_data, load_ratio_rank, load_stock_multiday, load_past_closes,
 )
@@ -26,7 +26,7 @@ from sector_screener.output import print_results, print_diagnosis, save_json, sa
 
 
 def detect_market_regime(date_str):
-    """检测牛/熊/震荡，返回 (regime, weights)"""
+    """检测牛/熊/震荡（3日平滑避免单日噪声），返回 (regime, weights)"""
     try:
         from market_diagnosis import get_diagnosis
         diag = get_diagnosis(date_str)
@@ -37,18 +37,25 @@ def detect_market_regime(date_str):
     except Exception:
         pass
 
-    rows = load_json(date_str, "fund_flow")
-    if not rows:
-        return "range", WEIGHTS_BASE
-    chgs = [r.get("f3") for r in rows if isinstance(r.get("f3"), (int, float))]
-    flows = [r.get("f62") for r in rows if isinstance(r.get("f62"), (int, float))]
-    if not chgs:
+    # 取最近 3 个交易日的数据做平滑
+    from datetime import datetime, timedelta
+    all_chgs = []
+    all_flows = []
+    d = datetime.strptime(date_str, "%Y%m%d")
+    for offset in range(3):
+        ds = (d - timedelta(days=offset)).strftime("%Y%m%d")
+        rows = load_json(ds, "fund_flow")
+        if rows:
+            all_chgs.extend(r.get("f3") for r in rows if isinstance(r.get("f3"), (int, float)))
+            all_flows.extend(r.get("f62") for r in rows if isinstance(r.get("f62"), (int, float)))
+
+    if not all_chgs:
         return "range", WEIGHTS_BASE
 
-    up_ratio = sum(1 for c in chgs if c > 0) / len(chgs)
-    chgs_sorted = sorted(chgs)
+    up_ratio = sum(1 for c in all_chgs if c > 0) / len(all_chgs)
+    chgs_sorted = sorted(all_chgs)
     median_ret = chgs_sorted[len(chgs_sorted) // 2]
-    flow_pos = sum(1 for f in flows if f > 0) / len(flows) if flows else 0.5
+    flow_pos = sum(1 for f in all_flows if f > 0) / len(all_flows) if all_flows else 0.5
     bull_score = sum([up_ratio > 0.55, median_ret > 0.3, flow_pos > 0.50])
     bear_score = sum([up_ratio < 0.35, median_ret < -0.5, flow_pos < 0.35])
 
@@ -59,7 +66,8 @@ def detect_market_regime(date_str):
     else:
         regime = "range"
 
-    print(f"  市场环境: {regime} (涨跌比{up_ratio:.0%}, 中位{median_ret:+.1f}%, 主力正{flow_pos:.0%})")
+    n_days = len(all_chgs) // (len(rows) if rows else 1) if rows else 1
+    print(f"  市场环境: {regime} ({n_days}日平滑, 涨跌比{up_ratio:.0%}, 中位{median_ret:+.1f}%, 主力正{flow_pos:.0%})")
     wmap = {"bull": WEIGHTS_BULL, "bear": WEIGHTS_BEAR, "range": WEIGHTS_BASE}
     return regime, wmap.get(regime, WEIGHTS_BASE)
 
@@ -113,6 +121,7 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
         print("  ✗ 无成分股数据")
         return None
     sector_freshness, _, sector_persistence = load_sector_multiday(date_str)
+    sector_intraday = load_sector_intraday(date_str)
     sector_flows = {code: 0.5 + (top_sectors - i) * 0.1 for i, code in enumerate(sector_codes)}
 
     # [3] 全数据源
@@ -148,6 +157,7 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
         regime, sentiment_bonus, date_str, afternoon,
         block_trade=block_trade, org_research=org_research,
         earnings_forecast=earnings_data, lockup_expiry=lockup_data,
+        sector_intraday=sector_intraday,
     )
     context["_weights"] = weights
 
@@ -212,6 +222,7 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
                 "intra_sector": s.get("_s_intra_sector", 0),
                 "margin_net": s.get("_s_margin_net", 0),
                 "flow_accel": s.get("_s_flow_accel", 0),
+                "intraday_trend": s.get("_s_intraday_trend", 0),
             },
             "sector_name": s.get("_sector_name", ""),
             "analyst_num": s.get("_analyst_num", 0),

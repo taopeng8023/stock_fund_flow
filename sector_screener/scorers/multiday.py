@@ -8,9 +8,10 @@ def score_multiday(stock, context):
     md = context.get("stock_multiday", {}).get(code, {})
     f62 = to_float(stock.get("f62"))
 
-    cum3 = f62 + md.get("f62_5d", 0)
-    cum5 = f62 + md.get("f62_5d", 0)
-    cum10 = f62 + md.get("f62_10d", 0)
+    daily = md.get("daily_f62", [])
+    cum3 = f62 + sum(daily[:2])          # 今日 + 最近2个交易日 = 3日累计
+    cum5 = f62 + md.get("f62_5d", 0)    # 今日 + 前5日累计
+    cum10 = f62 + md.get("f62_10d", 0)  # 今日 + 前10日累计
 
     cum3_vals = context.get("_cum3_vals", [cum3])
     cum5_vals = context.get("_cum5_vals", [cum5])
@@ -21,7 +22,7 @@ def score_multiday(stock, context):
     s_flow_10day = pct_rank(cum10_vals, cum10)
 
     # 连续性
-    daily_all = [f62] + md.get("daily_f62", [])[:4]
+    daily_all = [f62] + daily[:4]
     positive_days = sum(1 for v in daily_all if v > 0)
     s_flow_consistency = positive_days / len(daily_all) if daily_all else 0.5
 

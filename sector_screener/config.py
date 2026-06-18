@@ -19,7 +19,7 @@ MIN_VOL_RATIO   = 1.0
 MIN_MCAP_YI     = 30
 MAX_MCAP_YI     = 2000
 
-MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
+MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "300", "600", "601", "603", "605", "688")
 
 # ═══════════════════════════════════════
 # 14 维度权重 — 三市场景自适应
@@ -35,8 +35,7 @@ WEIGHTS_BASE = {
     "technical":     0.04,
     "dragon_tiger":  0.03,
     "north_flow":    0.02,
-    "ratio_rank":    0.01,
-    "intra_sector":  0.03,
+    "intra_sector":  0.04,  # 行业内排名（合并原 ratio_rank 0.01）
     "margin_net":    0.03,
     "flow_accel":    0.03,
     "block_trade":   0.02,   # 🆕 大宗交易溢价信号
@@ -46,20 +45,23 @@ WEIGHTS_BASE = {
     "margin_short":  0.02,   # 🆕 融券压力(已有字段f170/f172)
     "margin_long":   0.02,   # 🆕 融资力度(已有字段f174/f175/f169)
     "volume_quality":0.02,   # 🆕 成交额质量(已有字段f5/f6)
+    "intraday_trend":0.02,  # 🆕 日内轨迹动量(排名+资金加速)
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
     "trend": 0.12, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
     "start_signal": 0.17, "capital": 0.17, "intra_sector": 0.05, "margin_net": 0.04,
     "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
-    "margin_long": 0.03, "volume_quality": 0.02,
+    "margin_long": 0.03, "volume_quality": 0.02, "intraday_trend": 0.03,
+    "ratio_rank": 0.00,
 }
 
 WEIGHTS_BEAR = {**WEIGHTS_BASE,
     "analyst": 0.07, "north_flow": 0.04, "position": 0.10, "start_signal": 0.16,
     "trend": 0.09, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
     "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
-    "margin_short": 0.04, "volume_quality": 0.01,
+    "margin_short": 0.04, "volume_quality": 0.01, "intraday_trend": 0.015,
+    "ratio_rank": 0.00,
 }
 
 # ═══════════════════════════════════════

@@ -72,6 +72,7 @@ def _write_picks(candidates, picks_dir, ts):
             "行业内得分": s.get("_s_intra_sector", ""),
             "融资得分": s.get("_s_margin_net", ""),
             "加速度得分": s.get("_s_flow_accel", ""),
+            "日内轨迹得分": s.get("_s_intraday_trend", ""),
             "分析师家数": s.get("_analyst_num", ""),
             "均线排列": s.get("_ma_align", ""),
             "突破20日": "是" if s.get("_breakout_20d") else "",

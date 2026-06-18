@@ -34,10 +34,10 @@ def basic_filter(stock):
         reasons.append(f"股价 {price:.2f} < {MIN_PRICE}")
     if price > MAX_PRICE:
         reasons.append(f"股价 {price:.2f} > {MAX_PRICE}")
-    if main_flow < MIN_MAIN_FLOW and main_flow >= 0:
-        reasons.append(f"主力净流入 {main_flow/1e4:.0f}万 < {MIN_MAIN_FLOW/1e4:.0f}万")
-    if main_ratio < MIN_MAIN_RATIO and main_ratio >= 0:
-        reasons.append(f"主力占比 {main_ratio:.1f}% < {MIN_MAIN_RATIO}%")
+    if abs(main_flow) < MIN_MAIN_FLOW:
+        reasons.append(f"主力净流入 {main_flow/1e4:.0f}万 绝对值 < {MIN_MAIN_FLOW/1e4:.0f}万")
+    if abs(main_ratio) < MIN_MAIN_RATIO:
+        reasons.append(f"主力占比 {main_ratio:.1f}% 绝对值 < {MIN_MAIN_RATIO}%")
     if turnover > 0 and turnover < MIN_TURNOVER:
         reasons.append(f"换手率 {turnover:.1f}% < {MIN_TURNOVER}%")
     if turnover > MAX_TURNOVER:

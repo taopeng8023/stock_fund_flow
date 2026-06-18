@@ -15,7 +15,7 @@ def _calc_short_trend(closes):
 
 
 def _detect_oversold_bounce(closes, today_chg):
-    """超跌反弹检测"""
+    """超跌反弹检测 → 做多信号"""
     if not closes or len(closes) < 5:
         return False
     if today_chg > 3.0 and len(closes) >= 4:
@@ -37,9 +37,11 @@ def score_trend(stock, context):
     s_turnover = range_score(f8, 5.0, 18.0, 2.0, 25.0)
     s_momentum = range_score(f3, 2.5, 7.0, -2.0, 9.5)
     short_trend = _calc_short_trend(closes)
-    s_short = max(0.0, min(1.0, short_trend * 25 + 0.5))
+    # 乘数从 25 降至 3: 避免退化为二值开关, 保留趋势信号的连续分辨力
+    s_short = max(0.0, min(1.0, short_trend * 3 + 0.5))
 
     score = s_vol_ratio * 0.35 + s_turnover * 0.25 + s_momentum * 0.25 + s_short * 0.15
+    # 超跌反弹 = 均值回归做多信号, 加分而非扣分
     if _detect_oversold_bounce(closes, f3):
-        score = max(0.0, score - 0.15)
+        score = min(1.0, score + 0.08)
     return max(0.0, min(1.0, score))

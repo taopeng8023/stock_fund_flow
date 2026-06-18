@@ -303,9 +303,10 @@ def _fetch_ranked(sector_code, fid, expected_total):
     return rank_map, value_map
 
 
-def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
+def fetch_top_sector_details(industry_rows, top_n=5, date_str=None, target_subdir="sectors"):
     """
-    取主力净流入最高的 top_n 个行业板块，钻取成分股大单详情。
+    取主力净流入最高的 top_n 个板块，钻取成分股大单详情。
+    target_subdir: 输出子目录名，默认 "sectors"（行业），概念板块用 "concept_sectors"
     返回 dict: {sector_code: {name, stocks: [...], summary: {...}}}
     """
     if not industry_rows:
@@ -317,7 +318,7 @@ def fetch_top_sector_details(industry_rows, top_n=5, date_str=None):
         date_str = os.path.basename(date_dir)
     from datetime import datetime as _dt
     file_ts = _dt.now().strftime("%H%M%S")
-    sector_dir = os.path.join(date_dir, "sectors")
+    sector_dir = os.path.join(date_dir, target_subdir)
     os.makedirs(sector_dir, exist_ok=True)
 
     # 按 f62 降序取 top N
@@ -576,9 +577,10 @@ def _save_multiday_rankings(rows, date_str):
 
 
 def fetch(date_str=None, top_detail_n=5):
-    """获取行业板块 + 概念板块资金流，钻取 top N 行业成分股大单详情"""
+    """获取行业板块 + 概念板块资金流，钻取 top N 行业 + 概念成分股详情"""
     results = {}
     industry_rows = None
+    concept_rows = None
 
     for fs, filename, label in SECTORS:
         rows = fetch_sector(fs, label, date_str)
@@ -588,15 +590,25 @@ def fetch(date_str=None, top_detail_n=5):
         if filename == "industry_flow":
             _save_multiday_rankings(rows, date_str)
             industry_rows = rows
+        elif filename == "concept_flow":
+            concept_rows = rows
 
     # ── 数据验真 ──
     if industry_rows:
         verify_industry_data(industry_rows, date_str)
 
-    # ── Top N 行业板块成分股大单钻取 ──
+    # ── Top N 行业板块成分股钻取 ──
     if industry_rows and top_detail_n > 0:
         results["_top_detail"] = fetch_top_sector_details(
             industry_rows, top_n=top_detail_n, date_str=date_str,
+        )
+
+    # ── Top N 概念板块成分股钻取 ──
+    if concept_rows and top_detail_n > 0:
+        print(f"\n  ══ Top {top_detail_n} 概念板块成分股钻取 ══")
+        results["_top_concept_detail"] = fetch_top_sector_details(
+            concept_rows, top_n=top_detail_n, date_str=date_str,
+            target_subdir="concept_sectors",
         )
 
     return results
