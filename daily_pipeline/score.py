@@ -346,7 +346,18 @@ def _load_sector_snapshots(date_str, cutoff=None):
     n_ind = sum(1 for v in industry_ts.values() if len(v) >= 2)
     n_con = sum(1 for v in concept_ts.values() if len(v) >= 2)
     print(f"  板块快照: 行业{n_ind}个有轨迹, 概念{n_con}个有轨迹")
-    return industry_ts, concept_ts
+    # 同时提取最新静态流: {name: flow} (替代 _load_sector_flows)
+    sector_static = {}
+    concept_static = {}
+    for name, ts_data in industry_ts.items():
+        if ts_data:
+            latest_ts = max(ts_data.keys())
+            sector_static[name] = ts_data[latest_ts]["flow"]
+    for name, ts_data in concept_ts.items():
+        if ts_data:
+            latest_ts = max(ts_data.keys())
+            concept_static[name] = ts_data[latest_ts]["flow"]
+    return industry_ts, concept_ts, sector_static, concept_static
 
 
 def _multi_snapshot_factors(code, time_series, all_f62_per_ts):
@@ -448,8 +459,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     for sn in snapshots:
         all_f62_per_ts[sn["ts"]] = [d["f62"] for d in sn["stocks"].values()]
 
-    sector_flows, concept_flows = _load_sector_flows(date_str)
-    sector_trajectory, concept_trajectory = _load_sector_snapshots(date_str, snapshot_cutoff)
+    sector_trajectory, concept_trajectory, sector_flows, concept_flows = _load_sector_snapshots(date_str, snapshot_cutoff)
     print(f"  个股: {len(stocks)} 只, 行业: {len(sector_flows)} 个")
 
     # ── 轻量过滤（只去掉明显异常值，保留研究样本）──
@@ -548,18 +558,23 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         tr += 0.5 * 0.15  # short_trend default
         sub["trend"] = round(tr, 3)
 
-        # ── sector (5%) ──
+        # ── sector (5%) ── 行业排名70% + 概念共振30%
         if sector_flows and industry:
             all_sf = list(sector_flows.values())
             industry_flow = sector_flows.get(industry, 0)
             sec = _pct_rank(all_sf, industry_flow) if all_sf else 0.5
         else:
             sec = 0.5
-        # 概念叠加: 简化处理
-        if concept_flows:
+        # 概念共振: 行业名可能在概念流中也存在(如"半导体"既是行业也是概念)
+        s_concept = 0.5
+        if concept_flows and industry:
             all_cf = list(concept_flows.values())
-            sec = sec * 0.70 + 0.5 * 0.30  # 概念部分默认中性
-        sub["sector"] = round(sec, 3)
+            if industry in concept_flows:
+                s_concept = _pct_rank(all_cf, concept_flows[industry])
+            elif all_cf:
+                # 无直接匹配: 用概念流均值百分位作为市场概念热度
+                s_concept = _pct_rank(all_cf, statistics.mean(all_cf))
+        sub["sector"] = round(sec * 0.70 + s_concept * 0.30, 3)
 
         # ── position (7%) ── 连续线性插值
         ph = price_hist.get(code, {})
