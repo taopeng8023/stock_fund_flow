@@ -24,12 +24,25 @@ WEIGHTS = {
 }
 
 # ── scores.csv 输出列 ──
+# ── 信号中文说明 ──
+SIGNAL_NAMES = {
+    "P32_ratio_accel":    "主力占比温和加速(今日>5日>10日)",
+    "P32_pump_risk":      "单日脉冲风险(今日占比高但5日低迷)",
+    "P32_extreme":        "占比极端高位(均值回归压力)",
+    "P29_high_turnover":  "高换手+弱资金(出货嫌疑)",
+    "P_low_liquidity":    "换手过低(流动性不足)",
+    "P_low_vol_ratio":    "量比不足(交投清淡)",
+    "P_small_cap":        "小市值风险(<30亿)",
+    "P6_retail":          "散户主导(小单>30%且涨幅小)",
+    "P_high_price":       "高价股(>200元)",
+}
+
 SCORE_HEADERS = [
     "代码", "名称", "最新价", "综合得分",
     "资金得分", "趋势得分", "启动得分", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
-    "涨跌幅", "换手率", "量比", "总市值", "触发信号",
+    "涨跌幅", "换手率", "量比", "总市值", "触发信号", "信号说明",
 ]
 
 # 腾讯K线 API (获取价格历史)
@@ -440,6 +453,7 @@ def score_all_stocks(date_str=None):
             "加速度得分": sub.get("flow_accel", 0.5), "占比趋势得分": ratio_score,
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
             "触发信号": ",".join(signals),
+            "信号说明": "; ".join(SIGNAL_NAMES[s] for s in signals if s in SIGNAL_NAMES),
         })
 
     # ── 排序 + 保存 CSV ──
