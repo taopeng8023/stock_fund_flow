@@ -97,11 +97,11 @@ def _load_latest_fund_flow(date_str):
 
 
 def _load_sector_flows(date_str):
-    """加载最新行业板块流"""
+    """加载最新行业板块流，按名称索引"""
     intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
     if not os.path.isdir(intraday_dir): return {}, {}
 
-    # 行业流
+    # 行业流 — 用"名称"列做 key（stock的f100是行业名称，非代码）
     ind_files = sorted(
         [f for f in os.listdir(intraday_dir) if f.startswith("industry_flow_") and f.endswith(".csv")],
         reverse=True,
@@ -110,7 +110,10 @@ def _load_sector_flows(date_str):
     if ind_files:
         with open(os.path.join(intraday_dir, ind_files[0]), encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
-                sector_map[r["代码"]] = _tof(r.get("主力净流入"))
+                name = r.get("名称", "")
+                flow = _tof(r.get("主力净流入"))
+                if name:
+                    sector_map[name] = flow
 
     # 概念流
     con_files = sorted(
@@ -121,7 +124,10 @@ def _load_sector_flows(date_str):
     if con_files:
         with open(os.path.join(intraday_dir, con_files[0]), encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
-                concept_map[r["名称"]] = _tof(r.get("主力净流入"))
+                name = r.get("名称", "")
+                flow = _tof(r.get("主力净流入"))
+                if name:
+                    concept_map[name] = flow
 
     return sector_map, concept_map
 
@@ -140,27 +146,28 @@ def score_all_stocks(date_str=None):
         return []
 
     sector_flows, concept_flows = _load_sector_flows(date_str)
+    print(f"  采集: {len(stocks)} 只, {len(sector_flows)} 个行业板块")
 
-    # 预计算百分位数组
+    # ── 风控过滤 ──
+    stocks = [s for s in stocks if _tof(s.get("最新价")) >= 4.0]
+    stocks = [s for s in stocks if 30 <= _tof(s.get("总市值")) / 1e8 <= 2000]
+    print(f"  过滤后: {len(stocks)} 只 (价格≥4, 市值30-2000亿)")
+
+    # 预计算百分位数组 (过滤后)
     f62_vals = [_tof(s.get("主力净流入")) for s in stocks]
     f184_vals = [_tof(s.get("主力占比")) for s in stocks]
     f168_vals = [_tof(s.get("融资净买入")) for s in stocks]
-    f10_vals = [_tof(s.get("量比")) for s in stocks]
-    f8_vals = [_tof(s.get("换手率")) for s in stocks]
 
-    # 行业内排名: 按 f100 行业分组
+    # 行业内排名: 按行业分组
     sector_groups = defaultdict(list)
     for s in stocks:
         sector_groups[s.get("行业", "其他")].append(_tof(s.get("主力净流入")))
-
-    print(f"  全市场: {len(stocks)} 只, {len(sector_flows)} 个行业板块")
 
     # ── 加载价格历史（前200只市值最大的） ──
     mcap_stocks = sorted(stocks, key=lambda s: -_tof(s.get("总市值")))
     top_codes = [s["代码"] for s in mcap_stocks[:200]]
     price_hist = _load_stock_prices(top_codes, 200)
     print(f"  价格历史: {len(price_hist)} 只")
-
     # ── 逐只评分 ──
     results = []
     for s in stocks:
@@ -214,14 +221,16 @@ def score_all_stocks(date_str=None):
         sub["trend"] = round(tr, 3)
 
         # ── sector (5%) ──
-        if sector_flows:
+        if sector_flows and industry:
             all_sf = list(sector_flows.values())
-            sec = _pct_rank(all_sf, sector_flows.get(industry, 0))
+            industry_flow = sector_flows.get(industry, 0)
+            sec = _pct_rank(all_sf, industry_flow) if all_sf else 0.5
         else:
             sec = 0.5
-        if concept_flows and code:
+        # 概念叠加: 简化处理
+        if concept_flows:
             all_cf = list(concept_flows.values())
-            sec = sec * 0.70 + _pct_rank(all_cf, 0) * 0.30
+            sec = sec * 0.70 + 0.5 * 0.30  # 概念部分默认中性
         sub["sector"] = round(sec, 3)
 
         # ── position (7%) ──
