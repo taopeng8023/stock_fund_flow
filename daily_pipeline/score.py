@@ -35,6 +35,16 @@ SIGNAL_NAMES = {
     "P_small_cap":        "小市值风险(<30亿)",
     "P6_retail":          "散户主导(小单>30%且涨幅小)",
     "P_high_price":       "高价股(>200元)",
+    "P33_margin_strong":  "融资买入占比高(>8%,杠杆资金看多)",
+    "P33_margin_moderate":"融资买入占比中等(3-8%)",
+    "P33_margin_weak":    "融资买入占比为负(<-5%,杠杆资金撤退)",
+    "P34_gap_strong":     "高开高走(开盘缺口>2%且收涨>2%)",
+    "P34_gap_reverse":    "低开反转(开盘缺口<-2%但收涨>1%)",
+    "P34_gap_trap":       "高开陷阱(开盘缺口>3%但收跌)",
+    "P35_short_cover":    "融券空头回补(净卖出<-5000万)",
+    "P35_short_pressure": "融券强做空(净卖出>3亿)",
+    "P35_short_moderate": "融券中度做空(净卖出>1亿)",
+    "P35_short_heavy":    "融券/主力比>3(做空压力大)",
 }
 
 SCORE_HEADERS = [
@@ -252,6 +262,8 @@ def score_all_stocks(date_str=None):
     f62_vals = [_tof(s.get("主力净流入")) for s in stocks]
     f184_vals = [_tof(s.get("主力占比")) for s in stocks]
     f168_vals = [_tof(s.get("融资净买入")) for s in stocks]
+    f169_vals = [_tof(s.get("融资净买入占比")) for s in stocks]     # 融资买入占比
+    f170_vals = [_tof(s.get("融券净卖出")) for s in stocks]          # 融券净卖出
 
     # 行业内排名: 按行业分组
     sector_groups = defaultdict(list)
@@ -277,6 +289,11 @@ def score_all_stocks(date_str=None):
         f69_val = _tof(s.get("超大单占比"))
         f87_val = _tof(s.get("小单占比"))
         f168_val = _tof(s.get("融资净买入"))
+        f169_val = _tof(s.get("融资净买入占比"))                     # 融资买入占比
+        f170_val = _tof(s.get("融券净卖出"))                         # 融券净卖出
+        f172_val = _tof(s.get("融券卖出量"))                         # 融券卖出量
+        f17_val = _tof(s.get("开盘"))                                # 开盘价
+        f18_val = _tof(s.get("昨收"))                                # 昨收价
         f165_val = _tof(s.get("5日主力占比"))
         f175_val = _tof(s.get("10日主力占比"))
         f164_val = _tof(s.get("5日主力净流入"))
@@ -441,6 +458,42 @@ def score_all_stocks(date_str=None):
             signals.append("P32_extreme")
         sub["ratio_trend"] = round(ratio_score, 3)
         total += ratio_score
+
+        # ── P33: 融资买入占比 (融资质量) ──
+        margin_quality = 0.0
+        if f169_val > 8:
+            margin_quality = 0.03; signals.append("P33_margin_strong")
+        elif f169_val > 3:
+            margin_quality = 0.01; signals.append("P33_margin_moderate")
+        elif f169_val < -5:
+            margin_quality = -0.03; signals.append("P33_margin_weak")
+        total += margin_quality
+
+        # ── P34: 开盘缺口 (隔夜信号) ──
+        gap_signal = 0.0
+        if f18_val > 0 and f17_val > 0:
+            gap = (f17_val - f18_val) / f18_val * 100  # 开盘缺口%
+            if gap > 2 and f3 > 2:
+                gap_signal = 0.03; signals.append("P34_gap_strong")       # 高开高走
+            elif gap < -2 and f3 > 1:
+                gap_signal = 0.02; signals.append("P34_gap_reverse")      # 低开反转
+            elif gap > 3 and f3 < 0:
+                gap_signal = -0.04; signals.append("P34_gap_trap")        # 高开低走
+        total += gap_signal
+
+        # ── P35: 融券压力 (做空检测) ──
+        short_signal = 0.0
+        if f170_val < -1_0000_0000:  # 净卖出 < -1亿 = 显著空头回补
+            short_signal = 0.02; signals.append("P35_short_cover")
+        if f170_val > 3_0000_0000:   # 净卖出 > 3亿 = 强做空压力
+            short_signal = -0.04; signals.append("P35_short_pressure")
+        elif f170_val > 1_0000_0000:  # 净卖出 > 1亿 = 中度做空
+            short_signal = -0.02; signals.append("P35_short_moderate")
+        if f172_val > 0 and f62_val > 0:
+            short_ratio = abs(f170_val) / max(abs(f62_val), 1)
+            if short_ratio > 3:  # 融券超过主力3倍
+                short_signal -= 0.03; signals.append("P35_short_heavy")
+        total += short_signal
 
         # ── 风险惩罚（不硬过滤，打分体现）──
         mcap_yi = f20 / 1e8
