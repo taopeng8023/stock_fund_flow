@@ -8,33 +8,23 @@ cd "$(dirname "$0")/.."
 source .venv/bin/activate 2>/dev/null || true
 
 DATE="${1:-$(date +%Y%m%d)}"
-SNAPSHOT="${2:-1430}"  # 默认14:30买入模式
+
+# 采集时间点 (顺延1分钟避免冲突)  格式: HHMM
+TRADING_TIMES=("0931" "1001" "1031" "1101" "1131" "1301" "1331" "1401" "1431")
+SCORE_TIME="1431"      # 14:31 评分截止
+CLOSE_TIME="1501"      # 15:01 收盘后补采一次
 
 echo "============================================"
 echo "  Daily Pipeline — $DATE"
-echo "  采集时间: 09:30 ~ ${SNAPSHOT:0:2}:${SNAPSHOT:2:2}"
-echo "  采集间隔: 30分钟"
+echo "  盘中采集: ${TRADING_TIMES[0]} ~ $SCORE_TIME (每30分钟)"
+echo "  评分时间: $SCORE_TIME"
+echo "  收盘补采: $CLOSE_TIME"
 echo "============================================"
 
-# 采集时间点 (北京时间)
-TIMES=(
-    "0930" "1000" "1030" "1100" "1130"
-    "1300" "1330" "1400" "1430"
-)
-
 COLLECTED=0
-for TS in "${TIMES[@]}"; do
-    # 如果已过截止时间，停止采集
-    if [ "$TS" \> "$SNAPSHOT" ] || [ "$TS" = "$SNAPSHOT" ]; then
-        # 到达截止时间: 跑最后一次采集
-        if [ "$TS" \> "$SNAPSHOT" ]; then
-            break
-        fi
-    fi
 
-    NOW=$(date +%H%M 2>/dev/null || echo "0000")
-
-    # 等到达目标时间 (仅在当天运行时等待)
+for TS in "${TRADING_TIMES[@]}"; do
+    # 等到达目标时间 (仅当天等待)
     if [ "$DATE" = "$(date +%Y%m%d)" ]; then
         while [ "$(date +%H%M)" \< "$TS" ]; do
             sleep 10
@@ -45,19 +35,26 @@ for TS in "${TIMES[@]}"; do
     echo "[$(date +%H:%M:%S)] 采集 $TS ..."
     python -m daily_pipeline.main --mode=intraday --date="$DATE"
     COLLECTED=$((COLLECTED + 1))
-
-    if [ "$TS" = "$SNAPSHOT" ]; then
-        break
-    fi
 done
 
+# 14:31 采集完成后自动评分
 echo ""
 echo "============================================"
-echo "  采集完成 ($COLLECTED 次快照)"
-echo "  开始评分 (截止=$SNAPSHOT)..."
+echo "  盘中采集完成 ($COLLECTED 次快照)"
+echo "  自动评分 (截止=$SCORE_TIME)..."
 echo "============================================"
+python -m daily_pipeline.main --mode=score --date="$DATE" --snapshot="$SCORE_TIME"
 
-python -m daily_pipeline.main --mode=score --date="$DATE" --snapshot="$SNAPSHOT"
+# 收盘后补采一次 (为后续分析储备数据)
+if [ "$DATE" = "$(date +%Y%m%d)" ]; then
+    while [ "$(date +%H%M)" \< "$CLOSE_TIME" ]; do
+        sleep 10
+    done
+fi
 
 echo ""
-echo "✓ 评分完成: research_data/$DATE/scores.csv"
+echo "[$(date +%H:%M:%S)] 收盘补采 $CLOSE_TIME ..."
+python -m daily_pipeline.main --mode=intraday --date="$DATE"
+
+echo ""
+echo "✓ 全部完成: research_data/$DATE/scores.csv"
