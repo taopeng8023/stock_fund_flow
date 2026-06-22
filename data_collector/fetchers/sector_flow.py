@@ -303,7 +303,7 @@ def _fetch_ranked(sector_code, fid, expected_total):
     return rank_map, value_map
 
 
-def fetch_top_sector_details(industry_rows, top_n=5, date_str=None, target_subdir="sectors"):
+def fetch_top_sector_details(industry_rows, top_n=8, date_str=None, target_subdir="sectors"):
     """
     取主力净流入最高的 top_n 个板块，钻取成分股大单详情。
     target_subdir: 输出子目录名，默认 "sectors"（行业），概念板块用 "concept_sectors"
@@ -576,7 +576,7 @@ def _save_multiday_rankings(rows, date_str):
         print(f"  {label}: {os.path.basename(path)} ({len(sorted_rows)} 条)")
 
 
-def fetch(date_str=None, top_detail_n=5):
+def fetch(date_str=None, top_detail_n=8):
     """获取行业板块 + 概念板块资金流，钻取 top N 行业 + 概念成分股详情"""
     results = {}
     industry_rows = None
@@ -618,6 +618,6 @@ if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="板块资金流 + Top N 成分股大单钻取")
     p.add_argument("--date", default=None, help="日期 YYYYMMDD, 默认今天")
-    p.add_argument("--top", type=int, default=5, help="钻取前 N 个行业板块成分股, 0 关闭")
+    p.add_argument("--top", type=int, default=8, help="钻取前 N 个行业板块成分股, 0 关闭")
     args = p.parse_args()
     fetch(date_str=args.date, top_detail_n=args.top)

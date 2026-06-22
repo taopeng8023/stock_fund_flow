@@ -228,6 +228,33 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     if 5 <= f8 <= 15 and f10 > 1.5:
         total += 0.03
 
+    # P28: 单日强势+多日净流出 (回溯: 领益智造日流入9.28亿但5日净流出-14M→次日-1.07%)
+    cum_5d = md.get("cum_5d", 0)
+    if score_capital > 0.70 and cum_5d < 0 and f62 > 0:
+        total -= 0.08
+
+    # P29: 极端换手率风险 (回溯: 海鸥13.42%→-3.58%, 三超19.62%→-1.86%)
+    if f8 > 13 and score_capital < 0.75:
+        total -= 0.06
+
+    # P30: 板块过热 (回溯: 板块得分1.0和0.979的票次日均跌)
+    sector_score = stock.get("_score_sector", 0.5)
+    if sector_score > 0.95:
+        total -= 0.04
+
+    # P31: 板块轮动 (全板块日内快照分析)
+    rotation = context.get("_rotation_signals", {})
+    sector_code = stock.get("_sector_code", "")
+    if sector_code:
+        if sector_code in rotation.get("dropped_out", []):
+            total -= 0.06
+        elif sector_code in rotation.get("fading_sectors", []):
+            total -= 0.04
+        elif sector_code in rotation.get("rising_sectors", []):
+            total += 0.04
+        elif sector_code in rotation.get("stable_leaders", []):
+            total += 0.02
+
     # ── 特殊调整 ──
     if f3 < 3.0 and score_capital > 0.6:
         total += 0.05  # 沉默吸筹

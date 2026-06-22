@@ -25,13 +25,13 @@ MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "300", "600", "601", "603", "
 # 14 维度权重 — 三市场景自适应
 # ═══════════════════════════════════════
 WEIGHTS_BASE = {
-    "start_signal":  0.15,   # 回溯优化: 过高导致排名倒置
+    "start_signal":  0.13,   # 回溯优化: 0.15→0.13 降低启动因子反向信号
     "capital":       0.19,   # 真金白银 > 板块新鲜度
     "trend":         0.10,
-    "sector":        0.07,
+    "sector":        0.05,   # 回溯优化: 0.07→0.05 板块过热信号反向
     "position":      0.07,
     "analyst":       0.05,   # 回溯优化: 有分析师覆盖的票次日更稳
-    "multiday":      0.04,
+    "multiday":      0.06,   # 回溯优化: 0.04→0.06 多日累计流2.11x正向最强
     "technical":     0.04,
     "dragon_tiger":  0.03,
     "north_flow":    0.02,
@@ -50,14 +50,14 @@ WEIGHTS_BASE = {
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
     "trend": 0.12, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
-    "start_signal": 0.17, "capital": 0.17, "intra_sector": 0.05, "margin_net": 0.04,
+    "start_signal": 0.15, "capital": 0.17, "intra_sector": 0.05, "margin_net": 0.04,
     "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
     "margin_long": 0.03, "volume_quality": 0.02, "intraday_trend": 0.03,
     "ratio_rank": 0.00,
 }
 
 WEIGHTS_BEAR = {**WEIGHTS_BASE,
-    "analyst": 0.07, "north_flow": 0.04, "position": 0.10, "start_signal": 0.16,
+    "analyst": 0.07, "north_flow": 0.04, "position": 0.10, "start_signal": 0.14,
     "trend": 0.09, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
     "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
     "margin_short": 0.04, "volume_quality": 0.01, "intraday_trend": 0.015,

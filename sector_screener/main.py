@@ -3,7 +3,7 @@
 用法:
   python -m sector_screener.main                    默认今天
   python -m sector_screener.main --date=20260617    指定日期
-  python -m sector_screener.main --sectors=5 --top=10  参数调整
+  python -m sector_screener.main --sectors=8 --top=10  参数调整
 """
 import sys
 import json
@@ -20,6 +20,7 @@ from sector_screener.loaders.block_trade import load_block_trade
 from sector_screener.loaders.org_research import load_org_research
 from sector_screener.loaders.earnings_forecast import load_earnings_forecast
 from sector_screener.loaders.lockup_expiry import load_lockup_expiry
+from sector_screener.loaders.sector_rotation import load_sector_rotation
 from sector_screener.filters import split_stocks
 from sector_screener.engine import build_context, score_candidates
 from sector_screener.output import print_results, print_diagnosis, save_json, save_csv
@@ -95,7 +96,7 @@ def _calc_market_sentiment(date_str):
     return 0.0, "震荡"
 
 
-def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
+def run_pipeline(date_str=None, top_sectors=8, top_picks=10):
     """执行全流程选股"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
@@ -122,6 +123,7 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
         return None
     sector_freshness, _, sector_persistence = load_sector_multiday(date_str)
     sector_intraday = load_sector_intraday(date_str)
+    sector_rotation = load_sector_rotation(date_str)
     sector_flows = {code: 0.5 + (top_sectors - i) * 0.1 for i, code in enumerate(sector_codes)}
 
     # [3] 全数据源
@@ -158,6 +160,8 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
         block_trade=block_trade, org_research=org_research,
         earnings_forecast=earnings_data, lockup_expiry=lockup_data,
         sector_intraday=sector_intraday,
+        sector_momentum=sector_rotation.get("sector_momentum_score", {}),
+        rotation_signals=sector_rotation.get("rotation_signals", {}),
     )
     context["_weights"] = weights
 
@@ -174,7 +178,7 @@ def run_pipeline(date_str=None, top_sectors=5, top_picks=10):
     return {"limit_up": limit_up, "scored": scored, "excluded": excluded}
 
 
-def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
+def get_enhanced_picks(date_str=None, top_sectors=8, top_picks=10):
     """程序化接口 — 兼容 sector_enhanced_picks.get_enhanced_picks"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
@@ -255,13 +259,13 @@ def get_enhanced_picks(date_str=None, top_sectors=5, top_picks=10):
 
 
 # 兼容 stock_picker.get_picks 调用方
-def get_picks(date_str=None, top_n=5):
-    return get_enhanced_picks(date_str=date_str, top_sectors=5, top_picks=top_n)
+def get_picks(date_str=None, top_n=8):
+    return get_enhanced_picks(date_str=date_str, top_sectors=8, top_picks=top_n)
 
 
 def main():
     date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
-    top_sectors = 5
+    top_sectors = 8
     top_picks = 10
 
     for arg in sys.argv:

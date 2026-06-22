@@ -25,14 +25,15 @@ def _load_concept_flow_latest(date_str):
 def score_sector(stock, context):
     """返回 0~1
     组成:
-      - sector_flows: 行业板块今日排名得分 (70%)
-      - concept overlay: 概念板块资金共振 (30% × 0.3 = 9%)
+      - sector_flows: 行业板块今日排名得分 (40%)
+      - sector_momentum: 板块日内轮动动量 (30%)
+      - concept overlay: 概念板块资金共振 (30%)
       - intraday sector momentum: 板块日内资金加速 (bonus/penalty, ±0.05)
     """
     sector_code = stock.get("_sector_code", "")
     date_str = context.get("_date_str", "")
 
-    # ── 行业排名得分 ──
+    # ── 行业排名得分（静态） ──
     score = context.get("sector_flows", {}).get(sector_code, 0.5)
 
     # ── 板块持续性降权 ──
@@ -40,6 +41,10 @@ def score_sector(stock, context):
     if sector_persistence:
         persist = sector_persistence.get(sector_code, 0.7)
         score = score * persist
+
+    # ── 板块轮动动量（新增） ──
+    sector_momentum = context.get("sector_momentum", {})
+    s_momentum = sector_momentum.get(sector_code, 0.5)
 
     # ── 概念板块叠加 ──
     # 个股可能属于多个概念板块，取其资金流排名最高的（最强势的概念）
@@ -71,5 +76,5 @@ def score_sector(stock, context):
         confidence = min(1.0, snaps / 7.0)
         intra_bonus = flow_trend * 0.05 * confidence  # ±0.05
 
-    base = score * 0.70 + s_concept * 0.30
+    base = score * 0.40 + s_momentum * 0.30 + s_concept * 0.30
     return round(max(0.0, min(1.0, base + intra_bonus)), 4)

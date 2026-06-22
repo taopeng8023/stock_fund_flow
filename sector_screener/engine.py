@@ -19,7 +19,7 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
                   regime, sentiment_bonus, date_str, afternoon,
                   block_trade=None, org_research=None,
                   earnings_forecast=None, lockup_expiry=None,
-                  sector_intraday=None):
+                  sector_intraday=None, sector_momentum=None, rotation_signals=None):
     """构建评分上下文 — 预计算所有候选池的 percentile 数组"""
     ctx = {
         "sector_freshness": sector_freshness,
@@ -53,6 +53,8 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
         "earnings_forecast": earnings_forecast or {},
         "lockup_expiry": lockup_expiry or {},
         "sector_intraday": sector_intraday or {},
+        "sector_momentum": sector_momentum or {},
+        "_rotation_signals": rotation_signals or {},
     }
     return ctx
 
