@@ -19,6 +19,8 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
     f3 = to_float(stock.get("f3"))
     f62 = to_float(stock.get("f62"))
     f184 = to_float(stock.get("f184"))
+    f165 = to_float(stock.get("f165"))  # 5日主力净占比
+    f175 = to_float(stock.get("f175"))  # 10日主力净占比
     f15 = to_float(stock.get("f15"))
     f16 = to_float(stock.get("f16"))
     f17 = to_float(stock.get("f17"))
@@ -254,6 +256,23 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
             total += 0.04
         elif sector_code in rotation.get("stable_leaders", []):
             total += 0.02
+
+    # P32: 三周期主力占比趋势 (f165/f175 已采集未使用)
+    # f165=5日主力净占比, f175=10日主力净占比
+    if f165 is not None and f175 is not None and f165 > 0:
+        # 占比加速: 今日显著高于5日均值(≥1.5x), 5日>10日, 今日非极端
+        if f184 > f165 * 1.5 and f165 > f175 and 5 <= f184 <= 12:
+            total += 0.05   # 主力占比温和加速, 持续性强 (卓胜微/应流股份模式)
+        # 脉冲: 今日极高但5日很低
+        elif f184 > 10 and f165 < f184 * 0.3:
+            total -= 0.06   # 今日脉冲 vs 5日低迷 = 一日游风险高
+        # 极端: 占比连续高位, 均值回归压力
+        elif f184 > 12 and f165 > 6:
+            total -= 0.04
+    elif f165 is not None and f175 is not None and f165 <= 0:
+        # 反转: 占比从负值回升
+        if 2 <= f184 <= 5 and f175 < f165:
+            total += 0.03
 
     # ── 特殊调整 ──
     if f3 < 3.0 and score_capital > 0.6:
