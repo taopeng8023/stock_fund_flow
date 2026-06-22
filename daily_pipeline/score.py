@@ -214,12 +214,10 @@ def score_all_stocks(date_str=None):
     sector_flows, concept_flows = _load_sector_flows(date_str)
     print(f"  采集: {len(stocks)} 只, {len(sector_flows)} 个行业板块")
 
-    # ── 风控过滤 ──
-    stocks = [s for s in stocks if _tof(s.get("最新价")) >= 4.0]
-    stocks = [s for s in stocks if 30 <= _tof(s.get("总市值")) / 1e8 <= 2000]
-    stocks = [s for s in stocks if 2.0 <= _tof(s.get("换手率")) <= 25.0]
-    stocks = [s for s in stocks if _tof(s.get("量比")) >= 1.0]
-    print(f"  过滤后: {len(stocks)} 只 (价格≥4, 市值30-2000亿, 换手2-25%, 量比≥1)")
+    # ── 轻量过滤（只去掉明显异常值，保留研究样本）──
+    stocks = [s for s in stocks if _tof(s.get("最新价")) >= 2.0]      # 去掉仙股
+    stocks = [s for s in stocks if _tof(s.get("总市值")) / 1e8 >= 10]  # 去掉微型壳
+    print(f"  全量评分: {len(stocks)} 只 (价格≥2, 市值≥10亿)")
 
     # 预计算百分位数组 (过滤后)
     f62_vals = [_tof(s.get("主力净流入")) for s in stocks]
@@ -415,11 +413,20 @@ def score_all_stocks(date_str=None):
         sub["ratio_trend"] = round(ratio_score, 3)
         total += ratio_score
 
-        # ── 风控过滤 ──
+        # ── 风险惩罚（不硬过滤，打分体现）──
         mcap_yi = f20 / 1e8
+        # 高换手 + 弱资金 = 出货嫌疑
         if f8_val > 13 and cap < 0.75: total -= 0.06; signals.append("P29_high_turnover")
-        if mcap_yi < 30: total -= 0.05
+        # 低换手无流动性
+        if f8_val < 2.0: total -= 0.04; signals.append("P_low_liquidity")
+        # 量比过低
+        if f10_val < 1.0: total -= 0.03; signals.append("P_low_vol_ratio")
+        # 小市值风险
+        if mcap_yi < 30: total -= 0.04; signals.append("P_small_cap")
+        # 散户主导
         if f87_val > 30 and f3 < 3: total -= 0.08; signals.append("P6_retail")
+        # 极端高价股
+        if f2 > 200: total -= 0.02; signals.append("P_high_price")
 
         total = max(0.0, min(1.0, total))
 
