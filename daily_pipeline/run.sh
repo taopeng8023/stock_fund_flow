@@ -22,12 +22,21 @@ echo "  收盘补采: $CLOSE_TIME"
 echo "============================================"
 
 COLLECTED=0
+IS_TODAY=0
+[ "$DATE" = "$(date +%Y%m%d)" ] && IS_TODAY=1
 
 for TS in "${TRADING_TIMES[@]}"; do
-    # 等到达目标时间 (仅当天等待)
-    if [ "$DATE" = "$(date +%Y%m%d)" ]; then
+    # 当天模式: 跳过已过去的时间点
+    if [ $IS_TODAY -eq 1 ]; then
+        NOW=$(date +%H%M)
+        if [ "$NOW" \> "$TS" ]; then
+            echo "[跳过] $TS (已过当前时间 $NOW)"
+            continue
+        fi
+        # 等到达目标时间
+        echo "[等待] $TS (当前 $NOW)..."
         while [ "$(date +%H%M)" \< "$TS" ]; do
-            sleep 10
+            sleep 15
         done
     fi
 
@@ -36,6 +45,15 @@ for TS in "${TRADING_TIMES[@]}"; do
     python -m daily_pipeline.main --mode=intraday --date="$DATE"
     COLLECTED=$((COLLECTED + 1))
 done
+
+# 当天且14:31已过 → 直接评分; 否则等到14:31
+if [ $IS_TODAY -eq 1 ]; then
+    NOW=$(date +%H%M)
+    if [ "$NOW" \< "$SCORE_TIME" ]; then
+        echo "[等待评分] 等到 $SCORE_TIME ..."
+        while [ "$(date +%H%M)" \< "$SCORE_TIME" ]; do sleep 15; done
+    fi
+fi
 
 # 14:31 采集完成后自动评分
 echo ""
