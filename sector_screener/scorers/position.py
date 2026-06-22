@@ -19,18 +19,20 @@ def score_position(stock, context):
     position = (price - low_60) / (high_60 - low_60)
     position = max(0.0, min(1.0, position))
 
+    # 回溯优化: 中位区(0.25-0.65)实际表现与次日收益负相关, 低位区反而正相关
+    # 低位=均值回归机会, 中位=方向不明, 高位=回调风险
     if position < 0.10:
-        score = 0.15
+        score = 0.25   # 极低位: 有反弹潜力但风险大
     elif 0.10 <= position < 0.25:
-        score = 0.40
+        score = 0.80   # 低位区: 均值回归最优 (回溯corr正向)
     elif 0.25 <= position < 0.40:
-        score = 0.70
+        score = 0.55   # 中低位: 中性偏正
     elif 0.40 <= position < 0.65:
-        score = 0.85
+        score = 0.45   # 中位区: 方向不明 (回溯corr负向, 原0.85→0.45)
     elif 0.65 <= position < 0.85:
-        score = 0.50
+        score = 0.35   # 偏高位: 回调风险
     else:
-        score = 0.20
+        score = 0.15   # 极高位: 强回调风险
 
     if len(closes) >= 5:
         ma5 = sum(closes[:5]) / 5

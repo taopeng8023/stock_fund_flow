@@ -60,4 +60,5 @@ def score_technical(stock, context):
     stock["_ma_align"] = ma_align
     stock["_breakout_20d"] = breakout_20d
 
-    return ma_align * 0.5 + breakout_score * 0.5
+    # 回溯优化: MA排列corr=+0.037(最佳单因子), 突破信号噪音多
+    return ma_align * 0.60 + breakout_score * 0.40

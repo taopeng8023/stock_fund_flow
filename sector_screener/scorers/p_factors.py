@@ -274,6 +274,17 @@ def apply_p_factors(stock, score_start, score_capital, score_trend, total, conte
         if 2 <= f184 <= 5 and f175 < f165:
             total += 0.03
 
+    # P33: 震荡市动量衰减 (回溯: 模型在震荡市超额-0.34%, 动量因子失效)
+    candidates = context.get("_candidates", [])
+    if candidates and len(candidates) >= 20:
+        chgs = [to_float(s.get("f3")) for s in candidates[:30]]
+        if chgs:
+            market_std = (sum((c - sum(chgs)/len(chgs))**2 for c in chgs) / len(chgs)) ** 0.5
+            # 震荡市: 涨跌幅标准差 < 1.8% → 动量信号噪音多
+            if market_std < 1.8:
+                # 降低趋势和技术面的贡献 (通过给total加回部分已计入的动量分)
+                total -= 0.03  # 震荡市保护性降权
+
     # ── 特殊调整 ──
     if f3 < 3.0 and score_capital > 0.6:
         total += 0.05  # 沉默吸筹

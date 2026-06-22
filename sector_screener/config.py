@@ -32,12 +32,12 @@ WEIGHTS_BASE = {
     "position":      0.07,
     "analyst":       0.05,   # 回溯优化: 有分析师覆盖的票次日更稳
     "multiday":      0.06,   # 回溯优化: 0.04→0.06 多日累计流2.11x正向最强
-    "technical":     0.04,
+    "technical":     0.05,  # 回溯优化: 0.04→0.05 MA排列最佳单因子
     "dragon_tiger":  0.03,
     "north_flow":    0.02,
     "intra_sector":  0.04,  # 行业内排名（合并原 ratio_rank 0.01）
     "margin_net":    0.03,
-    "flow_accel":    0.03,
+    "flow_accel":    0.02,  # 回溯优化: 0.03→0.02
     "block_trade":   0.02,   # 🆕 大宗交易溢价信号
     "org_research":  0.02,   # 🆕 机构调研热度
     "earnings":      0.02,   # 🆕 业绩预告类型
