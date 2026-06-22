@@ -132,6 +132,72 @@ def _load_sector_flows(date_str):
     return sector_map, concept_map
 
 
+def _build_price_history(date_str, stocks):
+    """从 research_data 跨日累积收盘价，构建 {code: [close_0, close_1, ...]} (0=最新)"""
+    price_hist = {}
+
+    # 1. 当前日: 从 stocks 中取 f2(最新价) + f15(最高) + f16(最低)
+    for s in stocks:
+        code = s.get("代码", "")
+        close = _tof(s.get("最新价"))
+        high = _tof(s.get("最高"))
+        low = _tof(s.get("最低"))
+        if code and close > 0:
+            price_hist[code] = {
+                "closes": [close],
+                "high_60": high if high > 0 else close,
+                "low_60": low if low > 0 else close,
+            }
+
+    # 2. 历史日: 读取之前日期的 fund_flow CSV
+    date_dirs = sorted([
+        d for d in os.listdir(RESEARCH_ROOT)
+        if os.path.isdir(os.path.join(RESEARCH_ROOT, d)) and d.isdigit() and d < date_str
+    ], reverse=True)
+
+    for prev_date in date_dirs[:60]:  # 最多回溯60天
+        intraday_dir = os.path.join(RESEARCH_ROOT, prev_date, "intraday")
+        if not os.path.isdir(intraday_dir):
+            continue
+        # 取最晚的快照（最接近收盘价）
+        files = sorted([
+            f for f in os.listdir(intraday_dir)
+            if f.startswith("fund_flow_") and f.endswith(".csv")
+        ], reverse=True)
+        if not files:
+            continue
+
+        path = os.path.join(intraday_dir, files[0])
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    code = r.get("代码", "")
+                    close = _tof(r.get("最新价"))
+                    high = _tof(r.get("最高"))
+                    low = _tof(r.get("最低"))
+                    if code and close > 0:
+                        if code not in price_hist:
+                            price_hist[code] = {"closes": [], "high_60": 0, "low_60": float("inf")}
+                        price_hist[code]["closes"].append(close)
+                        if high > 0:
+                            price_hist[code]["high_60"] = max(price_hist[code]["high_60"], high)
+                        if low > 0:
+                            price_hist[code]["low_60"] = min(price_hist[code]["low_60"], low)
+        except Exception:
+            continue
+
+    # 清理无限值
+    for code in price_hist:
+        if price_hist[code]["low_60"] == float("inf"):
+            price_hist[code]["low_60"] = price_hist[code]["closes"][0] if price_hist[code]["closes"] else 0
+        if price_hist[code]["high_60"] == 0:
+            price_hist[code]["high_60"] = price_hist[code]["closes"][0] if price_hist[code]["closes"] else 0
+
+    n_with_history = sum(1 for v in price_hist.values() if len(v["closes"]) >= 3)
+    print(f"  价格历史: {n_with_history} 只 (≥3天), 共{len(price_hist)}只有数据")
+    return price_hist
+
+
 def score_all_stocks(date_str=None):
     """全市场评分，返回 [{...}, ...] + 保存 scores.csv"""
     if date_str is None:
@@ -163,11 +229,9 @@ def score_all_stocks(date_str=None):
     for s in stocks:
         sector_groups[s.get("行业", "其他")].append(_tof(s.get("主力净流入")))
 
-    # ── 加载价格历史（前200只市值最大的） ──
-    mcap_stocks = sorted(stocks, key=lambda s: -_tof(s.get("总市值")))
-    top_codes = [s["代码"] for s in mcap_stocks[:200]]
-    price_hist = _load_stock_prices(top_codes, 200)
-    print(f"  价格历史: {len(price_hist)} 只")
+    # ── 构建价格历史 ──
+    # 从已有 intraday CSV 中提取每日收盘价（跨日累积）
+    price_hist = _build_price_history(date_str, stocks)
     # ── 逐只评分 ──
     results = []
     for s in stocks:
@@ -210,12 +274,15 @@ def score_all_stocks(date_str=None):
         tr += _range_score(f8_val, 5.0, 18.0, 2.0, 25.0) * 0.25
         tr += _range_score(f3, 2.5, 7.0, -2.0, 9.5) * 0.25
         # 中期动量 from price history
-        closes = price_hist.get(code, [])
-        if closes and len(closes) >= 20:
-            ret_10d = (closes[0] - closes[9]) / closes[9] * 100 if closes[9] > 0 else 0
-            ret_20d = (closes[0] - closes[19]) / closes[19] * 100 if closes[19] > 0 else 0
-            tr += (_range_score(ret_10d, 3, 15, -5, 25) * 0.55 + _range_score(ret_20d, 5, 25, -5, 35) * 0.45) * 0.20
-        else:
+        ph = price_hist.get(code, {})
+        closes_hist = ph.get("closes", [])
+        if closes_hist and len(closes_hist) >= 10:
+            ret_10d = (closes_hist[0] - closes_hist[9]) / closes_hist[9] * 100 if closes_hist[9] > 0 else 0
+            tr += _range_score(ret_10d, 3, 15, -5, 25) * 0.55 * 0.20
+        if closes_hist and len(closes_hist) >= 20:
+            ret_20d = (closes_hist[0] - closes_hist[19]) / closes_hist[19] * 100 if closes_hist[19] > 0 else 0
+            tr += _range_score(ret_20d, 5, 25, -5, 35) * 0.45 * 0.20
+        if not closes_hist or len(closes_hist) < 10:
             tr += 0.5 * 0.20
         tr += 0.5 * 0.15  # short_trend default
         sub["trend"] = round(tr, 3)
@@ -234,19 +301,18 @@ def score_all_stocks(date_str=None):
         sub["sector"] = round(sec, 3)
 
         # ── position (7%) ──
-        if closes and len(closes) >= 20:
-            high_60 = max(closes[:60]) if len(closes) >= 60 else max(closes)
-            low_60 = min(closes[:60]) if len(closes) >= 60 else min(closes)
-            if high_60 > low_60:
-                pos = (f2 - low_60) / (high_60 - low_60)
-                if 0.10 <= pos < 0.25: p_score = 0.80
-                elif pos < 0.10: p_score = 0.25
-                elif 0.25 <= pos < 0.40: p_score = 0.55
-                elif 0.40 <= pos < 0.65: p_score = 0.45
-                elif 0.65 <= pos < 0.85: p_score = 0.35
-                else: p_score = 0.15
-            else:
-                p_score = 0.5
+        ph = price_hist.get(code, {})
+        closes_hist = ph.get("closes", [f2])
+        high_60d = ph.get("high_60", f2)
+        low_60d = ph.get("low_60", f2)
+        if high_60d > low_60d and len(closes_hist) >= 1:
+            pos = (f2 - low_60d) / (high_60d - low_60d)
+            if pos < 0.10: p_score = 0.25
+            elif 0.10 <= pos < 0.25: p_score = 0.80
+            elif 0.25 <= pos < 0.40: p_score = 0.55
+            elif 0.40 <= pos < 0.65: p_score = 0.45
+            elif 0.65 <= pos < 0.85: p_score = 0.35
+            else: p_score = 0.15
         else:
             p_score = 0.5
         sub["position"] = round(p_score, 3)
@@ -263,14 +329,22 @@ def score_all_stocks(date_str=None):
         sub["multiday"] = round(md, 3)
 
         # ── technical (5%) ──
-        if closes and len(closes) >= 20:
-            ma5 = sum(closes[:5]) / 5; ma10 = sum(closes[:10]) / 10; ma20 = sum(closes[:20]) / 20
+        ph = price_hist.get(code, {})
+        closes_hist = ph.get("closes", [])
+        if closes_hist and len(closes_hist) >= 20:
+            ma5 = sum(closes_hist[:5]) / 5
+            ma10 = sum(closes_hist[:10]) / 10
+            ma20 = sum(closes_hist[:20]) / 20
             align = sum([ma5 > ma10, ma10 > ma20, ma5 > ma20, f2 > ma5]) / 4
-            breakout = 0.4
-            if len(closes) >= 60:
-                high_60d = max(closes[1:61])
-                if f2 > high_60d * 0.98: breakout = 1.0
-            elif f2 > max(closes[1:21]) * 0.98: breakout = 0.8
+            # 突破检测
+            if len(closes_hist) >= 60:
+                h60 = max(closes_hist[:60])
+                breakout = 1.0 if f2 > h60 * 0.98 else 0.4
+            elif len(closes_hist) >= 20:
+                h20 = max(closes_hist[:20])
+                breakout = 0.8 if f2 > h20 * 0.98 else 0.4
+            else:
+                breakout = 0.4
             tech = align * 0.60 + breakout * 0.40
         else:
             tech = 0.5
