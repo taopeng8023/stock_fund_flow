@@ -19,8 +19,10 @@ RESEARCH_ROOT = os.path.join(
 WEIGHTS = {
     "capital": 0.19, "start_signal": 0.13, "trend": 0.10,
     "position": 0.07, "multiday": 0.06, "sector": 0.05,
-    "analyst": 0.05, "technical": 0.05, "intra_sector": 0.04,
-    "margin_net": 0.03, "flow_accel": 0.02,
+    "analyst": 0.02, "technical": 0.05, "intra_sector": 0.04,
+    "margin_net": 0.03, "flow_accel": 0.01,
+    "flow_stability": 0.03, "intraday_accel": 0.03,
+    "rank_trajectory": 0.02, "vwap_position": 0.02,
 }
 
 # ── 刚启动检测权重（降资金权重，升启动/位置/趋势）──
@@ -28,7 +30,9 @@ EARLY_WEIGHTS = {
     "capital": 0.10, "start_signal": 0.25, "trend": 0.15,
     "position": 0.15, "multiday": 0.08, "sector": 0.07,
     "analyst": 0.00, "technical": 0.05, "intra_sector": 0.05,
-    "margin_net": 0.03, "flow_accel": 0.05,
+    "margin_net": 0.03, "flow_accel": 0.02,
+    "flow_stability": 0.02, "intraday_accel": 0.02,
+    "rank_trajectory": 0.02, "vwap_position": 0.02,
 }
 
 # ── scores.csv 输出列 ──
@@ -70,6 +74,7 @@ SCORE_HEADERS = [
     "资金得分", "趋势得分", "启动因子", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
+    "日内稳定", "日内加速", "排名轨迹", "VWAP位置",
     "涨跌幅", "换手率", "量比", "总市值",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
 ]
@@ -256,21 +261,153 @@ def _build_price_history(date_str, stocks):
     return price_hist
 
 
-def score_all_stocks(date_str=None):
+def _load_all_snapshots(date_str, cutoff=None):
+    """加载全天所有快照,构建时序结构。
+    cutoff='1430' 只取 ≤1430 的快照。返回 (snapshots, time_series)
+      snapshots: [{ts, stocks: [{code, ...}]}]
+      time_series: {code: {ts: {f2, f62, f184, f8, f3}}}
+    """
+    intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
+    if not os.path.isdir(intraday_dir): return [], {}
+
+    files = sorted([
+        f for f in os.listdir(intraday_dir)
+        if f.startswith("fund_flow_") and f.endswith(".csv")
+    ])
+    if not files: return [], {}
+
+    # cutoff 过滤
+    if cutoff:
+        files = [f for f in files if f.replace("fund_flow_","").replace(".csv","") <= cutoff]
+    if not files: return [], {}
+
+    snapshots = []
+    time_series = defaultdict(dict)  # {code: {ts: {fields}}}
+
+    for f in files:
+        ts = f.replace("fund_flow_", "").replace(".csv", "")
+        path = os.path.join(intraday_dir, f)
+        stocks_ts = {}
+        with open(path, encoding="utf-8-sig") as fh:
+            for r in csv.DictReader(fh):
+                code = r.get("代码", "")
+                if not code: continue
+                data = {
+                    "f2": _tof(r.get("最新价")), "f3": _tof(r.get("涨跌幅")),
+                    "f62": _tof(r.get("主力净流入")), "f184": _tof(r.get("主力占比")),
+                    "f8": _tof(r.get("换手率")), "f10": _tof(r.get("量比")),
+                }
+                stocks_ts[code] = data
+                time_series[code][ts] = data
+        snapshots.append({"ts": ts, "stocks": stocks_ts})
+
+    n_multi = sum(1 for v in time_series.values() if len(v) >= 3)
+    print(f"  快照: {len(snapshots)}个 [{snapshots[0]['ts']}→{snapshots[-1]['ts']}]"
+          f"{' 截止'+cutoff if cutoff else ''}  多快照≥3: {n_multi}只")
+    return snapshots, dict(time_series)
+
+
+def _multi_snapshot_factors(code, time_series, all_f62_per_ts):
+    """多快照因子: (flow_stability, intraday_accel, rank_trajectory, vwap_pos)"""
+    if code not in time_series or len(time_series[code]) < 2:
+        return 0.5, 0.5, 0.5, 0.5
+
+    ts_data = time_series[code]
+    sorted_ts = sorted(ts_data.keys())
+    n = len(sorted_ts)
+
+    f62_seq = [ts_data[ts]["f62"] for ts in sorted_ts]
+    f184_seq = [ts_data[ts]["f184"] for ts in sorted_ts]
+    price_seq = [ts_data[ts]["f2"] for ts in sorted_ts]
+
+    # 1. flow_stability (3%): 低波动=机构持续, 高波动=游资
+    if n >= 3:
+        mean_f62 = statistics.mean(f62_seq)
+        std_f62 = statistics.stdev(f62_seq) if n > 2 else abs(f62_seq[-1] - f62_seq[0]) / 2
+        flow_stab = 1.0 - min(1.0, std_f62 / max(abs(mean_f62), 1))
+    else:
+        flow_stab = 0.5
+
+    # 2. intraday_accel (3%): 后半段 vs 前半段
+    if n >= 4:
+        mid = n // 2
+        first_half = statistics.mean(f62_seq[:mid])
+        second_half = statistics.mean(f62_seq[mid:])
+        denom = max(abs(first_half), 1)
+        accel_raw = (second_half - first_half) / denom
+        intraday_accel = 0.5 + max(-0.5, min(0.5, accel_raw * 2))
+    else:
+        intraday_accel = 0.5
+
+    # 3. rank_trajectory (2%): 全市场f62排名的改善
+    if n >= 4 and all_f62_per_ts:
+        rank_seq = []
+        for ts in sorted_ts:
+            if ts in all_f62_per_ts and all_f62_per_ts[ts]:
+                rank = sum(1 for v in all_f62_per_ts[ts] if v > f62_seq[sorted_ts.index(ts)]) / len(all_f62_per_ts[ts])
+                rank_seq.append(rank)
+        if len(rank_seq) >= 4:
+            # 排名从高到低 = 好, 用 1-rank 转换
+            rank_improve = rank_seq[0] - rank_seq[-1]  # 正=改善
+            rank_traj = 0.5 + max(-0.5, min(0.5, rank_improve * 3))
+        else:
+            rank_traj = 0.5
+    else:
+        rank_traj = 0.5
+
+    # 4. vwap_position (2%): 最新价 vs 日内均价
+    if n >= 2 and price_seq:
+        vwap = sum(price_seq) / len(price_seq)
+        latest = price_seq[-1]
+        if vwap > 0:
+            vwap_dev = latest / vwap
+            # <1=低估(加分), >1.03=追高(减分)
+            if vwap_dev < 0.98: vwap_pos = 0.70
+            elif vwap_dev < 1.00: vwap_pos = 0.60
+            elif vwap_dev <= 1.02: vwap_pos = 0.50
+            elif vwap_dev <= 1.05: vwap_pos = 0.40
+            else: vwap_pos = 0.30
+        else:
+            vwap_pos = 0.5
+    else:
+        vwap_pos = 0.5
+
+    return round(flow_stab, 3), round(intraday_accel, 3), round(rank_traj, 3), round(vwap_pos, 3)
+
+
+def score_all_stocks(date_str=None, snapshot_cutoff=None):
     """全市场评分，返回 [{...}, ...] + 保存 scores.csv"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
 
-    print(f"全市场评分 [{date_str}]")
+    mode_label = f"14:30买入" if snapshot_cutoff else "收盘评分"
+    print(f"全市场评分 [{date_str}] {mode_label}")
 
-    # 加载数据
-    stocks = _load_latest_fund_flow(date_str)
-    if not stocks:
+    # ── 加载多快照数据 ──
+    snapshots, time_series = _load_all_snapshots(date_str, snapshot_cutoff)
+    if not snapshots:
         print("  ✗ 无盘中数据")
         return []
 
+    # 最后一个快照的完整CSV数据（保留所有字段）
+    latest_file = [f for f in os.listdir(os.path.join(RESEARCH_ROOT, date_str, "intraday"))
+                   if f.startswith("fund_flow_") and f.endswith(".csv")]
+    if snapshot_cutoff:
+        latest_file = [f for f in latest_file if f.replace("fund_flow_","").replace(".csv","") <= snapshot_cutoff]
+    latest_file = sorted(latest_file)[-1] if latest_file else None
+
+    stocks = []
+    if latest_file:
+        with open(os.path.join(RESEARCH_ROOT, date_str, "intraday", latest_file), encoding="utf-8-sig") as fh:
+            stocks = list(csv.DictReader(fh))
+
+    # 预计算每个快照的f62数组(用于排名轨迹)
+    all_f62_per_ts = {}
+    for sn in snapshots:
+        all_f62_per_ts[sn["ts"]] = [d["f62"] for d in sn["stocks"].values()]
+
     sector_flows, concept_flows = _load_sector_flows(date_str)
-    print(f"  采集: {len(stocks)} 只, {len(sector_flows)} 个行业板块")
+    print(f"  个股: {len(stocks)} 只, 行业: {len(sector_flows)} 个")
 
     # ── 轻量过滤（只去掉明显异常值，保留研究样本）──
     stocks = [s for s in stocks if _tof(s.get("最新价")) >= 2.0]      # 去掉仙股
@@ -323,8 +460,13 @@ def score_all_stocks(date_str=None):
         comp_sigs = []   # 综合得分信号
         early_sigs = []  # 启动得分信号
 
-        # ── capital (19%) ──
-        cap = _pct_rank(f62_vals, f62_val) * 0.60
+        # ── capital (19%) ── 多快照: 用全天f62均值替代最后快照f62
+        if code in time_series and len(time_series[code]) >= 2:
+            ts_f62_vals = [d["f62"] for d in time_series[code].values()]
+            avg_f62 = statistics.mean(ts_f62_vals)
+        else:
+            avg_f62 = f62_val
+        cap = _pct_rank(f62_vals, avg_f62) * 0.60
         cap += _pct_rank(f184_vals, f184_val) * 0.25
         cap += (_pct_rank([_tof(x.get("超大单占比")) for x in stocks], f69_val)) * 0.15
         sub["capital"] = round(cap, 3)
@@ -458,6 +600,15 @@ def score_all_stocks(date_str=None):
             accel = 1.0
         sub["flow_accel"] = round(_range_score(accel, 1.3, 2.5, 0.3, 4.0), 3)
 
+        # ── 多快照因子 (4个) ──
+        flow_stab, intraday_accel, rank_traj, vwap_pos = _multi_snapshot_factors(
+            code, time_series, all_f62_per_ts
+        )
+        sub["flow_stability"] = flow_stab
+        sub["intraday_accel"] = intraday_accel
+        sub["rank_trajectory"] = rank_traj
+        sub["vwap_position"] = vwap_pos
+
         # ── 综合得分 ──
         total = sum(sub.get(k, 0.5) * WEIGHTS.get(k, 0) for k in WEIGHTS)
         for k in WEIGHTS:
@@ -565,6 +716,8 @@ def score_all_stocks(date_str=None):
             "多日得分": sub.get("multiday", 0.5), "技术面得分": sub.get("technical", 0.5),
             "行业内得分": sub.get("intra_sector", 0.5), "融资得分": sub.get("margin_net", 0.5),
             "加速度得分": sub.get("flow_accel", 0.5), "占比趋势得分": ratio_score,
+            "日内稳定": sub.get("flow_stability", 0.5), "日内加速": sub.get("intraday_accel", 0.5),
+            "排名轨迹": sub.get("rank_trajectory", 0.5), "VWAP位置": sub.get("vwap_position", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),

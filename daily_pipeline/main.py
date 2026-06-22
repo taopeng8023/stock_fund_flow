@@ -18,6 +18,7 @@ def main():
     mode = "full"
     date_str = None
     eval_date = None
+    snapshot = None
 
     for arg in sys.argv:
         if arg.startswith("--mode="):
@@ -26,6 +27,8 @@ def main():
             date_str = arg.split("=")[1]
         if arg.startswith("--eval="):
             eval_date = arg.split("=")[1]
+        if arg.startswith("--snapshot="):
+            snapshot = arg.split("=")[1]
 
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
@@ -36,7 +39,7 @@ def main():
 
     elif mode == "score":
         from daily_pipeline.score import score_all_stocks
-        score_all_stocks(date_str)
+        score_all_stocks(date_str, snapshot_cutoff=snapshot)
 
     elif mode == "backtest":
         from daily_pipeline.backtest import run_daily_backtest
