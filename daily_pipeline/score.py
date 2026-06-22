@@ -23,6 +23,14 @@ WEIGHTS = {
     "margin_net": 0.03, "flow_accel": 0.02,
 }
 
+# ── 刚启动检测权重（降资金权重，升启动/位置/趋势）──
+EARLY_WEIGHTS = {
+    "capital": 0.10, "start_signal": 0.25, "trend": 0.15,
+    "position": 0.15, "multiday": 0.08, "sector": 0.07,
+    "analyst": 0.00, "technical": 0.05, "intra_sector": 0.05,
+    "margin_net": 0.03, "flow_accel": 0.05,
+}
+
 # ── scores.csv 输出列 ──
 # ── 信号中文说明 ──
 SIGNAL_NAMES = {
@@ -48,8 +56,8 @@ SIGNAL_NAMES = {
 }
 
 SCORE_HEADERS = [
-    "代码", "名称", "最新价", "综合得分",
-    "资金得分", "趋势得分", "启动得分", "板块得分", "位置得分",
+    "代码", "名称", "最新价", "综合得分", "启动得分",
+    "资金得分", "趋势得分", "启动因子", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
     "涨跌幅", "换手率", "量比", "总市值", "触发信号", "信号说明",
@@ -440,10 +448,15 @@ def score_all_stocks(date_str=None):
 
         # ── 综合得分 ──
         total = sum(sub.get(k, 0.5) * WEIGHTS.get(k, 0) for k in WEIGHTS)
-        # 剩余权重(analyst等)补 0.5*weight
         for k in WEIGHTS:
             if k not in sub:
                 total += 0.5 * WEIGHTS[k]
+
+        # ── 启动得分（刚启动检测: 降资金权重，升启动/位置/趋势）──
+        early = sum(sub.get(k, 0.5) * EARLY_WEIGHTS.get(k, 0) for k in EARLY_WEIGHTS)
+        for k in EARLY_WEIGHTS:
+            if k not in sub:
+                early += 0.5 * EARLY_WEIGHTS[k]
 
         # ── P32: 占比趋势 ──
         ratio_score = 0.0
@@ -458,6 +471,7 @@ def score_all_stocks(date_str=None):
             signals.append("P32_extreme")
         sub["ratio_trend"] = round(ratio_score, 3)
         total += ratio_score
+        early += ratio_score  # 启动得分也受P32影响
 
         # ── P33: 融资买入占比 (融资质量) ──
         margin_quality = 0.0
@@ -468,54 +482,56 @@ def score_all_stocks(date_str=None):
         elif f169_val < -5:
             margin_quality = -0.03; signals.append("P33_margin_weak")
         total += margin_quality
+        early += margin_quality
 
         # ── P34: 开盘缺口 (隔夜信号) ──
         gap_signal = 0.0
         if f18_val > 0 and f17_val > 0:
             gap = (f17_val - f18_val) / f18_val * 100  # 开盘缺口%
             if gap > 2 and f3 > 2:
-                gap_signal = 0.03; signals.append("P34_gap_strong")       # 高开高走
+                gap_signal = 0.03; signals.append("P34_gap_strong")
             elif gap < -2 and f3 > 1:
-                gap_signal = 0.02; signals.append("P34_gap_reverse")      # 低开反转
+                gap_signal = 0.02; signals.append("P34_gap_reverse")
             elif gap > 3 and f3 < 0:
-                gap_signal = -0.04; signals.append("P34_gap_trap")        # 高开低走
+                gap_signal = -0.04; signals.append("P34_gap_trap")
         total += gap_signal
+        early += gap_signal
 
         # ── P35: 融券压力 (做空检测) ──
         short_signal = 0.0
-        if f170_val < -1_0000_0000:  # 净卖出 < -1亿 = 显著空头回补
+        if f170_val < -1_0000_0000:
             short_signal = 0.02; signals.append("P35_short_cover")
-        if f170_val > 3_0000_0000:   # 净卖出 > 3亿 = 强做空压力
+        if f170_val > 3_0000_0000:
             short_signal = -0.04; signals.append("P35_short_pressure")
-        elif f170_val > 1_0000_0000:  # 净卖出 > 1亿 = 中度做空
+        elif f170_val > 1_0000_0000:
             short_signal = -0.02; signals.append("P35_short_moderate")
         if f172_val > 0 and f62_val > 0:
             short_ratio = abs(f170_val) / max(abs(f62_val), 1)
-            if short_ratio > 3:  # 融券超过主力3倍
+            if short_ratio > 3:
                 short_signal -= 0.03; signals.append("P35_short_heavy")
         total += short_signal
+        early += short_signal
 
-        # ── 风险惩罚（不硬过滤，打分体现）──
+        # ── 风险惩罚（综合+启动均适用）──
         mcap_yi = f20 / 1e8
-        # 高换手 + 弱资金 = 出货嫌疑
-        if f8_val > 13 and cap < 0.75: total -= 0.06; signals.append("P29_high_turnover")
-        # 低换手无流动性
-        if f8_val < 2.0: total -= 0.04; signals.append("P_low_liquidity")
-        # 量比过低
-        if f10_val < 1.0: total -= 0.03; signals.append("P_low_vol_ratio")
-        # 小市值风险
-        if mcap_yi < 30: total -= 0.04; signals.append("P_small_cap")
-        # 散户主导
-        if f87_val > 30 and f3 < 3: total -= 0.08; signals.append("P6_retail")
-        # 极端高价股
-        if f2 > 200: total -= 0.02; signals.append("P_high_price")
+        penalty = 0.0
+        if f8_val > 13 and cap < 0.75: penalty -= 0.06; signals.append("P29_high_turnover")
+        if f8_val < 2.0: penalty -= 0.04; signals.append("P_low_liquidity")
+        if f10_val < 1.0: penalty -= 0.03; signals.append("P_low_vol_ratio")
+        if mcap_yi < 30: penalty -= 0.04; signals.append("P_small_cap")
+        if f87_val > 30 and f3 < 3: penalty -= 0.08; signals.append("P6_retail")
+        if f2 > 200: penalty -= 0.02; signals.append("P_high_price")
+        total += penalty
+        early += penalty
 
         total = max(0.0, min(1.0, total))
+        early = max(0.0, min(1.0, early))
 
         results.append({
-            "代码": code, "名称": name, "最新价": f2, "综合得分": round(total, 4),
+            "代码": code, "名称": name, "最新价": f2,
+            "综合得分": round(total, 4), "启动得分": round(early, 4),
             "资金得分": sub.get("capital", 0.5), "趋势得分": sub.get("trend", 0.5),
-            "启动得分": sub.get("start_signal", 0.5), "板块得分": sub.get("sector", 0.5),
+            "启动因子": round(sub.get("start_signal", 0.5), 3), "板块得分": sub.get("sector", 0.5),
             "位置得分": sub.get("position", 0.5), "分析师得分": sub.get("analyst", 0.5),
             "多日得分": sub.get("multiday", 0.5), "技术面得分": sub.get("technical", 0.5),
             "行业内得分": sub.get("intra_sector", 0.5), "融资得分": sub.get("margin_net", 0.5),
