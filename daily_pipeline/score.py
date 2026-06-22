@@ -32,8 +32,8 @@ EARLY_WEIGHTS = {
 }
 
 # ── scores.csv 输出列 ──
-# ── 信号中文说明 ──
-SIGNAL_NAMES = {
+# ── 综合得分信号 ──
+COMPOSITE_SIGNALS = {
     "P32_ratio_accel":    "主力占比温和加速(今日>5日>10日)",
     "P32_pump_risk":      "单日脉冲风险(今日占比高但5日低迷)",
     "P32_extreme":        "占比极端高位(均值回归压力)",
@@ -49,10 +49,20 @@ SIGNAL_NAMES = {
     "P34_gap_strong":     "高开高走(开盘缺口>2%且收涨>2%)",
     "P34_gap_reverse":    "低开反转(开盘缺口<-2%但收涨>1%)",
     "P34_gap_trap":       "高开陷阱(开盘缺口>3%但收跌)",
-    "P35_short_cover":    "融券空头回补(净卖出<-5000万)",
+    "P35_short_cover":    "融券空头回补(净卖出<-1亿)",
     "P35_short_pressure": "融券强做空(净卖出>3亿)",
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
     "P35_short_heavy":    "融券/主力比>3(做空压力大)",
+}
+
+# ── 启动得分专属信号 ──
+EARLY_SIGNALS = {
+    "E1_low_start":       "低位启动(位置<0.25且资金加速)",
+    "E2_moderate_start":  "温和启动(资金0.4-0.7+启动因子>0.6)",
+    "E3_strong_start":    "强势启动(启动因子>0.8+资金>0.5)",
+    "E4_gap_start":       "缺口启动(高开高走/低开反转+低位)",
+    "E5_ratio_early":     "占比早期加速(占比5-8%温和上升)",
+    "E6_short_squeeze":   "逼空启动(融券回补+资金流入)",
 }
 
 SCORE_HEADERS = [
@@ -60,7 +70,8 @@ SCORE_HEADERS = [
     "资金得分", "趋势得分", "启动因子", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
-    "涨跌幅", "换手率", "量比", "总市值", "触发信号", "信号说明",
+    "涨跌幅", "换手率", "量比", "总市值",
+    "综合信号", "综合信号说明", "启动信号", "启动信号说明",
 ]
 
 # ── 因子中文说明 ──
@@ -309,7 +320,8 @@ def score_all_stocks(date_str=None):
         industry = s.get("行业", "")
 
         sub = {}
-        signals = []
+        comp_sigs = []   # 综合得分信号
+        early_sigs = []  # 启动得分信号
 
         # ── capital (19%) ──
         cap = _pct_rank(f62_vals, f62_val) * 0.60
@@ -462,13 +474,13 @@ def score_all_stocks(date_str=None):
         ratio_score = 0.0
         if f165_val > 0 and f184_val > f165_val * 1.5 and f165_val > f175_val and 5 <= f184_val <= 12:
             ratio_score = 0.05
-            signals.append("P32_ratio_accel")
+            comp_sigs.append("P32_ratio_accel"); early_sigs.append("E5_ratio_early")
         elif f184_val > 10 and f165_val < f184_val * 0.3:
             ratio_score = -0.05
-            signals.append("P32_pump_risk")
+            comp_sigs.append("P32_pump_risk")
         elif f184_val > 12 and f165_val > 6:
             ratio_score = -0.04
-            signals.append("P32_extreme")
+            comp_sigs.append("P32_extreme")
         sub["ratio_trend"] = round(ratio_score, 3)
         total += ratio_score
         early += ratio_score  # 启动得分也受P32影响
@@ -476,11 +488,11 @@ def score_all_stocks(date_str=None):
         # ── P33: 融资买入占比 (融资质量) ──
         margin_quality = 0.0
         if f169_val > 8:
-            margin_quality = 0.03; signals.append("P33_margin_strong")
+            margin_quality = 0.03; comp_sigs.append("P33_margin_strong")
         elif f169_val > 3:
-            margin_quality = 0.01; signals.append("P33_margin_moderate")
+            margin_quality = 0.01; comp_sigs.append("P33_margin_moderate")
         elif f169_val < -5:
-            margin_quality = -0.03; signals.append("P33_margin_weak")
+            margin_quality = -0.03; comp_sigs.append("P33_margin_weak")
         total += margin_quality
         early += margin_quality
 
@@ -489,43 +501,60 @@ def score_all_stocks(date_str=None):
         if f18_val > 0 and f17_val > 0:
             gap = (f17_val - f18_val) / f18_val * 100  # 开盘缺口%
             if gap > 2 and f3 > 2:
-                gap_signal = 0.03; signals.append("P34_gap_strong")
+                gap_signal = 0.03; comp_sigs.append("P34_gap_strong")
             elif gap < -2 and f3 > 1:
-                gap_signal = 0.02; signals.append("P34_gap_reverse")
+                gap_signal = 0.02; comp_sigs.append("P34_gap_reverse")
             elif gap > 3 and f3 < 0:
-                gap_signal = -0.04; signals.append("P34_gap_trap")
+                gap_signal = -0.04; comp_sigs.append("P34_gap_trap")
         total += gap_signal
         early += gap_signal
 
         # ── P35: 融券压力 (做空检测) ──
         short_signal = 0.0
         if f170_val < -1_0000_0000:
-            short_signal = 0.02; signals.append("P35_short_cover")
+            short_signal = 0.02; comp_sigs.append("P35_short_cover")
         if f170_val > 3_0000_0000:
-            short_signal = -0.04; signals.append("P35_short_pressure")
+            short_signal = -0.04; comp_sigs.append("P35_short_pressure")
         elif f170_val > 1_0000_0000:
-            short_signal = -0.02; signals.append("P35_short_moderate")
+            short_signal = -0.02; comp_sigs.append("P35_short_moderate")
         if f172_val > 0 and f62_val > 0:
             short_ratio = abs(f170_val) / max(abs(f62_val), 1)
             if short_ratio > 3:
-                short_signal -= 0.03; signals.append("P35_short_heavy")
+                short_signal -= 0.03; comp_sigs.append("P35_short_heavy")
         total += short_signal
         early += short_signal
 
         # ── 风险惩罚（综合+启动均适用）──
         mcap_yi = f20 / 1e8
         penalty = 0.0
-        if f8_val > 13 and cap < 0.75: penalty -= 0.06; signals.append("P29_high_turnover")
-        if f8_val < 2.0: penalty -= 0.04; signals.append("P_low_liquidity")
-        if f10_val < 1.0: penalty -= 0.03; signals.append("P_low_vol_ratio")
-        if mcap_yi < 30: penalty -= 0.04; signals.append("P_small_cap")
-        if f87_val > 30 and f3 < 3: penalty -= 0.08; signals.append("P6_retail")
-        if f2 > 200: penalty -= 0.02; signals.append("P_high_price")
+        if f8_val > 13 and cap < 0.75: penalty -= 0.06; comp_sigs.append("P29_high_turnover")
+        if f8_val < 2.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
+        if f10_val < 1.0: penalty -= 0.03; comp_sigs.append("P_low_vol_ratio")
+        if mcap_yi < 30: penalty -= 0.04; comp_sigs.append("P_small_cap")
+        if f87_val > 30 and f3 < 3: penalty -= 0.08; comp_sigs.append("P6_retail")
+        if f2 > 200: penalty -= 0.02; comp_sigs.append("P_high_price")
         total += penalty
         early += penalty
 
         total = max(0.0, min(1.0, total))
         early = max(0.0, min(1.0, early))
+
+        # ── 启动专属信号 ──
+        # E1: 低位启动 (位置<0.25 + 启动因子>0.5)
+        if p_score < 0.55 and sub.get("start_signal", 0.5) > 0.5:
+            early_sigs.append("E1_low_start")
+        # E2: 温和启动 (资金0.4-0.7 + 启动因子>0.6)
+        if 0.4 < cap < 0.7 and sub.get("start_signal", 0.5) > 0.6:
+            early_sigs.append("E2_moderate_start")
+        # E3: 强势启动 (启动因子>0.8 + 资金>0.5)
+        if sub.get("start_signal", 0.5) > 0.8 and cap > 0.5:
+            early_sigs.append("E3_strong_start")
+        # E4: 缺口启动 (P34 + 位置<0.4)
+        if ("P34_gap_strong" in comp_sigs or "P34_gap_reverse" in comp_sigs) and p_score < 0.55:
+            early_sigs.append("E4_gap_start")
+        # E6: 逼空启动 (P35回补 + 资金>0.3)
+        if "P35_short_cover" in comp_sigs and cap > 0.3:
+            early_sigs.append("E6_short_squeeze")
 
         results.append({
             "代码": code, "名称": name, "最新价": f2,
@@ -537,8 +566,10 @@ def score_all_stocks(date_str=None):
             "行业内得分": sub.get("intra_sector", 0.5), "融资得分": sub.get("margin_net", 0.5),
             "加速度得分": sub.get("flow_accel", 0.5), "占比趋势得分": ratio_score,
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
-            "触发信号": ",".join(signals),
-            "信号说明": "; ".join(SIGNAL_NAMES[s] for s in signals if s in SIGNAL_NAMES),
+            "综合信号": ",".join(comp_sigs),
+            "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
+            "启动信号": ",".join(early_sigs),
+            "启动信号说明": "; ".join(EARLY_SIGNALS[s] for s in early_sigs if s in EARLY_SIGNALS),
         })
 
     # ── 排序 + 保存 CSV ──
@@ -560,8 +591,11 @@ def score_all_stocks(date_str=None):
     print(f"\n  评分因子说明:")
     for fname, fdesc in FACTOR_INFO.items():
         print(f"    {fname}: {fdesc}")
-    print(f"\n  信号说明:")
-    for sig, sdesc in SIGNAL_NAMES.items():
+    print(f"\n  综合信号说明:")
+    for sig, sdesc in COMPOSITE_SIGNALS.items():
+        print(f"    {sig}: {sdesc}")
+    print(f"\n  启动信号说明:")
+    for sig, sdesc in EARLY_SIGNALS.items():
         print(f"    {sig}: {sdesc}")
     return results
 
