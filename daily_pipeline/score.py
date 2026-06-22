@@ -217,7 +217,9 @@ def score_all_stocks(date_str=None):
     # ── 风控过滤 ──
     stocks = [s for s in stocks if _tof(s.get("最新价")) >= 4.0]
     stocks = [s for s in stocks if 30 <= _tof(s.get("总市值")) / 1e8 <= 2000]
-    print(f"  过滤后: {len(stocks)} 只 (价格≥4, 市值30-2000亿)")
+    stocks = [s for s in stocks if 2.0 <= _tof(s.get("换手率")) <= 25.0]
+    stocks = [s for s in stocks if _tof(s.get("量比")) >= 1.0]
+    print(f"  过滤后: {len(stocks)} 只 (价格≥4, 市值30-2000亿, 换手2-25%, 量比≥1)")
 
     # 预计算百分位数组 (过滤后)
     f62_vals = [_tof(s.get("主力净流入")) for s in stocks]
@@ -263,10 +265,20 @@ def score_all_stocks(date_str=None):
         cap += (_pct_rank([_tof(x.get("超大单占比")) for x in stocks], f69_val)) * 0.15
         sub["capital"] = round(cap, 3)
 
-        # ── start_signal (13%) — 简化版: 5日vs10日加速 ──
-        if f164_val > 0 and f174_val > 0: ratio = min(3.0, f164_val / max(f174_val, 1))
-        else: ratio = 0.5
-        start = ratio / 3.0 * 0.50 + _pct_rank(f62_vals, f62_val) * 0.50
+        # ── start_signal (13%) — 流加速度 + 超大单质量 ──
+        # 去f62冗余: 专注5日vs10日流加速 + 超大单/大单占比
+        accel_score = 0.5
+        if f164_val != 0 and f174_val != 0:
+            # 5日流 vs 10日流 方向一致性
+            if f164_val > 0 and f174_val > 0:
+                accel_score = min(1.0, f164_val / max(f174_val, 1) / 3.0)
+            elif f164_val > 0:  # 短期转正
+                accel_score = 0.65
+            else:
+                accel_score = 0.35
+        # 超大单质量: f66/f62 比例
+        big_order_quality = abs(f66_val) / max(abs(f62_val), 1) if f62_val != 0 else 0.5
+        start = accel_score * 0.55 + min(1.0, big_order_quality) * 0.45
         sub["start_signal"] = round(start, 3)
 
         # ── trend (10%) ──
@@ -300,32 +312,48 @@ def score_all_stocks(date_str=None):
             sec = sec * 0.70 + 0.5 * 0.30  # 概念部分默认中性
         sub["sector"] = round(sec, 3)
 
-        # ── position (7%) ──
+        # ── position (7%) ── 连续线性插值
         ph = price_hist.get(code, {})
         closes_hist = ph.get("closes", [f2])
         high_60d = ph.get("high_60", f2)
         low_60d = ph.get("low_60", f2)
-        if high_60d > low_60d and len(closes_hist) >= 1:
+        if high_60d > low_60d:
             pos = (f2 - low_60d) / (high_60d - low_60d)
-            if pos < 0.10: p_score = 0.25
-            elif 0.10 <= pos < 0.25: p_score = 0.80
-            elif 0.25 <= pos < 0.40: p_score = 0.55
-            elif 0.40 <= pos < 0.65: p_score = 0.45
-            elif 0.65 <= pos < 0.85: p_score = 0.35
-            else: p_score = 0.15
+            pos = max(0.0, min(1.0, pos))
+            # 连续分段线性: 极低位0→0.25, 低位0.25→0.80, 中位0.60→0.45, 高位0.85→0.15
+            if pos < 0.10:
+                p_score = 0.15 + (pos / 0.10) * 0.10  # 0.15→0.25
+            elif pos < 0.25:
+                p_score = 0.25 + ((pos - 0.10) / 0.15) * 0.55  # 0.25→0.80
+            elif pos < 0.40:
+                p_score = 0.80 + ((pos - 0.25) / 0.15) * (-0.25)  # 0.80→0.55
+            elif pos < 0.65:
+                p_score = 0.55 + ((pos - 0.40) / 0.25) * (-0.10)  # 0.55→0.45
+            elif pos < 0.85:
+                p_score = 0.45 + ((pos - 0.65) / 0.20) * (-0.10)  # 0.45→0.35
+            else:
+                p_score = 0.35 + ((pos - 0.85) / 0.15) * (-0.20)  # 0.35→0.15
         else:
             p_score = 0.5
-        sub["position"] = round(p_score, 3)
+        sub["position"] = round(max(0.0, min(1.0, p_score)), 3)
 
         # ── analyst (5%) — 简化: 无数据给中性 ──
         sub["analyst"] = 0.5
 
-        # ── multiday (6%) — 3d/5d/10d累计 ──
-        md = _pct_rank(f62_vals, f62_val) * 0.40  # 今日作为代理
-        if f164_val > 0: md += _pct_rank(f62_vals, f164_val) * 0.35
-        else: md += 0.5 * 0.35
-        if f174_val > 0: md += _pct_rank(f62_vals, f174_val) * 0.25
-        else: md += 0.5 * 0.25
+        # ── multiday (6%) — 5d/10d累计流 + 方向一致性 ──
+        # 去f62冗余: 只看多日累计，不重复今日
+        md = 0.5
+        # 5日方向
+        f164_pct = _pct_rank([_tof(x.get("5日主力净流入")) for x in stocks], f164_val)
+        # 10日方向
+        f174_pct = _pct_rank([_tof(x.get("10日主力净流入")) for x in stocks], f174_val)
+        # 持续正流检测
+        if f164_val > 0 and f174_val > 0:
+            md = f164_pct * 0.45 + f174_pct * 0.30 + 0.25  # 双正 +0.25 bonus
+        elif f164_val > 0:
+            md = f164_pct * 0.60 + 0.10  # 仅5日正
+        else:
+            md = f164_pct * 0.40 + f174_pct * 0.30
         sub["multiday"] = round(md, 3)
 
         # ── technical (5%) ──
