@@ -19,10 +19,11 @@ RESEARCH_ROOT = os.path.join(
 WEIGHTS = {
     "capital": 0.19, "start_signal": 0.13, "trend": 0.10,
     "position": 0.07, "multiday": 0.06, "sector": 0.05,
-    "analyst": 0.02, "technical": 0.05, "intra_sector": 0.04,
+    "analyst": 0.01, "technical": 0.05, "intra_sector": 0.04,
     "margin_net": 0.03, "flow_accel": 0.01,
     "flow_stability": 0.03, "intraday_accel": 0.03,
     "rank_trajectory": 0.02, "vwap_position": 0.02,
+    "sector_trajectory": 0.02,
 }
 
 # ── 刚启动检测权重（降资金权重，升启动/位置/趋势）──
@@ -33,6 +34,7 @@ EARLY_WEIGHTS = {
     "margin_net": 0.03, "flow_accel": 0.02,
     "flow_stability": 0.02, "intraday_accel": 0.02,
     "rank_trajectory": 0.02, "vwap_position": 0.02,
+    "sector_trajectory": 0.03,
 }
 
 # ── scores.csv 输出列 ──
@@ -74,7 +76,7 @@ SCORE_HEADERS = [
     "资金得分", "趋势得分", "启动因子", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
-    "日内稳定", "日内加速", "排名轨迹", "VWAP位置",
+    "日内稳定", "日内加速", "排名轨迹", "VWAP位置", "板块轨迹",
     "涨跌幅", "换手率", "量比", "总市值",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
 ]
@@ -307,6 +309,46 @@ def _load_all_snapshots(date_str, cutoff=None):
     return snapshots, dict(time_series)
 
 
+def _load_sector_snapshots(date_str, cutoff=None):
+    """加载全天行业+概念板块流快照，返回时序数据
+    {sector_name: {ts: {flow, rank}}, ...}
+    """
+    intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
+    if not os.path.isdir(intraday_dir): return {}, {}
+
+    def _load_sector_type(prefix):
+        files = sorted([f for f in os.listdir(intraday_dir)
+                        if f.startswith(prefix) and f.endswith(".csv")])
+        if cutoff:
+            files = [f for f in files if f.replace(prefix, "").replace(".csv", "") <= cutoff]
+        if len(files) < 2: return {}
+        snapshots = []
+        for f in files:
+            ts = f.replace(prefix, "").replace(".csv", "")
+            flows = {}
+            with open(os.path.join(intraday_dir, f), encoding="utf-8-sig") as fh:
+                for r in csv.DictReader(fh):
+                    name = r.get("名称", "")
+                    flow = _tof(r.get("主力净流入"))
+                    if name: flows[name] = flow
+            snapshots.append((ts, flows))
+        # 计算每个时点的排名
+        result = defaultdict(dict)
+        for ts, flows in snapshots:
+            ranked = sorted(flows.items(), key=lambda x: -x[1])
+            for rank, (name, flow) in enumerate(ranked):
+                if name not in result: result[name] = {}
+                result[name][ts] = {"flow": flow, "rank": rank + 1}
+        return dict(result)
+
+    industry_ts = _load_sector_type("industry_flow_")
+    concept_ts = _load_sector_type("concept_flow_")
+    n_ind = sum(1 for v in industry_ts.values() if len(v) >= 2)
+    n_con = sum(1 for v in concept_ts.values() if len(v) >= 2)
+    print(f"  板块快照: 行业{n_ind}个有轨迹, 概念{n_con}个有轨迹")
+    return industry_ts, concept_ts
+
+
 def _multi_snapshot_factors(code, time_series, all_f62_per_ts):
     """多快照因子: (flow_stability, intraday_accel, rank_trajectory, vwap_pos)"""
     if code not in time_series or len(time_series[code]) < 2:
@@ -407,6 +449,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         all_f62_per_ts[sn["ts"]] = [d["f62"] for d in sn["stocks"].values()]
 
     sector_flows, concept_flows = _load_sector_flows(date_str)
+    sector_trajectory, concept_trajectory = _load_sector_snapshots(date_str, snapshot_cutoff)
     print(f"  个股: {len(stocks)} 只, 行业: {len(sector_flows)} 个")
 
     # ── 轻量过滤（只去掉明显异常值，保留研究样本）──
@@ -609,6 +652,25 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["rank_trajectory"] = rank_traj
         sub["vwap_position"] = vwap_pos
 
+        # ── 板块日内轨迹 ──
+        sub["sector_trajectory"] = 0.5
+        if industry and industry in sector_trajectory:
+            traj = sector_trajectory[industry]
+            ranks = [d["rank"] for d in traj.values()]
+            flows = [d["flow"] for d in traj.values()]
+            if len(ranks) >= 3:
+                # 排名改善: 从高排名到低排名(数字变小=变好)
+                rank_improve = ranks[0] - ranks[-1]  # 正=改善
+                rank_score = 0.5 + max(-0.3, min(0.3, rank_improve / max(len(traj), 1) * 5))
+                # 流入加速
+                if len(flows) >= 4:
+                    mid = len(flows) // 2
+                    accel = statistics.mean(flows[mid:]) - statistics.mean(flows[:mid])
+                    accel_score = 0.5 + max(-0.3, min(0.3, accel / max(abs(statistics.mean(flows)), 1) * 2))
+                else:
+                    accel_score = 0.5
+                sub["sector_trajectory"] = round(rank_score * 0.50 + accel_score * 0.50, 3)
+
         # ── 综合得分 ──
         total = sum(sub.get(k, 0.5) * WEIGHTS.get(k, 0) for k in WEIGHTS)
         for k in WEIGHTS:
@@ -718,6 +780,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "加速度得分": sub.get("flow_accel", 0.5), "占比趋势得分": ratio_score,
             "日内稳定": sub.get("flow_stability", 0.5), "日内加速": sub.get("intraday_accel", 0.5),
             "排名轨迹": sub.get("rank_trajectory", 0.5), "VWAP位置": sub.get("vwap_position", 0.5),
+            "板块轨迹": sub.get("sector_trajectory", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
