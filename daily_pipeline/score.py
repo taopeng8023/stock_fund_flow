@@ -45,6 +45,22 @@ SCORE_HEADERS = [
     "涨跌幅", "换手率", "量比", "总市值", "触发信号", "信号说明",
 ]
 
+# ── 因子中文说明 ──
+FACTOR_INFO = {
+    "资金得分":   "主力资金强度 — f62主力净流入+f184主力占比+f69超大单占比 的百分位综合",
+    "趋势得分":   "趋势质量 — 量比15%+换手率25%+单日动量25%+中期动量20%+短趋势15%",
+    "启动得分":   "资金加速信号 — 5日/10日流加速度+超大单质量，检测资金刚启动的股票",
+    "板块得分":   "板块共振 — 所属行业板块在全市场资金流中的排名位置",
+    "位置得分":   "价格位置 — 当前价在60日高低区间内的位置，低位=均值回归机会，高位=回调风险",
+    "分析师得分": "分析师共识度(暂用中性值，待接入分析师数据)",
+    "多日得分":   "多日资金持续性 — 5日/10日累计主力净流入百分位+方向一致性加分",
+    "技术面得分": "技术面强度 — MA均线多头排列60%+60日突破信号40%",
+    "行业内得分": "行业内龙头 — 主力净流入在同行业内的百分位排名",
+    "融资得分":   "融资动向 — f168融资净买入全市场百分位",
+    "加速度得分": "流加速度 — 5日流/10日流比值，衡量资金流入在加速还是减速",
+    "占比趋势得分": "三周期主力占比趋势 — 今日/5日/10日占比方向(P32信号)",
+}
+
 # 腾讯K线 API (获取价格历史)
 KLINE_URL = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
@@ -470,6 +486,14 @@ def score_all_stocks(date_str=None):
     avg_score = statistics.mean(r["综合得分"] for r in results)
     print(f"  ✓ scores.csv ({len(results)} 只, 均分{avg_score:.3f}, "
           f"Top50均分{statistics.mean(r['综合得分'] for r in top50):.3f})")
+
+    # 因子说明
+    print(f"\n  评分因子说明:")
+    for fname, fdesc in FACTOR_INFO.items():
+        print(f"    {fname}: {fdesc}")
+    print(f"\n  信号说明:")
+    for sig, sdesc in SIGNAL_NAMES.items():
+        print(f"    {sig}: {sdesc}")
     return results
 
 
