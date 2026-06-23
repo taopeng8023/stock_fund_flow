@@ -971,25 +971,64 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
             "正流占比": round(pos_ratio, 2),
         })
 
+    # ── 加载前日板块得分用于跨日对比 ──
+    prev_sector = {}
+    date_dirs = sorted([d for d in os.listdir(RESEARCH_ROOT) if os.path.isdir(os.path.join(RESEARCH_ROOT, d)) and d.isdigit() and d < date_str], reverse=True)
+    if date_dirs:
+        prev_path = os.path.join(RESEARCH_ROOT, date_dirs[0], "sector_scores.csv")
+        if os.path.exists(prev_path):
+            with open(prev_path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    prev_sector[r["名称"]] = {"得分": float(r["得分"]), "排名": int(r["最新排名"])}
+
+    # 添加跨日对比列
+    for r in results:
+        name = r["名称"]
+        if name in prev_sector:
+            prev_r = prev_sector[name]["排名"]
+            r["昨日排名"] = prev_r
+            r["排名跨日变化"] = prev_r - r["最新排名"]  # 正=改善
+        else:
+            r["昨日排名"] = 0
+            r["排名跨日变化"] = 0
+
     results.sort(key=lambda x: -x["得分"])
 
     # 保存
     csv_path = os.path.join(RESEARCH_ROOT, date_str, "sector_scores.csv")
+    fields = ["名称","类型","得分","快照数","最新排名","昨日排名","排名跨日变化","最新流入(亿)","排名变化","正流占比"]
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["名称","类型","得分","快照数","最新排名","最新流入(亿)","排名变化","正流占比"])
+        w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(results)
 
     # 输出
-    print(f"\n{'='*60}")
+    print(f"\n{'='*65}")
     print(f"  板块资金流评分 Top 20")
-    print(f"{'='*60}")
+    if prev_sector:
+        print(f"  对比前日: {date_dirs[0]}")
+    print(f"{'='*65}")
     for i, r in enumerate(results[:20]):
         bar = "█" * int(r["得分"] * 20)
         trend = "↑" if r["排名变化"] > 0 else ("↓" if r["排名变化"] < 0 else "→")
+        cross = ""
+        if r["排名跨日变化"] > 3: cross = " 🔥新进"
+        elif r["排名跨日变化"] > 0: cross = " ↗"
+        elif r["排名跨日变化"] < -3: cross = " ↘退潮"
+        elif r["排名跨日变化"] < 0: cross = " ↓"
         print(f"  {i+1:>2}. {r['名称']:<10s} {r['类型']} {r['得分']:.3f} "
-              f"排名#{r['最新排名']}{trend} 流入{r['最新流入(亿)']:+.1f}亿 "
-              f"正流{r['正流占比']:.0%} {bar}")
+              f"今#{r['最新排名']}(昨#{r['昨日排名'] or '新'}){trend} 流入{r['最新流入(亿)']:+.1f}亿 "
+              f"正流{r['正流占比']:.0%}{cross} {bar}")
+
+    # 跨日轮动信号
+    if prev_sector:
+        new_top10 = [r for r in results[:20] if r["排名跨日变化"] > 5]
+        fading = [r for r in results if r["排名跨日变化"] < -10]
+        if new_top10:
+            print(f"\n  🔥 新进Top20: {', '.join(r['名称'] for r in new_top10[:5])}")
+        if fading:
+            print(f"  ↘ 退潮板块: {', '.join(r['名称'] for r in fading[:5])}")
+
     print(f"\n  ✓ {csv_path} ({len(results)} 个板块)")
     return results
 
