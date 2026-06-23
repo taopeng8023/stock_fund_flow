@@ -75,7 +75,7 @@ EARLY_SIGNALS = {
 }
 
 SCORE_HEADERS = [
-    "代码", "名称", "最新价", "综合得分", "启动得分",
+    "代码", "名称", "最新价", "行业", "综合得分", "启动得分",
     "资金得分", "趋势得分", "启动因子", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
@@ -828,7 +828,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                 early -= 0.03
 
         results.append({
-            "代码": code, "名称": name, "最新价": f2,
+            "代码": code, "名称": name, "最新价": f2, "行业": industry,
             "综合得分": round(total, 4), "启动得分": round(early, 4),
             "资金得分": sub.get("capital", 0.5), "趋势得分": sub.get("trend", 0.5),
             "启动因子": round(sub.get("start_signal", 0.5), 3), "板块得分": sub.get("sector", 0.5),
