@@ -885,48 +885,69 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
     sector_traj, concept_traj, sector_static, concept_static = _load_sector_snapshots(date_str, snapshot_cutoff)
 
     def _score_one_sector(name, traj, static_flow):
-        """单个板块评分 0~1"""
-        score = 0.5
+        """板块综合评分 0~1 (6维度: 排名+趋势+持续性+加速度+集中度+稳定性)"""
         if not traj or len(traj) < 2:
-            # 只有静态数据: 用最新流排名
-            return score
+            return 0.5
 
         ranks = [d["rank"] for d in traj.values()]
         flows = [d["flow"] for d in traj.values()]
         n = len(ranks)
+        total_sectors = max(len(traj), 10)
 
-        # 1. 最新排名 (30%) — 排名越小越好
-        if ranks:
-            rank_score = 1.0 - min(1.0, (ranks[-1] - 1) / max(len(traj) * 3, 10))
-        else:
-            rank_score = 0.5
+        # 1. 最新排名 (20%) — 排名越小越好
+        rank_score = 1.0 - min(1.0, (ranks[-1] - 1) / total_sectors)
 
-        # 2. 排名趋势 (35%) — 排名改善=正
+        # 2. 排名趋势 (25%) — 排名持续改善=主力持续关注
         if n >= 3:
-            rank_improve = ranks[0] - ranks[-1]
-            trend_score = 0.5 + max(-0.5, min(0.5, rank_improve / max(n, 3) * 2))
+            # 斜率 + 最新方向
+            xs = list(range(n)); ys = ranks
+            slope = (n * sum(x*y for x,y in zip(xs,ys)) - sum(xs)*sum(ys)) / (n*sum(x*x for x in xs) - sum(xs)**2) if n > 2 else 0
+            # 负斜率 = 排名改善
+            trend_raw = -slope / max(total_sectors/5, 1)
+            # 最近2次的变化方向
+            recent_dir = 1 if ranks[-1] < ranks[-2] else (-1 if ranks[-1] > ranks[-2] else 0)
+            trend_score = 0.5 + max(-0.5, min(0.5, trend_raw * 3 + recent_dir * 0.15))
         else:
             trend_score = 0.5
 
-        # 3. 流入加速度 (25%) — 后半vs前半
+        # 3. 资金持续性 (20%) — 连续正流入快照占比
+        pos_ratio = sum(1 for f in flows if f > 0) / n
+        # 最近连续正流入次数
+        conseq = 0
+        for f in reversed(flows):
+            if f > 0: conseq += 1
+            else: break
+        persist_score = pos_ratio * 0.5 + min(1.0, conseq / n) * 0.5
+
+        # 4. 流入加速度 (15%) — 后半vs前半, 正=资金加速涌入
         if n >= 4:
             mid = n // 2
-            first_avg = statistics.mean(flows[:mid]) if flows[:mid] else 0
-            second_avg = statistics.mean(flows[mid:]) if flows[mid:] else 0
+            first_avg = statistics.mean(flows[:mid])
+            second_avg = statistics.mean(flows[mid:])
             denom = max(abs(first_avg), 1e8)
             accel = (second_avg - first_avg) / denom
             accel_score = 0.5 + max(-0.5, min(0.5, accel * 5))
         else:
             accel_score = 0.5
 
-        # 4. 排名稳定性 (10%)
+        # 5. 集中度 (10%) — 流入占全市场比例
+        all_flows = [d["flow"] for t in (sector_traj | concept_traj).values() for d in t.values()]
+        total_flow = sum(f for f in all_flows if f > 0)
+        sector_flow = flows[-1] if flows[-1] > 0 else 0
+        concentration = sector_flow / max(total_flow, 1e8)
+        conc_score = min(1.0, concentration * 50)  # 占2%以上=满分
+
+        # 6. 排名稳定性 (10%) — 低波动=机构主导
         if n >= 3:
             std_rank = statistics.stdev(ranks) if n > 2 else 0
-            stability = 1.0 - min(1.0, std_rank / max(len(traj), 5))
+            stability = 1.0 - min(1.0, std_rank / max(total_sectors/2, 3))
         else:
             stability = 0.5
 
-        return round(rank_score * 0.30 + trend_score * 0.35 + accel_score * 0.25 + stability * 0.10, 3)
+        return round(
+            rank_score * 0.20 + trend_score * 0.25 + persist_score * 0.20 +
+            accel_score * 0.15 + conc_score * 0.10 + stability * 0.10, 3
+        )
 
     # 评分
     results = []
@@ -934,11 +955,20 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
         static_flow = sector_static.get(name) or concept_static.get(name, 0)
         s = _score_one_sector(name, traj, static_flow)
         is_concept = name in concept_traj
+        # 计算详细指标
+        ranks = [d["rank"] for d in traj.values()] if traj else []
+        flows = [d["flow"] for d in traj.values()] if traj else []
+        n = len(ranks)
+        pos_ratio = sum(1 for f in flows if f > 0) / max(n, 1)
+        rank_change = ranks[0] - ranks[-1] if n >= 2 else 0
+
         results.append({
             "名称": name, "类型": "概念" if is_concept else "行业",
-            "得分": s, "快照数": len(traj) if traj else 0,
-            "最新排名": list(traj.values())[-1]["rank"] if traj else 0,
-            "最新流入(亿)": round(list(traj.values())[-1]["flow"] / 1e8, 1) if traj else 0,
+            "得分": s, "快照数": n,
+            "最新排名": ranks[-1] if ranks else 0,
+            "最新流入(亿)": round(flows[-1] / 1e8, 1) if flows else 0,
+            "排名变化": rank_change,
+            "正流占比": round(pos_ratio, 2),
         })
 
     results.sort(key=lambda x: -x["得分"])
@@ -946,18 +976,20 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
     # 保存
     csv_path = os.path.join(RESEARCH_ROOT, date_str, "sector_scores.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["名称","类型","得分","快照数","最新排名","最新流入(亿)"])
+        w = csv.DictWriter(f, fieldnames=["名称","类型","得分","快照数","最新排名","最新流入(亿)","排名变化","正流占比"])
         w.writeheader()
         w.writerows(results)
 
     # 输出
-    print(f"\n{'='*55}")
+    print(f"\n{'='*60}")
     print(f"  板块资金流评分 Top 20")
-    print(f"{'='*55}")
+    print(f"{'='*60}")
     for i, r in enumerate(results[:20]):
         bar = "█" * int(r["得分"] * 20)
+        trend = "↑" if r["排名变化"] > 0 else ("↓" if r["排名变化"] < 0 else "→")
         print(f"  {i+1:>2}. {r['名称']:<10s} {r['类型']} {r['得分']:.3f} "
-              f"排名#{r['最新排名']} 流入{r['最新流入(亿)']:+.1f}亿 {bar}")
+              f"排名#{r['最新排名']}{trend} 流入{r['最新流入(亿)']:+.1f}亿 "
+              f"正流{r['正流占比']:.0%} {bar}")
     print(f"\n  ✓ {csv_path} ({len(results)} 个板块)")
     return results
 
