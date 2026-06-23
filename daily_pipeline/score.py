@@ -482,7 +482,20 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         all_f62_per_ts[sn["ts"]] = [d["f62"] for d in sn["stocks"].values()]
 
     sector_trajectory, concept_trajectory, sector_flows, concept_flows = _load_sector_snapshots(date_str, snapshot_cutoff)
-    print(f"  个股: {len(stocks)} 只, 行业: {len(sector_flows)} 个")
+    print(f"  个股: {len(stocks)} 只, API行业: {len(sector_flows)} 个")
+
+    # ── 方案B: 用f100自建行业分类(与个股行业名100%匹配) ──
+    f100_sector_flows = defaultdict(float)
+    for s in stocks:
+        ind = s.get("行业", "")
+        if ind:
+            f100_sector_flows[ind] += _tof(s.get("主力净流入"))
+    # 合并API行业流(补充f100没有的)和f100自建流
+    merged_sector_flows = dict(sector_flows)  # API数据
+    for ind, flow in f100_sector_flows.items():
+        if ind not in merged_sector_flows or abs(flow) > abs(merged_sector_flows.get(ind, 0)):
+            merged_sector_flows[ind] = flow  # f100数据优先
+    print(f"  合并行业: {len(merged_sector_flows)} 个 (API{sector_flows and len(sector_flows)} + f100自建{len(f100_sector_flows)})")
 
     # ── 加载前一日评分 (用于得分动量) ──
     prev_scores = _load_prev_scores(date_str)
@@ -583,10 +596,10 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         tr += 0.5 * 0.15  # short_trend default
         sub["trend"] = round(tr, 3)
 
-        # ── sector (5%) ── 行业排名70% + 概念共振30%
-        if sector_flows and industry:
-            all_sf = list(sector_flows.values())
-            industry_flow = sector_flows.get(industry, 0)
+        # ── sector (5%) ── 行业排名70% + 概念共振30%  (方案B: f100自建分类)
+        if merged_sector_flows and industry:
+            all_sf = list(merged_sector_flows.values())
+            industry_flow = merged_sector_flows.get(industry, 0)
             sec = _pct_rank(all_sf, industry_flow) if all_sf else 0.5
         else:
             sec = 0.5
