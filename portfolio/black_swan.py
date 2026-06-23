@@ -1,39 +1,15 @@
 """
-黑天鹅监控 — 9 条规则检测极端市场风险，输出 Level 0-3 响应级别。
+黑天鹅监控 — 13 条规则检测极端市场风险，输出 Level 0-3 响应级别。
 
 用法:
   python -m portfolio.black_swan                   # 诊断今天
   python -m portfolio.black_swan --date=20260623   # 指定日期
   python -m portfolio.black_swan --no-notify       # 静默模式，不发通知
   python -m portfolio.black_swan --json            # JSON 输出
-
-检测规则:
-
-  级别 CRITICAL（触发 Level 3）:
-    BS-1 宽度熔断  — 上涨比 < 10% 且跌停 > 100
-    BS-2 资金出逃  — 主力净流出 > 500亿 且正流比 < 15%
-    BS-4 流动性冻结 — 跌停 > 300 且量比 > 2.0
-    BS-9 情绪冰冻  — 情绪温度计 < 15
-
-  级别 SEVERE（触发 Level 2+）:
-    BS-3 连续暴跌  — 上证/深证/创业板连续2日跌幅 ≥ 2.5%
-    BS-5 北向恐慌  — 北向连续2日净流出 > 100亿
-    BS-7 波动率爆炸 — 个股中位涨跌幅绝对值 > 5%
-
-  级别 HIGH（触发 Level 1+）:
-    BS-6 板块雪崩  — Top5 行业全部从流入翻转为流出
-    BS-8 融资恐慌  — 融资正流比 < 20%
-
-响应级别:
-  Level 0 正常   — 无规则触发
-  Level 1 关注   — 1+ 条 HIGH，新仓打7折
-  Level 2 警告   — 1 条 SEVERE 或 3+ HIGH，禁止新买入，止损收紧至-3%
-  Level 3 紧急   — 1 条 CRITICAL 或 3+ SEVERE，全部审查，@all 推送
 """
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -44,6 +20,25 @@ from typing import Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
+
+# ---------------------------------------------------------------------------
+# 集中阈值 — 所有规则阈值在这里修改
+# ---------------------------------------------------------------------------
+THRESHOLDS = {
+    "BS-1": {"up_ratio": 0.10, "limit_down": 100},
+    "BS-2": {"extreme_outflow_yi": 1000, "outflow_yi": 500, "pos_ratio": 0.15},
+    "BS-3": {"flash_crash_pct": -3.0, "consec_pct": -2.0},
+    "BS-4": {"limit_down": 300, "avg_vol_ratio": 2.0},
+    "BS-5": {"outflow_yi": 100},
+    "BS-6": {"flip_count": 3},
+    "BS-7": {"median_abs_chg": 5.0},
+    "BS-8": {"margin_pos_ratio": 0.20},
+    "BS-9": {"frozen": 15, "pessimistic": 30},
+    "BS-10": {"up_ratio": 0.85, "extreme": 0.90},
+    "BS-11": {"limit_up": 200},
+    "BS-12": {"median_ret": 0.5, "pos_flow": 0.35},
+    "BS-13": {"high_vol_ratio": 0.4, "median_ret": -1.0},
+}
 
 
 def _load_json(date_str: str, name: str) -> Optional[list]:
@@ -58,15 +53,6 @@ def _load_json(date_str: str, name: str) -> Optional[list]:
 def _load_diagnosis(date_str: str) -> Optional[dict]:
     """加载 data/<date>/diagnosis/latest.json，不存在返回 None。"""
     path = DATA_ROOT / date_str / "diagnosis" / "latest.json"
-    if not path.exists():
-        # 尝试其他诊断文件
-        diag_dir = DATA_ROOT / date_str / "diagnosis"
-        if diag_dir.exists():
-            files = sorted(diag_dir.glob("diagnosis_*.json"))
-            if files:
-                path = files[-1]
-        else:
-            return None
     if not path.exists():
         return None
     with open(path, encoding="utf-8") as f:
@@ -118,49 +104,53 @@ def _find_prev_trading_day(date_str: str) -> Optional[str]:
 # 自包含诊断计算（不依赖 market_diagnosis.py）
 # ---------------------------------------------------------------------------
 
-def _compute_breadth(rows: list) -> dict:
-    """从原始 fund_flow 数据计算市场宽度（只计算13条规则实际用到的字段）。"""
-    chgs = []
+def _compute_metrics(rows: list) -> tuple:
+    """单次遍历计算 breadth + fund_flow_stats + abs_chgs（供 BS-7 用）。
+
+    原来 _compute_breadth / _compute_fund_flow_stats / BS-7 各扫一遍 rows，
+    现在合并为一次遍历: 3×O(N) → O(N)。
+    """
+    chgs, f62_vals, f10_vals, f168_vals = [], [], [], []
+    abs_chgs = []
+
     for r in rows:
         f3 = r.get("f3")
         if isinstance(f3, (int, float)):
             chgs.append(f3)
-    if not chgs:
-        return {}
+            abs_chgs.append(abs(f3))
 
-    n = len(chgs)
-    up = sum(1 for c in chgs if c > 0)
-    chgs_sorted = sorted(chgs)
-    m = n // 2
-
-    return {
-        "up_ratio": round(up / n, 3),
-        "limit_up": sum(1 for c in chgs if c >= 9.5),
-        "limit_down": sum(1 for c in chgs if c <= -9.5),
-        "median": round(chgs_sorted[m], 2),
-    }
-
-
-def _compute_fund_flow_stats(rows: list) -> dict:
-    """从原始 fund_flow 数据计算资金流全景。"""
-    f62_vals, f10_vals, f168_vals = [], [], []
-    for r in rows:
         for key, lst in [("f62", f62_vals), ("f10", f10_vals), ("f168", f168_vals)]:
             v = r.get(key)
             if isinstance(v, (int, float)):
                 lst.append(v)
 
-    if not f62_vals:
-        return {}
+    # --- breadth ---
+    breadth = {}
+    if chgs:
+        n = len(chgs)
+        up = sum(1 for c in chgs if c > 0)
+        chgs_sorted = sorted(chgs)
+        m = n // 2
+        breadth = {
+            "up_ratio": round(up / n, 3),
+            "limit_up": sum(1 for c in chgs if c >= 9.5),
+            "limit_down": sum(1 for c in chgs if c <= -9.5),
+            "median": round(chgs_sorted[m], 2),
+        }
 
-    n = len(f62_vals)
-    return {
-        "total_main_flow": sum(f62_vals),
-        "pos_flow_ratio": round(sum(1 for f in f62_vals if f > 0) / n, 3),
-        "margin_pos_ratio": round(sum(1 for f in f168_vals if f > 0) / len(f168_vals), 3) if f168_vals else 0,
-        "avg_vol_ratio": round(sum(f10_vals) / len(f10_vals), 2) if f10_vals else 0,
-        "high_vol_ratio": round(sum(1 for f in f10_vals if f > 3) / len(f10_vals), 3) if f10_vals else 0,
-    }
+    # --- fund_flow_stats ---
+    flow = {}
+    if f62_vals:
+        nf = len(f62_vals)
+        flow = {
+            "total_main_flow": sum(f62_vals),
+            "pos_flow_ratio": round(sum(1 for f in f62_vals if f > 0) / nf, 3),
+            "margin_pos_ratio": round(sum(1 for f in f168_vals if f > 0) / len(f168_vals), 3) if f168_vals else 0,
+            "avg_vol_ratio": round(sum(f10_vals) / len(f10_vals), 2) if f10_vals else 0,
+            "high_vol_ratio": round(sum(1 for f in f10_vals if f > 3) / len(f10_vals), 3) if f10_vals else 0,
+        }
+
+    return breadth, flow, abs_chgs
 
 
 def _compute_sentiment(rows: list, date_str: str = None) -> dict:
@@ -233,9 +223,11 @@ class BlackSwanDetector:
             self._fund_flow_stats = preloaded.get("fund_flow", {})
             self._sentiment = preloaded.get("sentiment", {})
             self._north_diag = preloaded.get("north_flow", {})
+            self._abs_chgs = preloaded.get("abs_chgs", [])
         else:
-            self._breadth = _compute_breadth(self.fund_flow) if self.fund_flow else {}
-            self._fund_flow_stats = _compute_fund_flow_stats(self.fund_flow) if self.fund_flow else {}
+            self._breadth, self._fund_flow_stats, self._abs_chgs = (
+                _compute_metrics(self.fund_flow) if self.fund_flow else ({}, {}, [])
+            )
             self._sentiment = _compute_sentiment(self.fund_flow, date_str) if self.fund_flow else {}
             north_rows = _load_north_flow(date_str)
             self._north_diag = _compute_north_diag(north_rows) if north_rows else {}
@@ -262,20 +254,14 @@ class BlackSwanDetector:
     # ------------------------------------------------------------------
 
     def _check_bs1(self):
+        t = THRESHOLDS["BS-1"]
         up_ratio = self._b("up_ratio", 0)
         limit_down = self._b("limit_down", 0)
-        triggered = up_ratio < 0.10 and limit_down > 100
-        return {
-            "rule_id": "BS-1",
-            "name": "宽度熔断",
-            "severity": "CRITICAL",
-            "triggered": triggered,
-            "detail": (
-                f"上涨比 {up_ratio:.1%}（阈值 10%），"
-                f"跌停 {limit_down} 只（阈值 100）"
-            ),
-            "values": {"up_ratio": up_ratio, "limit_down": limit_down},
-        }
+        triggered = up_ratio < t["up_ratio"] and limit_down > t["limit_down"]
+        return self._rule("BS-1", "宽度熔断", "CRITICAL", triggered,
+                          detail=f"上涨比 {up_ratio:.1%}（阈值 {t['up_ratio']:.0%}），"
+                                 f"跌停 {limit_down} 只（阈值 {t['limit_down']}）",
+                          values={"up_ratio": up_ratio, "limit_down": limit_down})
 
     # ------------------------------------------------------------------
     # BS-2 资金出逃 — 两档
@@ -284,384 +270,244 @@ class BlackSwanDetector:
     # ------------------------------------------------------------------
 
     def _check_bs2(self):
-        total_main = self._f("total_main_flow", 0)
-        main_yi = total_main / 1e8  # yuan → 亿
+        t = THRESHOLDS["BS-2"]
+        main_yi = self._f("total_main_flow", 0) / 1e8
         pos_ratio = self._f("pos_flow_ratio", 0)
 
-        if main_yi < -1000:
-            severity = "CRITICAL"
-            triggered = True
-        elif main_yi < -500 and pos_ratio < 0.15:
-            severity = "SEVERE"
-            triggered = True
+        if main_yi < -t["extreme_outflow_yi"]:
+            severity, triggered = "CRITICAL", True
+            tag = f"极端出逃 >{t['extreme_outflow_yi']}亿"
+        elif main_yi < -t["outflow_yi"] and pos_ratio < t["pos_ratio"]:
+            severity, triggered = "SEVERE", True
+            tag = f"阈值 -{t['outflow_yi']}亿"
         else:
-            severity = "CRITICAL"  # 默认标 severity
-            triggered = False
+            severity, triggered, tag = "CRITICAL", False, f"阈值 -{t['outflow_yi']}亿"
 
-        return {
-            "rule_id": "BS-2",
-            "name": "资金出逃",
-            "severity": severity,
-            "triggered": triggered,
-            "detail": (
-                f"主力净流入 {main_yi:.0f}亿"
-                f"{'（极端出逃 >1000亿）' if main_yi < -1000 else '（阈值 -500亿）'}，"
-                f"正流比 {pos_ratio:.1%}（阈值 15%）"
-            ),
-            "values": {"main_flow_yi": main_yi, "pos_ratio": pos_ratio},
-        }
+        return self._rule("BS-2", "资金出逃", severity, triggered,
+                          detail=f"主力净流入 {main_yi:.0f}亿（{tag}），"
+                                 f"正流比 {pos_ratio:.1%}（阈值 {t['pos_ratio']:.0%}）",
+                          values={"main_flow_yi": main_yi, "pos_ratio": pos_ratio})
 
     # ------------------------------------------------------------------
     # BS-3 连续暴跌 — SEVERE（单日 ≥ 3.0% 或 连续2日 ≥ 2.0%）
     # ------------------------------------------------------------------
 
     def _check_bs3(self):
+        t = THRESHOLDS["BS-3"]
         indices = self._sentiment.get("indices", {})
         if not indices:
             return self._rule_skip("BS-3", "连续暴跌", "SEVERE", "缺少指数数据")
-        triggered = False
-        detail_parts = []
 
+        triggered, parts = False, []
         for key, label in [("sh", "上证"), ("sz", "深证"), ("cy", "创业板")]:
             idx = indices.get(key)
             if not idx:
                 continue
             today_chg = idx.get("chg_pct", 0)
 
-            # 单日闪崩 ≥ 3%
-            if today_chg <= -3.0:
+            if today_chg <= t["flash_crash_pct"]:
                 triggered = True
-                detail_parts.append(f"{label} 单日闪崩 {today_chg:+.1f}%（阈值 -3.0%）")
+                parts.append(f"{label} 单日闪崩 {today_chg:+.1f}%（阈值 {t['flash_crash_pct']:+.1f}%）")
                 continue
-
-            # 连续 2 日 ≥ 2.0%
-            if today_chg > -2.0:
+            if today_chg > t["consec_pct"]:
                 continue
 
             prev_chg = None
             if self.prev_diag:
-                prev_idx = (
-                    self.prev_diag.get("sentiment", {})
-                    .get("indices", {})
-                    .get(key)
-                )
+                prev_idx = self.prev_diag.get("sentiment", {}).get("indices", {}).get(key)
                 if prev_idx:
                     prev_chg = prev_idx.get("chg_pct", 0)
 
-            if prev_chg is not None and prev_chg <= -2.0:
+            if prev_chg is not None and prev_chg <= t["consec_pct"]:
                 triggered = True
-                detail_parts.append(
-                    f"{label} 今{today_chg:+.1f}% / 昨{prev_chg:+.1f}%（阈值 -2.0%）"
-                )
+                parts.append(f"{label} 今{today_chg:+.1f}% / 昨{prev_chg:+.1f}%（阈值 {t['consec_pct']:+.1f}%）")
             elif prev_chg is None:
-                detail_parts.append(
-                    f"{label} 今{today_chg:+.1f}%（昨日数据缺失，仅观察）"
-                )
+                parts.append(f"{label} 今{today_chg:+.1f}%（昨日数据缺失）")
 
-        return {
-            "rule_id": "BS-3",
-            "name": "连续暴跌",
-            "severity": "SEVERE",
-            "triggered": triggered,
-            "detail": "; ".join(detail_parts) if detail_parts else "未触发",
-            "values": {},
-        }
+        return self._rule("BS-3", "连续暴跌", "SEVERE", triggered,
+                          detail="; ".join(parts) if parts else "未触发")
 
     # ------------------------------------------------------------------
     # BS-4 流动性冻结 — CRITICAL
     # ------------------------------------------------------------------
 
     def _check_bs4(self):
+        t = THRESHOLDS["BS-4"]
         limit_down = self._b("limit_down", 0)
         avg_vol = self._f("avg_vol_ratio", 1.0)
-        triggered = limit_down > 300 and avg_vol > 2.0
-        return {
-            "rule_id": "BS-4",
-            "name": "流动性冻结",
-            "severity": "CRITICAL",
-            "triggered": triggered,
-            "detail": (
-                f"跌停 {limit_down} 只（阈值 300），"
-                f"均量比 {avg_vol:.1f}x（阈值 2.0x）"
-            ),
-            "values": {"limit_down": limit_down, "avg_vol_ratio": avg_vol},
-        }
+        triggered = limit_down > t["limit_down"] and avg_vol > t["avg_vol_ratio"]
+        return self._rule("BS-4", "流动性冻结", "CRITICAL", triggered,
+                          detail=f"跌停 {limit_down} 只（阈值 {t['limit_down']}），"
+                                 f"均量比 {avg_vol:.1f}x（阈值 {t['avg_vol_ratio']}x）",
+                          values={"limit_down": limit_down, "avg_vol_ratio": avg_vol})
 
     # ------------------------------------------------------------------
     # BS-5 北向恐慌 — SEVERE
     # ------------------------------------------------------------------
 
     def _check_bs5(self):
-        # 检查北向数据是否可用（盘中可能被屏蔽）
+        t = THRESHOLDS["BS-5"]
         if not self._north_diag.get("available", True):
             return self._rule_skip("BS-5", "北向恐慌", "SEVERE",
                                    f"盘中数据被屏蔽: {self._north_diag.get('reason', '未知')}")
 
-        # 获取今日北向净值
         today_net = self._north_diag.get("net_north") if self._north_diag.get("available") else None
         if today_net is None:
             return self._rule_skip("BS-5", "北向恐慌", "SEVERE", "缺少今日北向数据")
-
-        if today_net > -100:
+        if today_net > -t["outflow_yi"]:
             return self._rule_ok("BS-5", "北向恐慌", "SEVERE",
-                                 f"北向净流入 {today_net:.0f}亿（阈值 -100亿）")
+                                 f"北向净流入 {today_net:.0f}亿（阈值 -{t['outflow_yi']}亿）")
 
-        # 检查昨天
-        prev_net = None
-        if self.prev_north and len(self.prev_north) > 0:
-            prev_net = self.prev_north[0].get("net_north", 0)
-
-        triggered = prev_net is not None and prev_net < -100
-        detail = (
-            f"北向 今{today_net:.0f}亿 / 昨{prev_net:.0f}亿（阈值 -100亿）"
-            if prev_net is not None
-            else f"北向今日{today_net:.0f}亿（昨日数据缺失，仅观察）"
-        )
-        return {
-            "rule_id": "BS-5",
-            "name": "北向恐慌",
-            "severity": "SEVERE",
-            "triggered": triggered,
-            "detail": detail,
-            "values": {"today_net": today_net, "prev_net": prev_net},
-        }
+        prev_net = self.prev_north[0].get("net_north", 0) if self.prev_north else None
+        triggered = prev_net is not None and prev_net < -t["outflow_yi"]
+        detail = (f"北向 今{today_net:.0f}亿 / 昨{prev_net:.0f}亿（阈值 -{t['outflow_yi']}亿）"
+                  if prev_net is not None
+                  else f"北向今日{today_net:.0f}亿（昨日数据缺失）")
+        return self._rule("BS-5", "北向恐慌", "SEVERE", triggered, detail=detail,
+                          values={"today_net": today_net, "prev_net": prev_net})
 
     # ------------------------------------------------------------------
     # BS-6 板块雪崩 — HIGH
     # ------------------------------------------------------------------
 
     def _check_bs6(self):
+        t = THRESHOLDS["BS-6"]
         if not self.today_industry:
             return self._rule_skip("BS-6", "板块雪崩", "HIGH", "缺少今日行业数据")
 
-        # 取今日 f62 最大的前 5 个行业
         def _flow(r):
-            """提取主力净流入 — 兼容 JSON (f62) 和 CSV (主力净流入)。"""
             v = r.get("f62") or r.get("主力净流入") or 0
             return float(v) if v else 0
 
         def _name(r):
-            """提取行业名称 — 兼容 JSON (f14) 和 CSV (名称)。"""
             return r.get("f14") or r.get("名称") or "?"
 
         today_sorted = sorted(self.today_industry, key=_flow, reverse=True)
         top5 = today_sorted[:5]
-
-        # 检查是否全部为负
         top5_names = [_name(r) for r in top5]
         top5_flows = [_flow(r) for r in top5]
-        all_negative = all(f < 0 for f in top5_flows)
 
-        if not all_negative:
+        if not all(f < 0 for f in top5_flows):
             return self._rule_ok("BS-6", "板块雪崩", "HIGH",
                                  f"Top5 行业未全部转负: {', '.join(top5_names)}")
 
-        # 如果有昨日数据，检查是否从正翻负
         flip_count = 0
         if self.prev_industry:
             prev_map = {_name(r): _flow(r) for r in self.prev_industry}
-            for name, flow in zip(top5_names, top5_flows):
-                prev_f = prev_map.get(name, 0)
-                if prev_f > 0 and flow < 0:
-                    flip_count += 1
+            flip_count = sum(1 for n, f in zip(top5_names, top5_flows)
+                             if prev_map.get(n, 0) > 0 and f < 0)
 
-        triggered = flip_count >= 3 if self.prev_industry else all_negative
-        detail = (
-            f"Top5 行业: {', '.join(top5_names)}，"
-            f"全部净流出，{flip_count} 个从流入翻转为流出"
-        )
-        return {
-            "rule_id": "BS-6",
-            "name": "板块雪崩",
-            "severity": "HIGH",
-            "triggered": triggered,
-            "detail": detail,
-            "values": {"top5": top5_names, "flip_count": flip_count},
-        }
+        triggered = flip_count >= t["flip_count"] if self.prev_industry else True
+        return self._rule("BS-6", "板块雪崩", "HIGH", triggered,
+                          detail=f"Top5 行业: {', '.join(top5_names)}，"
+                                 f"全部净流出，{flip_count} 个从流入翻转为流出",
+                          values={"top5": top5_names, "flip_count": flip_count})
 
     # ------------------------------------------------------------------
     # BS-7 波动率爆炸 — SEVERE
     # ------------------------------------------------------------------
 
     def _check_bs7(self):
-        if not self.fund_flow:
-            return self._rule_skip("BS-7", "波动率爆炸", "SEVERE", "缺少资金流数据")
-
-        # 计算 median(abs(f3))
-        abs_chgs = []
-        for r in self.fund_flow:
-            f3 = r.get("f3")
-            if f3 is None:
-                continue
-            try:
-                abs_chgs.append(abs(float(f3)))
-            except (ValueError, TypeError):
-                continue
-
-        if not abs_chgs:
+        if not self._abs_chgs:
             return self._rule_skip("BS-7", "波动率爆炸", "SEVERE", "无有效涨跌幅数据")
 
-        abs_chgs.sort()
+        abs_chgs = sorted(self._abs_chgs)
         n = len(abs_chgs)
-        if n % 2 == 1:
-            median_abs = abs_chgs[n // 2]
-        else:
-            median_abs = (abs_chgs[n // 2 - 1] + abs_chgs[n // 2]) / 2
+        median_abs = abs_chgs[n // 2] if n % 2 == 1 else (abs_chgs[n // 2 - 1] + abs_chgs[n // 2]) / 2
 
-        triggered = median_abs > 5.0
-        return {
-            "rule_id": "BS-7",
-            "name": "波动率爆炸",
-            "severity": "SEVERE",
-            "triggered": triggered,
-            "detail": (
-                f"个股中位涨跌幅绝对值 {median_abs:.2f}%（阈值 5%），"
-                f"共 {n} 只有效样本"
-            ),
-            "values": {"median_abs_chg": median_abs, "sample_count": n},
-        }
-
-    # ------------------------------------------------------------------
-    # BS-8 融资恐慌 — HIGH
-    # ------------------------------------------------------------------
+        t = THRESHOLDS["BS-7"]["median_abs_chg"]
+        triggered = median_abs > t
+        return self._rule("BS-7", "波动率爆炸", "SEVERE", triggered,
+                          detail=f"个股中位涨跌幅绝对值 {median_abs:.2f}%（阈值 {t}%），共 {n} 样本",
+                          values={"median_abs_chg": median_abs, "sample_count": n})
 
     def _check_bs8(self):
+        t = THRESHOLDS["BS-8"]
         margin_pos = self._f("margin_pos_ratio", 0.5)
-        triggered = margin_pos < 0.20
-        return {
-            "rule_id": "BS-8",
-            "name": "融资恐慌",
-            "severity": "HIGH",
-            "triggered": triggered,
-            "detail": f"融资正流比 {margin_pos:.1%}（阈值 20%）",
-            "values": {"margin_pos_ratio": margin_pos},
-        }
-
-    # ------------------------------------------------------------------
-    # BS-9 情绪冰冻 — 两档
-    #   CRITICAL: 情绪 < 15（完全冰冻）
-    #   SEVERE:   情绪 < 30（极度悲观）
-    # ------------------------------------------------------------------
+        triggered = margin_pos < t["margin_pos_ratio"]
+        return self._rule("BS-8", "融资恐慌", "HIGH", triggered,
+                          detail=f"融资正流比 {margin_pos:.1%}（阈值 {t['margin_pos_ratio']:.0%}）",
+                          values={"margin_pos_ratio": margin_pos})
 
     def _check_bs9(self):
+        t = THRESHOLDS["BS-9"]
         score = self._sentiment.get("score", 50)
-        if score < 15:
-            severity, triggered = "CRITICAL", True
-        elif score < 30:
-            severity, triggered = "SEVERE", True
+        if score < t["frozen"]:
+            severity, triggered, tag = "CRITICAL", True, f"冰冻 <{t['frozen']}"
+        elif score < t["pessimistic"]:
+            severity, triggered, tag = "SEVERE", True, f"悲观 <{t['pessimistic']}"
         else:
-            severity, triggered = "CRITICAL", False
-
-        return {
-            "rule_id": "BS-9",
-            "name": "情绪冰冻",
-            "severity": severity,
-            "triggered": triggered,
-            "detail": (
-                f"情绪温度计 {score:.0f}/100"
-                f"{'（冰冻 <15）' if score < 15 else '（悲观 <30）' if score < 30 else '（阈值 30）'}"
-            ),
-            "values": {"sentiment_score": score},
-        }
-
-    # ------------------------------------------------------------------
-    # BS-10 极端过热 — SEVERE（从 market_diagnosis.diagnose_risks 迁入）
-    # ------------------------------------------------------------------
+            severity, triggered, tag = "CRITICAL", False, f"阈值 {t['pessimistic']}"
+        return self._rule("BS-9", "情绪冰冻", severity, triggered,
+                          detail=f"情绪温度计 {score:.0f}/100（{tag}）",
+                          values={"sentiment_score": score})
 
     def _check_bs10(self):
+        t = THRESHOLDS["BS-10"]
         up_ratio = self._b("up_ratio", 0)
-        triggered = up_ratio > 0.85
-        return {
-            "rule_id": "BS-10",
-            "name": "极端过热",
-            "severity": "SEVERE" if up_ratio > 0.90 else "HIGH",
-            "triggered": triggered,
-            "detail": f"上涨比 {up_ratio:.1%}（阈值 85%），短期过热风险",
-            "values": {"up_ratio": up_ratio},
-        }
-
-    # ------------------------------------------------------------------
-    # BS-11 涨停狂热 — HIGH（从 market_diagnosis.diagnose_risks 迁入）
-    # ------------------------------------------------------------------
+        triggered = up_ratio > t["up_ratio"]
+        severity = "SEVERE" if up_ratio > t["extreme"] else "HIGH"
+        return self._rule("BS-10", "极端过热", severity, triggered,
+                          detail=f"上涨比 {up_ratio:.1%}（阈值 {t['up_ratio']:.0%}），短期过热风险",
+                          values={"up_ratio": up_ratio})
 
     def _check_bs11(self):
+        t = THRESHOLDS["BS-11"]
         limit_up = self._b("limit_up", 0)
-        triggered = limit_up > 200
-        return {
-            "rule_id": "BS-11",
-            "name": "涨停狂热",
-            "severity": "HIGH",
-            "triggered": triggered,
-            "detail": f"涨停 {limit_up} 只（阈值 200），情绪极度亢奋，追高风险",
-            "values": {"limit_up": limit_up},
-        }
-
-    # ------------------------------------------------------------------
-    # BS-12 量价背离 — HIGH（从 market_diagnosis.diagnose_risks 迁入）
-    # ------------------------------------------------------------------
+        triggered = limit_up > t["limit_up"]
+        return self._rule("BS-11", "涨停狂热", "HIGH", triggered,
+                          detail=f"涨停 {limit_up} 只（阈值 {t['limit_up']}），情绪极度亢奋",
+                          values={"limit_up": limit_up})
 
     def _check_bs12(self):
+        t = THRESHOLDS["BS-12"]
         median_ret = self._b("median", 0)
         pos_flow = self._f("pos_flow_ratio", 0.5)
-        # 指数上涨但主力资金大比例流出 → 上涨不可持续
-        triggered = median_ret > 0.5 and pos_flow < 0.35
-        return {
-            "rule_id": "BS-12",
-            "name": "量价背离",
-            "severity": "HIGH",
-            "triggered": triggered,
-            "detail": (
-                f"中位涨跌 {median_ret:+.1f}% 但主力正流比仅 {pos_flow:.1%}，"
-                f"指数上涨但资金出逃"
-            ),
-            "values": {"median_ret": median_ret, "pos_flow_ratio": pos_flow},
-        }
-
-    # ------------------------------------------------------------------
-    # BS-13 放量暴跌 — HIGH（从 market_diagnosis.diagnose_risks 迁入）
-    # ------------------------------------------------------------------
+        triggered = median_ret > t["median_ret"] and pos_flow < t["pos_flow"]
+        return self._rule("BS-12", "量价背离", "HIGH", triggered,
+                          detail=f"中位涨跌 {median_ret:+.1f}% 但主力正流比仅 {pos_flow:.1%}，资金出逃",
+                          values={"median_ret": median_ret, "pos_flow_ratio": pos_flow})
 
     def _check_bs13(self):
+        t = THRESHOLDS["BS-13"]
         high_vol = self._f("high_vol_ratio", 0)
         median_ret = self._b("median", 0)
-        triggered = high_vol > 0.4 and median_ret < -1.0
-        return {
-            "rule_id": "BS-13",
-            "name": "放量暴跌",
-            "severity": "HIGH",
-            "triggered": triggered,
-            "detail": (
-                f"高量比(>3)占比 {high_vol:.1%}（阈值 40%）且 "
-                f"中位跌幅 {median_ret:+.1f}%（阈值 -1.0%），恐慌性抛售"
-            ),
-            "values": {"high_vol_ratio": high_vol, "median_ret": median_ret},
-        }
+        triggered = high_vol > t["high_vol_ratio"] and median_ret < t["median_ret"]
+        return self._rule("BS-13", "放量暴跌", "HIGH", triggered,
+                          detail=f"高量比(>3)占比 {high_vol:.1%}（阈值 {t['high_vol_ratio']:.0%}）且 "
+                                 f"中位跌幅 {median_ret:+.1f}%（阈值 {t['median_ret']:+.1f}%）",
+                          values={"high_vol_ratio": high_vol, "median_ret": median_ret})
 
     # ------------------------------------------------------------------
-    # 辅助
+    # 规则结果构建器
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _rule_skip(rule_id, name, severity, reason):
+    def _rule(rule_id: str, name: str, severity: str, triggered: bool,
+              detail: str = "", values: dict = None, skipped: bool = False):
+        """统一构建规则检测结果 dict。"""
         return {
-            "rule_id": rule_id, "name": name, "severity": severity,
-            "triggered": False, "detail": f"⏭️ {reason}", "values": {},
-            "skipped": True,
+            "rule_id": rule_id, "name": name,
+            "severity": severity, "triggered": triggered,
+            "detail": detail, "values": values or {},
+            **({"skipped": True} if skipped else {}),
         }
 
-    @staticmethod
-    def _rule_ok(rule_id, name, severity, detail):
-        return {
-            "rule_id": rule_id, "name": name, "severity": severity,
-            "triggered": False, "detail": detail, "values": {},
-        }
+    @classmethod
+    def _rule_skip(cls, rule_id, name, severity, reason):
+        return cls._rule(rule_id, name, severity, False,
+                         detail=f"⏭️ {reason}", skipped=True)
+
+    @classmethod
+    def _rule_ok(cls, rule_id, name, severity, detail):
+        return cls._rule(rule_id, name, severity, False, detail=detail)
 
     # ------------------------------------------------------------------
     # 主检测
     # ------------------------------------------------------------------
 
     def check(self) -> dict:
-        """执行全部 9 条规则，返回检测结果。"""
+        """执行全部 13 条规则，返回检测结果。"""
         self._rules = [
             self._check_bs1(),
             self._check_bs2(),
