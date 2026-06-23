@@ -979,24 +979,29 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
         if os.path.exists(prev_path):
             with open(prev_path, encoding="utf-8-sig") as f:
                 for r in csv.DictReader(f):
-                    prev_sector[r["名称"]] = {"得分": float(r["得分"]), "排名": int(r["最新排名"])}
+                    prev_sector[r["名称"]] = {
+                        "得分": float(r["得分"]), "排名": int(r["最新排名"]),
+                        "流入": float(r.get("最新流入(亿)", 0) or 0),
+                    }
 
     # 添加跨日对比列
     for r in results:
         name = r["名称"]
         if name in prev_sector:
-            prev_r = prev_sector[name]["排名"]
-            r["昨日排名"] = prev_r
-            r["排名跨日变化"] = prev_r - r["最新排名"]  # 正=改善
+            p = prev_sector[name]
+            r["昨日排名"] = p["排名"]
+            r["排名跨日变化"] = p["排名"] - r["最新排名"]
+            r["昨日流入(亿)"] = round(p["流入"], 1)
+            r["流入跨日变化(亿)"] = round(r["最新流入(亿)"] - p["流入"], 1)
         else:
-            r["昨日排名"] = 0
-            r["排名跨日变化"] = 0
+            r["昨日排名"] = 0; r["排名跨日变化"] = 0
+            r["昨日流入(亿)"] = 0; r["流入跨日变化(亿)"] = 0
 
     results.sort(key=lambda x: -x["得分"])
 
     # 保存
     csv_path = os.path.join(RESEARCH_ROOT, date_str, "sector_scores.csv")
-    fields = ["名称","类型","得分","快照数","最新排名","昨日排名","排名跨日变化","最新流入(亿)","排名变化","正流占比"]
+    fields = ["名称","类型","得分","快照数","最新排名","昨日排名","排名跨日变化","最新流入(亿)","昨日流入(亿)","流入跨日变化(亿)","排名变化","正流占比"]
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -1016,9 +1021,11 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
         elif r["排名跨日变化"] > 0: cross = " ↗"
         elif r["排名跨日变化"] < -3: cross = " ↘退潮"
         elif r["排名跨日变化"] < 0: cross = " ↓"
+        flow_diff = r.get("流入跨日变化(亿)", 0)
+        flow_str = f"资金{flow_diff:+.1f}亿" if flow_diff != 0 else ""
         print(f"  {i+1:>2}. {r['名称']:<10s} {r['类型']} {r['得分']:.3f} "
               f"今#{r['最新排名']}(昨#{r['昨日排名'] or '新'}){trend} 流入{r['最新流入(亿)']:+.1f}亿 "
-              f"正流{r['正流占比']:.0%}{cross} {bar}")
+              f"{flow_str} 正流{r['正流占比']:.0%}{cross} {bar}")
 
     # 跨日轮动信号
     if prev_sector:
