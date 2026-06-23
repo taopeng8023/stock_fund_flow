@@ -181,29 +181,41 @@ class BlackSwanDetector:
         }
 
     # ------------------------------------------------------------------
-    # BS-2 资金出逃 — CRITICAL
+    # BS-2 资金出逃 — 两档
+    #   CRITICAL: 主力净流出 > 1000亿（极端出逃，无需其他条件）
+    #   SEVERE:   主力净流出 > 500亿 且 正流比 < 15%
     # ------------------------------------------------------------------
 
     def _check_bs2(self):
-        # fund_flow.total_main_flow 单位是 yuan
         total_main = self._f("total_main_flow", 0)
-        main_yi = total_main / 1e8  # 转为亿
+        main_yi = total_main / 1e8  # yuan → 亿
         pos_ratio = self._f("pos_flow_ratio", 0)
-        triggered = main_yi < -500 and pos_ratio < 0.15
+
+        if main_yi < -1000:
+            severity = "CRITICAL"
+            triggered = True
+        elif main_yi < -500 and pos_ratio < 0.15:
+            severity = "SEVERE"
+            triggered = True
+        else:
+            severity = "CRITICAL"  # 默认标 severity
+            triggered = False
+
         return {
             "rule_id": "BS-2",
             "name": "资金出逃",
-            "severity": "CRITICAL",
+            "severity": severity,
             "triggered": triggered,
             "detail": (
-                f"主力净流入 {main_yi:.0f}亿（阈值 -500亿），"
+                f"主力净流入 {main_yi:.0f}亿"
+                f"{'（极端出逃 >1000亿）' if main_yi < -1000 else '（阈值 -500亿）'}，"
                 f"正流比 {pos_ratio:.1%}（阈值 15%）"
             ),
             "values": {"main_flow_yi": main_yi, "pos_ratio": pos_ratio},
         }
 
     # ------------------------------------------------------------------
-    # BS-3 连续暴跌 — SEVERE
+    # BS-3 连续暴跌 — SEVERE（单日 ≥ 3.0% 或 连续2日 ≥ 2.0%）
     # ------------------------------------------------------------------
 
     def _check_bs3(self):
@@ -219,10 +231,17 @@ class BlackSwanDetector:
             if not idx:
                 continue
             today_chg = idx.get("chg_pct", 0)
-            if today_chg > -2.5:
+
+            # 单日闪崩 ≥ 3%
+            if today_chg <= -3.0:
+                triggered = True
+                detail_parts.append(f"{label} 单日闪崩 {today_chg:+.1f}%（阈值 -3.0%）")
                 continue
 
-            # 检查昨天
+            # 连续 2 日 ≥ 2.0%
+            if today_chg > -2.0:
+                continue
+
             prev_chg = None
             if self.prev_diag:
                 prev_idx = (
@@ -233,13 +252,12 @@ class BlackSwanDetector:
                 if prev_idx:
                     prev_chg = prev_idx.get("chg_pct", 0)
 
-            if prev_chg is not None and prev_chg <= -2.5:
+            if prev_chg is not None and prev_chg <= -2.0:
                 triggered = True
                 detail_parts.append(
-                    f"{label} 今{today_chg:+.1f}% / 昨{prev_chg:+.1f}%（阈值 -2.5%）"
+                    f"{label} 今{today_chg:+.1f}% / 昨{prev_chg:+.1f}%（阈值 -2.0%）"
                 )
             elif prev_chg is None:
-                # 无昨日数据，仅根据今天告警
                 detail_parts.append(
                     f"{label} 今{today_chg:+.1f}%（昨日数据缺失，仅观察）"
                 )
@@ -425,7 +443,9 @@ class BlackSwanDetector:
         }
 
     # ------------------------------------------------------------------
-    # BS-9 情绪冰冻 — CRITICAL
+    # BS-9 情绪冰冻 — 两档
+    #   CRITICAL: 情绪 < 15（完全冰冻）
+    #   SEVERE:   情绪 < 30（极度悲观）
     # ------------------------------------------------------------------
 
     def _check_bs9(self):
@@ -433,13 +453,22 @@ class BlackSwanDetector:
             return self._rule_skip("BS-9", "情绪冰冻", "CRITICAL", "缺少诊断数据")
 
         score = self.diag.get("sentiment", {}).get("score", 50)
-        triggered = score < 15
+        if score < 15:
+            severity, triggered = "CRITICAL", True
+        elif score < 30:
+            severity, triggered = "SEVERE", True
+        else:
+            severity, triggered = "CRITICAL", False
+
         return {
             "rule_id": "BS-9",
             "name": "情绪冰冻",
-            "severity": "CRITICAL",
+            "severity": severity,
             "triggered": triggered,
-            "detail": f"情绪温度计 {score:.0f}/100（阈值 15）",
+            "detail": (
+                f"情绪温度计 {score:.0f}/100"
+                f"{'（冰冻 <15）' if score < 15 else '（悲观 <30）' if score < 30 else '（阈值 30）'}"
+            ),
             "values": {"sentiment_score": score},
         }
 
