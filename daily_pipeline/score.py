@@ -52,8 +52,8 @@ COMPOSITE_SIGNALS = {
     "P33_margin_strong":  "融资买入占比高(>8%,杠杆资金看多)",
     "P33_margin_moderate":"融资买入占比中等(3-8%)",
     "P33_margin_weak":    "融资买入占比为负(<-5%,杠杆资金撤退)",
-    "P34_gap_strong":     "高开高走(开盘缺口>2%且收涨>2%)",
-    "P34_gap_reverse":    "低开反转(开盘缺口<-2%但收涨>1%)",
+    "P34_gap_strong":     "高开高走(开盘缺口>2%且收涨>2%,回测+0.76%最强)",
+    "P34_gap_reverse":    "低开反转(开盘缺口<-2%但收涨>1%,回测-0.72%已降权)",
     "P34_gap_trap":       "高开陷阱(开盘缺口>3%但收跌)",
     "P35_short_cover":    "融券空头回补(净卖出<-1亿)",
     "P35_short_pressure": "融券强做空(净卖出>3亿)",
@@ -754,9 +754,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if f18_val > 0 and f17_val > 0:
             gap = (f17_val - f18_val) / f18_val * 100  # 开盘缺口%
             if gap > 2 and f3 > 2:
-                gap_signal = 0.03; comp_sigs.append("P34_gap_strong")
+                gap_signal = 0.04; comp_sigs.append("P34_gap_strong")       # 回测+0.76%最强信号
             elif gap < -2 and f3 > 1:
-                gap_signal = 0.02; comp_sigs.append("P34_gap_reverse")
+                gap_signal = 0.01; comp_sigs.append("P34_gap_reverse")      # 回测-0.72%降权
             elif gap > 3 and f3 < 0:
                 gap_signal = -0.04; comp_sigs.append("P34_gap_trap")
         total += gap_signal
@@ -809,10 +809,13 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if "P35_short_cover" in comp_sigs and cap > 0.3:
             early_sigs.append("E6_short_squeeze")
 
-        # ── P36: 全维度过热保护 (回测: 资金>0.85+趋势>0.7+多日>0.85 → -0.86%) ──
+        # ── P36: 全维度过热保护 (回测: P32+P36叠加→-1.45%, 互斥处理) ──
         if cap > 0.85 and sub.get("trend", 0.5) > 0.7 and sub.get("multiday", 0.5) > 0.85:
             total -= 0.06; comp_sigs.append("P36_overheat")
             early -= 0.06
+            # P32_accel与P36互斥: 过热股不享受占比加速加分
+            if ratio_score > 0:
+                total -= ratio_score; early -= ratio_score  # 撤回P32加分
 
         # ── P37: 得分动量 (改善>0.05:+0.03, 恶化<-0.05:-0.03) ──
         if code in prev_scores:
