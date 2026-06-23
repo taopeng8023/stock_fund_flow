@@ -333,70 +333,15 @@ def diagnose_regime(breadth, flow, history_medians):
 
 
 # ============================================================
-# 6. 风险预警
+# 6. 风险预警 — 委托给 BlackSwanDetector
 # ============================================================
 def diagnose_risks(breadth, flow, north, regime_result):
-    """多维度风险检测"""
-    alerts = []
-    level = "low"
+    """多维度风险检测（委托给 portfolio.black_swan.BlackSwanDetector）。
 
-    if not breadth:
-        return {"alerts": ["数据不可用"], "level": "unknown"}
-
-    # 极端宽度
-    if breadth["up_ratio"] < 0.15:
-        alerts.append("极端普跌: 上涨个股不足15%，系统性恐慌")
-    elif breadth["up_ratio"] > 0.85:
-        alerts.append("极端普涨: 上涨个股超85%，短期过热风险")
-
-    # 跌停潮
-    if breadth["limit_down"] > 100:
-        alerts.append(f"跌停潮: {breadth['limit_down']}只跌停，恐慌情绪蔓延")
-    if breadth["limit_down"] > 300:
-        alerts.append(f"千股跌停级别: {breadth['limit_down']}只跌停，流动性危机")
-
-    # 涨停潮
-    if breadth["limit_up"] > 200:
-        alerts.append(f"涨停潮: {breadth['limit_up']}只涨停，情绪极度亢奋，注意追高风险")
-
-    # 资金背离
-    if flow:
-        if breadth["median"] > 0.5 and flow["pos_flow_ratio"] < 0.35:
-            alerts.append("量价背离: 指数上涨但主力资金大比例流出，上涨不可持续")
-        if breadth["median"] < -0.5 and flow["pos_flow_ratio"] > 0.45:
-            alerts.append("资金逆势: 指数下跌但近半数个股主力流入，可能是洗盘")
-
-    # 北向资金
-    if north and north.get("available"):
-        if north["net_north"] < -100:
-            alerts.append(f"北向大幅流出 {north['net_north']:.0f}亿，外资系统性撤离")
-        elif north["net_north"] < -50:
-            alerts.append(f"北向流出 {north['net_north']:.0f}亿，外资偏空")
-
-    # 放量
-    if flow and flow.get("high_vol_ratio", 0) > 0.4:
-        if breadth["median"] < -1:
-            alerts.append("放量暴跌: 超40%个股量比>3且普跌，恐慌性抛售")
-
-    # 中等风险：非极端但市场偏弱
-    if not alerts:
-        if breadth["up_ratio"] < 0.40:
-            alerts.append(f"市场偏弱: 上涨个股仅{breadth['up_ratio']:.0%}")
-        if flow and flow.get("pos_flow_ratio", 0) < 0.40:
-            alerts.append(f"主力参与不足: 正流入个股仅{flow['pos_flow_ratio']:.0%}")
-        if breadth["limit_down"] > 30:
-            alerts.append(f"跌停较多: {breadth['limit_down']}只")
-
-    # 确定风险等级
-    critical_keywords = ["极端普跌", "极端普涨", "千股跌停", "流动性危机", "系统性"]
-    if any(k in a for a in alerts for k in critical_keywords):
-        level = "critical"
-    elif len(alerts) >= 3:
-        level = "high"
-    elif len(alerts) >= 1:
-        level = "medium"
-
-    return {"alerts": alerts, "level": level}
+    保留此函数签名以兼容旧调用方，内部使用 BlackSwanDetector.from_diagnosis()
+    在 get_diagnosis() 中统一调用。
+    """
+    return {"alerts": [], "level": "low"}  # 占位，实际值在 get_diagnosis() 中覆盖
 
 
 # ============================================================
@@ -638,11 +583,24 @@ def get_diagnosis(date_str=None):
     north = diagnose_north_flow(date_str)
     history_medians = load_history_medians(date_str, 5)
     regime_result = diagnose_regime(breadth, flow, history_medians)
-    risk_result = diagnose_risks(breadth, flow, north, regime_result)
-    position = position_advice(regime_result, risk_result)
-
-    # 市场情绪
     sentiment = diagnose_sentiment(rows, date_str)
+
+    # 黑天鹅检测 — 替代原 diagnose_risks
+    from portfolio.black_swan import BlackSwanDetector
+    bs_result = BlackSwanDetector.from_diagnosis(
+        {"date": date_str, "breadth": breadth, "fund_flow": flow,
+         "sectors": sectors, "north_flow": north, "sentiment": sentiment},
+        fund_flow=rows,
+    ).check()
+
+    # 映射 BlackSwan level → 原 risk level
+    bs_level_map = {0: "low", 1: "medium", 2: "high", 3: "critical"}
+    risk_result = {
+        "alerts": [f"{r['rule_id']} {r['name']}: {r['detail']}" for r in bs_result["triggered_rules"]],
+        "level": bs_level_map.get(bs_result["level"], "low"),
+    }
+
+    position = position_advice(regime_result, risk_result)
 
     result = {
         "date": date_str,
@@ -653,6 +611,13 @@ def get_diagnosis(date_str=None):
         "north_flow": north,
         "regime": regime_result,
         "risks": risk_result,
+        "black_swan": {  # 新增：完整黑天鹅检测结果
+            "level": bs_result["level"],
+            "level_name": bs_result["level_name"],
+            "summary": bs_result["summary"],
+            "triggered_rules": bs_result["triggered_rules"],
+            "actions": bs_result["actions"],
+        },
         "position": position,
         "sentiment": sentiment,
     }

@@ -144,6 +144,28 @@ class BlackSwanDetector:
 
         self._rules = []
 
+    @classmethod
+    def from_diagnosis(cls, diag: dict, fund_flow: list = None):
+        """从已加载的诊断数据构造检测器（供 market_diagnosis.py 调用，避免重复 I/O）。
+
+        Args:
+            diag: get_diagnosis() 返回的诊断 dict
+            fund_flow: 原始 fund_flow 行列表（可选，用于 BS-7 中位波动率计算）
+        """
+        date_str = diag.get("date", "")
+        instance = cls.__new__(cls)
+        instance.date_str = date_str
+        instance.diag = diag
+        instance.fund_flow = fund_flow or []
+        instance.north = None  # diag 中已含北向数据
+        instance.prev_date = _find_prev_trading_day(date_str)
+        instance.prev_diag = _load_diagnosis(instance.prev_date) if instance.prev_date else None
+        instance.prev_north = _load_north_flow(instance.prev_date) if instance.prev_date else None
+        instance.prev_industry = _load_industry_flow(instance.prev_date) if instance.prev_date else None
+        instance.today_industry = _load_industry_flow(date_str)
+        instance._rules = []
+        return instance
+
     # ------------------------------------------------------------------
     # 数据提取辅助
     # ------------------------------------------------------------------
@@ -303,10 +325,17 @@ class BlackSwanDetector:
                 return self._rule_skip("BS-5", "北向恐慌", "SEVERE",
                                        f"盘中数据被屏蔽: {nf_diag.get('reason', '未知')}")
 
-        if not self.north or len(self.north) == 0:
+        # 获取今日北向净值 — 优先用 diag（已处理屏蔽逻辑），否则用原始 north_flow.json
+        today_net = None
+        if self.diag:
+            nf_diag = self.diag.get("north_flow", {})
+            if nf_diag.get("available"):
+                today_net = nf_diag.get("net_north", 0)
+        if today_net is None and self.north and len(self.north) > 0:
+            today_net = self.north[0].get("net_north", 0)
+        if today_net is None:
             return self._rule_skip("BS-5", "北向恐慌", "SEVERE", "缺少今日北向数据")
 
-        today_net = self.north[0].get("net_north", 0)  # 单位：亿
         if today_net > -100:
             return self._rule_ok("BS-5", "北向恐慌", "SEVERE",
                                  f"北向净流入 {today_net:.0f}亿（阈值 -100亿）")
@@ -473,6 +502,79 @@ class BlackSwanDetector:
         }
 
     # ------------------------------------------------------------------
+    # BS-10 极端过热 — SEVERE（从 market_diagnosis.diagnose_risks 迁入）
+    # ------------------------------------------------------------------
+
+    def _check_bs10(self):
+        up_ratio = self._b("up_ratio", 0)
+        triggered = up_ratio > 0.85
+        return {
+            "rule_id": "BS-10",
+            "name": "极端过热",
+            "severity": "SEVERE" if up_ratio > 0.90 else "HIGH",
+            "triggered": triggered,
+            "detail": f"上涨比 {up_ratio:.1%}（阈值 85%），短期过热风险",
+            "values": {"up_ratio": up_ratio},
+        }
+
+    # ------------------------------------------------------------------
+    # BS-11 涨停狂热 — HIGH（从 market_diagnosis.diagnose_risks 迁入）
+    # ------------------------------------------------------------------
+
+    def _check_bs11(self):
+        limit_up = self._b("limit_up", 0)
+        triggered = limit_up > 200
+        return {
+            "rule_id": "BS-11",
+            "name": "涨停狂热",
+            "severity": "HIGH",
+            "triggered": triggered,
+            "detail": f"涨停 {limit_up} 只（阈值 200），情绪极度亢奋，追高风险",
+            "values": {"limit_up": limit_up},
+        }
+
+    # ------------------------------------------------------------------
+    # BS-12 量价背离 — HIGH（从 market_diagnosis.diagnose_risks 迁入）
+    # ------------------------------------------------------------------
+
+    def _check_bs12(self):
+        median_ret = self._b("median", 0)
+        pos_flow = self._f("pos_flow_ratio", 0.5)
+        # 指数上涨但主力资金大比例流出 → 上涨不可持续
+        triggered = median_ret > 0.5 and pos_flow < 0.35
+        return {
+            "rule_id": "BS-12",
+            "name": "量价背离",
+            "severity": "HIGH",
+            "triggered": triggered,
+            "detail": (
+                f"中位涨跌 {median_ret:+.1f}% 但主力正流比仅 {pos_flow:.1%}，"
+                f"指数上涨但资金出逃"
+            ),
+            "values": {"median_ret": median_ret, "pos_flow_ratio": pos_flow},
+        }
+
+    # ------------------------------------------------------------------
+    # BS-13 放量暴跌 — HIGH（从 market_diagnosis.diagnose_risks 迁入）
+    # ------------------------------------------------------------------
+
+    def _check_bs13(self):
+        high_vol = self._f("high_vol_ratio", 0)
+        median_ret = self._b("median", 0)
+        triggered = high_vol > 0.4 and median_ret < -1.0
+        return {
+            "rule_id": "BS-13",
+            "name": "放量暴跌",
+            "severity": "HIGH",
+            "triggered": triggered,
+            "detail": (
+                f"高量比(>3)占比 {high_vol:.1%}（阈值 40%）且 "
+                f"中位跌幅 {median_ret:+.1f}%（阈值 -1.0%），恐慌性抛售"
+            ),
+            "values": {"high_vol_ratio": high_vol, "median_ret": median_ret},
+        }
+
+    # ------------------------------------------------------------------
     # 辅助
     # ------------------------------------------------------------------
 
@@ -507,6 +609,10 @@ class BlackSwanDetector:
             self._check_bs7(),
             self._check_bs8(),
             self._check_bs9(),
+            self._check_bs10(),
+            self._check_bs11(),
+            self._check_bs12(),
+            self._check_bs13(),
         ]
 
         triggered = [r for r in self._rules if r["triggered"]]
