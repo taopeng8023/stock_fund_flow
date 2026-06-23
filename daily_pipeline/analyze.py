@@ -1,6 +1,7 @@
 """
 每日选股×板块 联合分析报告 → Markdown文件
-用法: python -m daily_pipeline.analyze <date>
+用法: python -m daily_pipeline.analyze <date>             → 单日报告
+      python -m daily_pipeline.analyze <date1> <date2>    → 双日对比报告
 输出: research_data/<date>/report_<date>.md
 """
 import csv
@@ -225,6 +226,139 @@ def run(date_str=None):
     print("\n".join(lines))
 
 
+def compare(date1, date2):
+    """双日对比报告"""
+    def _load(date_str):
+        sp = os.path.join(RESEARCH_ROOT, date_str, "scores.csv")
+        cp = os.path.join(RESEARCH_ROOT, date_str, "sector_scores.csv")
+        if not os.path.exists(sp) or not os.path.exists(cp): return None, None
+        sc = [r for r in csv.DictReader(open(sp, encoding="utf-8-sig"))]
+        se = [r for r in csv.DictReader(open(cp, encoding="utf-8-sig"))]
+        return sc, se
+
+    s1, c1 = _load(date1)
+    s2, c2 = _load(date2)
+    if not s1 or not s2:
+        print("✗ 数据不全"); return
+
+    s1.sort(key=lambda x: -float(x["综合得分"]))
+    s2.sort(key=lambda x: -float(x["综合得分"]))
+    sec_map1 = {s["名称"]: s for s in c1}
+    sec_map2 = {s["名称"]: s for s in c2}
+    sec1_score = {s["名称"]: float(s["得分"]) for s in c1}
+    sec2_score = {s["名称"]: float(s["得分"]) for s in c2}
+
+    lines = []
+    w = lines.append
+    w(f"# {date1} vs {date2} 对比分析报告")
+    w("")
+    w(f"**{date1}**: {len(s1)}只 {len(c1)}板块 | **{date2}**: {len(s2)}只 {len(c2)}板块")
+    w("")
+
+    # 1. 市场对比
+    w("## 一、市场对比")
+    w("")
+    w("| 指标 | {date1} | {date2} | 变化 |")
+    w("|------|--------|--------|------|")
+    avg1 = statistics.mean(float(r["综合得分"]) for r in s1)
+    avg2 = statistics.mean(float(r["综合得分"]) for r in s2)
+    chg1 = statistics.mean(float(r["涨跌幅"]) for r in s1)
+    chg2 = statistics.mean(float(r["涨跌幅"]) for r in s2)
+    good1 = sum(1 for r in s1 if float(r["综合得分"]) >= 0.5)
+    good2 = sum(1 for r in s2 if float(r["综合得分"]) >= 0.5)
+    w(f"| 均综合分 | {avg1:.3f} | {avg2:.3f} | {avg2-avg1:+.3f} |")
+    w(f"| 均涨跌 | {chg1:+.1f}% | {chg2:+.1f}% | {chg2-chg1:+.1f}% |")
+    w(f"| 买入候选(≥0.5) | {good1}({good1/len(s1)*100:.0f}%) | {good2}({good2/len(s2)*100:.0f}%) | {good2-good1:+d} |")
+
+    # 2. 板块对比
+    w("")
+    w("## 二、板块得分对比")
+    w("")
+    w("| 板块 | {date1}得分 | {date2}得分 | 变化 | 趋势 |")
+    w("|------|-----------|-----------|------|------|")
+    all_secs = set(sec1_score.keys()) | set(sec2_score.keys())
+    changes = []
+    for name in all_secs:
+        sc1 = sec1_score.get(name, 0.5)
+        sc2 = sec2_score.get(name, 0.5)
+        changes.append((name, sc1, sc2, sc2 - sc1))
+    changes.sort(key=lambda x: -abs(x[3]))
+    for name, sc1, sc2, diff in changes[:15]:
+        arrow = "🔥↑" if diff > 0.05 else ("⚠↓" if diff < -0.05 else "→")
+        w(f"| {name} | {sc1:.3f} | {sc2:.3f} | {diff:+.3f} | {arrow} |")
+
+    # 3. 行业资金跨日对比
+    w("")
+    w("## 三、行业资金跨日对比")
+    w("")
+    cross_flow = []
+    for s in c2:
+        name = s["名称"]
+        flow2 = float(s.get("最新流入(亿)", 0) or 0)
+        # 找昨日同板块
+        prev = next((x for x in c1 if x["名称"] == name), None)
+        flow1 = float(prev.get("最新流入(亿)", 0) or 0) if prev else 0
+        if abs(flow2 - flow1) > 5:
+            cross_flow.append((name, flow1, flow2, flow2 - flow1))
+    cross_flow.sort(key=lambda x: -abs(x[3]))
+    w("| 板块 | {date1}流入 | {date2}流入 | 变化 | 方向 |")
+    w("|------|----------|----------|------|------|")
+    for name, f1, f2, diff in cross_flow[:12]:
+        arrow = "🔥涌入" if diff > 0 else "⚠️撤退"
+        w(f"| {name} | {f1:+.1f}亿 | {f2:+.1f}亿 | {diff:+.1f}亿 | {arrow} |")
+
+    # 4. 概念对比
+    w("")
+    w("## 四、概念主线切换")
+    w("")
+    con1 = sorted([s for s in c1 if s["类型"]=="概念"], key=lambda x: -float(x["得分"]))
+    con2 = sorted([s for s in c2 if s["类型"]=="概念"], key=lambda x: -float(x["得分"]))
+    w(f"**{date1}**: " + " → ".join(f"{c['名称']}({c['得分']})" for c in con1[:5]))
+    w("")
+    w(f"**{date2}**: " + " → ".join(f"{c['名称']}({c['得分']})" for c in con2[:5]))
+
+    # 5. 持续高分个股
+    w("")
+    w("## 五、两日持续高分个股")
+    w("")
+    top200_1 = set(r["代码"] for r in s1[:200])
+    top200_2 = set(r["代码"] for r in s2[:200])
+    persistent = top200_1 & top200_2
+    w(f"两日均在Top200: **{len(persistent)}只**")
+    w("")
+    w("| 代码 | 名称 | {date1}得分 | {date2}得分 | 变化 |")
+    w("|------|------|-----------|-----------|------|")
+    score_map1 = {r["代码"]: float(r["综合得分"]) for r in s1}
+    score_map2 = {r["代码"]: float(r["综合得分"]) for r in s2}
+    ps = [(c, score_map1[c], score_map2[c], score_map2[c]-score_map1[c]) for c in persistent]
+    ps.sort(key=lambda x: -x[3])
+    for code, sc1, sc2, diff in ps[:15]:
+        name = next((r["名称"] for r in s2 if r["代码"]==code), code)
+        arrow = "↑" if diff > 0 else "↓"
+        w(f"| {code} | {name} | {sc1:.3f} | {sc2:.3f} | {diff:+.3f} {arrow} |")
+
+    # 6. 总结
+    w("")
+    w("## 六、总结")
+    w("")
+    new_hot = [name for name,_,_,diff in changes[:10] if diff > 0.05]
+    fading = [name for name,_,_,diff in changes[:10] if diff < -0.05]
+    w(f"- **板块升温**: {', '.join(new_hot[:5]) if new_hot else '无'}")
+    w(f"- **板块降温**: {', '.join(fading[:5]) if fading else '无'}")
+    w(f"- **持续高分**: {len(persistent)}只连续两日Top200")
+    w(f"- **概念切换**: {con2[0]['名称'] if con2 else '?'}替代{con1[0]['名称'] if con1 else '?'}成为新主线")
+
+    report_path = os.path.join(RESEARCH_ROOT, date2, f"report_compare_{date1}_{date2}.md")
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"✓ {report_path}")
+    print("\n".join(lines))
+
+
 if __name__ == "__main__":
-    date_str = sys.argv[1] if len(sys.argv) > 1 else None
-    run(date_str)
+    if len(sys.argv) >= 3:
+        compare(sys.argv[1], sys.argv[2])
+    else:
+        date_str = sys.argv[1] if len(sys.argv) > 1 else None
+        run(date_str)
