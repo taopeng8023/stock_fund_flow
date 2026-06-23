@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A股量化选股系统 — A-share quantitative stock selection system that fetches market data from 东方财富 (East Money), runs multi-factor scoring, market diagnosis, and performance tracking. The system exposes a FastAPI web dashboard with APScheduler-driven daily automation.
+A股量化选股系统 — A-share quantitative stock selection system that fetches market data from 东方财富 (East Money), runs multi-factor scoring, market diagnosis, and performance tracking. The system exposes a Reflex web dashboard with APScheduler-driven daily automation.
+
+**增强计划**: 详见 [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — 8 阶段增量构建买入推荐、卖出信号、黑天鹅监控、飞书通知、调度守护、Dashboard 增强。
 
 ## Common Commands
 
