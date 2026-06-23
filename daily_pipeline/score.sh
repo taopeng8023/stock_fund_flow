@@ -1,15 +1,16 @@
 #!/bin/bash
-# 收盘评分 — 对当天全市场股票打分
+# 收盘评分 — 对当天全市场股票+板块打分
 # 用法: ./daily_pipeline/score.sh [date] [snapshot]
-#   ./daily_pipeline/score.sh                  → 当天收盘
-#   ./daily_pipeline/score.sh 20260622          → 指定日期收盘
-#   ./daily_pipeline/score.sh 20260622 1430     → 14:30快照评分
 cd "$(dirname "$0")/.."
 source .venv/bin/activate 2>/dev/null || true
 DATE="${1:-$(date +%Y%m%d)}"
 SNAPSHOT="${2:-}"
-if [ -n "$SNAPSHOT" ]; then
-    python -m daily_pipeline.main --mode=score --date="$DATE" --snapshot="$SNAPSHOT"
-else
-    python -m daily_pipeline.main --mode=score --date="$DATE"
-fi
+SNAP_ARG=""
+[ -n "$SNAPSHOT" ] && SNAP_ARG="--snapshot=$SNAPSHOT"
+
+echo "=== 个股评分 ==="
+python -m daily_pipeline.main --mode=score --date="$DATE" $SNAP_ARG
+
+echo ""
+echo "=== 板块评分 ==="
+python -m daily_pipeline.main --mode=sectors --date="$DATE" $SNAP_ARG

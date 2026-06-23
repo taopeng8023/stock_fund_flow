@@ -63,6 +63,10 @@ echo "  自动评分 (截止=$SCORE_TIME)..."
 echo "============================================"
 python -m daily_pipeline.main --mode=score --date="$DATE" --snapshot="$SCORE_TIME"
 
+echo ""
+echo "=== 板块评分 ==="
+python -m daily_pipeline.main --mode=sectors --date="$DATE" --snapshot="$SCORE_TIME"
+
 # 收盘后补采一次 (为后续分析储备数据)
 if [ "$DATE" = "$(date +%Y%m%d)" ]; then
     while [ "$(date +%H%M)" \< "$CLOSE_TIME" ]; do
