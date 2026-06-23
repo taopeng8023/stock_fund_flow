@@ -19,7 +19,7 @@
 | 14:30 后买入推荐 | 评分存在但分散，`filter_overnight.py` 独立运行 | 无集成的"买入决策"模块（评分 + 风控门禁 + 仓位分配 + 行业分散） |
 | 持仓卖出指示 | **完全不存在** | 无止损/止盈/时间退出/信号衰减/体制退出逻辑 |
 | 黑天鹅规避 | `market_diagnosis.py` 有风险等级，但仅在选股时做门禁 | 无持续仓位级风险监控，无个股事件检测，无熔断机制 |
-| 通知触达 | **完全不存在** | 无飞书/邮件/任何告警通道 |
+| 通知触达 | **完全不存在** | 无企业微信/邮件/任何告警通道 |
 | 持仓数据库 | 全部基于文件（JSON/CSV） | 无结构化持仓记录、交易日志、每日评分快照 |
 | 调度守护 | `daily_pipeline/run.sh` 需手动启动 | 无 APScheduler 守护进程，无交易日历，`daily_run.sh` 被引用但不存在 |
 
@@ -30,7 +30,7 @@
 1. **尾盘买入推荐** — 14:30 后自动输出带仓位分配的可执行买入清单
 2. **持仓卖出指示** — 每日评估已持仓个股，按止损/止盈/时间/信号衰减/体制变化生成卖出信号
 3. **黑天鹅识别** — 持续监控市场宽度、资金外逃、流动性冻结、北向恐慌等极端信号
-4. **飞书通知** — 买入推荐、卖出告警、黑天鹅预警、每日市场摘要自动推送
+4. **企业微信通知** — 买入推荐、卖出告警、黑天鹅预警、每日市场摘要自动推送
 
 ---
 
@@ -63,8 +63,8 @@
     └─────────────────────┴─────────────────────────┘
                             │
                     ┌───────▼────────┐
-                    │  notify/lark   │
-                    │  飞书通知       │
+                    │  notify/wecom  │
+                    │  企业微信通知    │
                     └────────────────┘
 ```
 
@@ -147,7 +147,7 @@
 7. 行业分散：同行业最多 2 只
 8. 去重：排除已在 Position 表中的持仓
 
-**输出格式**（JSON + 飞书卡片）：
+**输出格式**（JSON + 企业微信 Markdown 消息）：
 ```json
 {
   "date": "20260623",
@@ -248,31 +248,37 @@
 
 ---
 
-#### Phase 6：飞书通知系统（预计 2-3 天）
+#### Phase 6：企业微信通知系统 ✅ 已提前实施（预计 2-3 天 → 实际 1 天）
 
-**新建文件**：
-- `notify/__init__.py`
-- `notify/config.py` — webhook URL 配置（从环境变量读取 `QUANT_LARK_WEBHOOK`）
-- `notify/lark_sender.py` — `send_card()` / `send_text()` / `send_post()`
-- `notify/message_builder.py` — 构建各类消息模板
+> **2026-06-23 已实施**，比计划提前。原计划用飞书，用户选择企业微信 Webhook。
+
+**已创建文件**：
+- `notify/__init__.py` — 模块入口，导出 `WeComSender`
+- `notify/config.py` — webhook URL 配置（从环境变量读取 `QUANT_WECOM_WEBHOOK`）
+- `notify/wecom_sender.py` — `WeComSender` 类，支持 `send_text()` / `send_markdown()` / `send_news()` / `send_file()` / `send_image()`
+- `notify/message_builder.py` — 6 类消息模板构建器 + 去重键生成
 
 **通知事件矩阵**：
 
-| 事件 | 通道 | 频率 | 模板类型 |
-|------|------|------|---------|
-| 每日买入推荐 | 飞书卡片 | 每交易日 1 次 | 交互式卡片（含股票列表、得分、分配、止损止盈） |
-| 卖出信号 | 飞书卡片 | 触发时发送 | 红色主题卡片（持仓信息、触发原因、持有天数、盈亏） |
-| 黑天鹅预警 | 飞书文本 + @all | 立即 | 文本消息（触发规则、建议动作） |
-| 每日市场摘要 | 飞书富文本 | 每交易日 1 次 | 诊断摘要（体制、宽度、资金、板块、风险） |
-| Pipeline 错误 | 飞书文本 | 失败时 | 错误信息 + 堆栈 |
-| 周度表现总结 | 飞书富文本 | 每周五收盘后 | 周胜率、收益曲线、最佳/最差选股 |
+| 事件 | 消息类型 | 频率 | 说明 |
+|------|---------|------|------|
+| 每日买入推荐 | markdown | 每交易日 1 次 | 股票列表、得分、分配、止损止盈 |
+| 卖出信号 | markdown | 触发时发送 | 红色主题（持仓信息、触发原因、持有天数、盈亏） |
+| 黑天鹅预警 | text + @all | 立即 | 触发规则、建议动作，Level 2+ @all |
+| 每日市场摘要 | markdown | 每交易日 1 次 | 诊断摘要表格（体制、宽度、资金、板块、风险） |
+| Pipeline 错误 | text | 失败时 | 错误阶段 + 错误信息 + 堆栈截断 |
+| 周度表现总结 | markdown | 每周五收盘后 | 周收益、胜率、最大回撤、夏普、最佳/最差 |
 
 **去重机制**：
-- 对 `(date + event_type + stock_code)` 做 SHA256
-- 发送前查 `NotificationLog` 表，已发送则跳过
-- 环境变量 `NOTIFY_DEDUP=true` 控制（默认开启）
+- 对 `(event_type + date + stock_code)` 做 SHA256
+- 内存级去重（set 存储最近 10000 条 hash）
+- Phase 1 建表后迁移到 `NotificationLog` 表
 
-**验证**：创建飞书机器人 → 配置 webhook → `python -m notify.lark_sender --test`
+**验证**：
+```bash
+QUANT_WECOM_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY" \
+  python -c "from notify.wecom_sender import send_text; send_text('✅ 量化系统通知测试')"
+```
 
 ---
 
@@ -298,7 +304,7 @@
 | 14:40 | 黑天鹅检测 | `BlackSwanDetector.check()` |
 | 14:42 | 买入推荐 | `generate_buy_recommendations()` |
 | 14:44 | 卖出信号 | `generate_sell_signals()` |
-| 14:48 | 飞书推送 | 买入清单 + 卖出信号 + 诊断摘要 |
+| 14:48 | 企业微信推送 | 买入清单 + 卖出信号 + 诊断摘要 |
 | 15:01 | 收盘快照 | 最终数据采集 |
 | 18:00 | 全量数据采集（可选） | 补采当日完整数据 |
 
@@ -400,9 +406,9 @@ pip install numpy         # 数值计算（buy_engine 仓位分配）
    # 正常交易日应输出 Level 0
    # 极端行情日应触发相应级别
 
-8. 飞书通知测试
-   QUANT_LARK_WEBHOOK="https://open.feishu.cn/..." python -m notify.lark_sender --test
-   # 飞书群应收到测试消息
+8. 企业微信通知测试
+   QUANT_WECOM_WEBHOOK="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." python -c "from notify.wecom_sender import send_text; send_text('测试')"
+   # 企业微信群应收到测试消息
 
 9. 调度守护（前台模式，交易日 14:30 前）
    python -m scheduler.daemon --manual --date=20260623
@@ -432,7 +438,7 @@ python -m portfolio.backtest --start=20260101 --end=20260623
 - 每日买入推荐数量（正常 3-8 只，过多/过少需检查）
 - 卖出信号触发频率（正常每日 0-3 条）
 - 黑天鹅误报率（正常每月 < 2 次 Level 2+）
-- 飞书通知到达率（应 100%）
+- 企业微信通知到达率（应 100%）
 - 调度守护可用率（应 > 95%）
 
 ---
@@ -454,8 +460,8 @@ portfolio/
 
 notify/
     __init__.py
-    config.py                 # Lark webhook 配置
-    lark_sender.py            # 飞书消息发送
+    config.py                 # 企业微信 Webhook 配置
+    wecom_sender.py           # 企业微信消息发送
     message_builder.py        # 消息模板构建
 
 scheduler/

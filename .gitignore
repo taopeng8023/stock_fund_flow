@@ -11,5 +11,5 @@ __pycache__/
 *.db
 performance.json
 data/
-data/
 research_data/
+.env
