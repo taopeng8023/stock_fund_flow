@@ -874,5 +874,97 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     return results
 
 
+def score_sectors(date_str=None, snapshot_cutoff=None):
+    """行业/概念板块评分 — 判断哪些板块资金在流入"""
+    if date_str is None:
+        date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
+
+    mode_label = f"14:30" if snapshot_cutoff else "收盘"
+    print(f"板块评分 [{date_str}] {mode_label}")
+
+    sector_traj, concept_traj, sector_static, concept_static = _load_sector_snapshots(date_str, snapshot_cutoff)
+
+    def _score_one_sector(name, traj, static_flow):
+        """单个板块评分 0~1"""
+        score = 0.5
+        if not traj or len(traj) < 2:
+            # 只有静态数据: 用最新流排名
+            return score
+
+        ranks = [d["rank"] for d in traj.values()]
+        flows = [d["flow"] for d in traj.values()]
+        n = len(ranks)
+
+        # 1. 最新排名 (30%) — 排名越小越好
+        if ranks:
+            rank_score = 1.0 - min(1.0, (ranks[-1] - 1) / max(len(traj) * 3, 10))
+        else:
+            rank_score = 0.5
+
+        # 2. 排名趋势 (35%) — 排名改善=正
+        if n >= 3:
+            rank_improve = ranks[0] - ranks[-1]
+            trend_score = 0.5 + max(-0.5, min(0.5, rank_improve / max(n, 3) * 2))
+        else:
+            trend_score = 0.5
+
+        # 3. 流入加速度 (25%) — 后半vs前半
+        if n >= 4:
+            mid = n // 2
+            first_avg = statistics.mean(flows[:mid]) if flows[:mid] else 0
+            second_avg = statistics.mean(flows[mid:]) if flows[mid:] else 0
+            denom = max(abs(first_avg), 1e8)
+            accel = (second_avg - first_avg) / denom
+            accel_score = 0.5 + max(-0.5, min(0.5, accel * 5))
+        else:
+            accel_score = 0.5
+
+        # 4. 排名稳定性 (10%)
+        if n >= 3:
+            std_rank = statistics.stdev(ranks) if n > 2 else 0
+            stability = 1.0 - min(1.0, std_rank / max(len(traj), 5))
+        else:
+            stability = 0.5
+
+        return round(rank_score * 0.30 + trend_score * 0.35 + accel_score * 0.25 + stability * 0.10, 3)
+
+    # 评分
+    results = []
+    for name, traj in {**sector_traj, **concept_traj}.items():
+        static_flow = sector_static.get(name) or concept_static.get(name, 0)
+        s = _score_one_sector(name, traj, static_flow)
+        is_concept = name in concept_traj
+        results.append({
+            "名称": name, "类型": "概念" if is_concept else "行业",
+            "得分": s, "快照数": len(traj) if traj else 0,
+            "最新排名": list(traj.values())[-1]["rank"] if traj else 0,
+            "最新流入(亿)": round(list(traj.values())[-1]["flow"] / 1e8, 1) if traj else 0,
+        })
+
+    results.sort(key=lambda x: -x["得分"])
+
+    # 保存
+    csv_path = os.path.join(RESEARCH_ROOT, date_str, "sector_scores.csv")
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["名称","类型","得分","快照数","最新排名","最新流入(亿)"])
+        w.writeheader()
+        w.writerows(results)
+
+    # 输出
+    print(f"\n{'='*55}")
+    print(f"  板块资金流评分 Top 20")
+    print(f"{'='*55}")
+    for i, r in enumerate(results[:20]):
+        bar = "█" * int(r["得分"] * 20)
+        print(f"  {i+1:>2}. {r['名称']:<10s} {r['类型']} {r['得分']:.3f} "
+              f"排名#{r['最新排名']} 流入{r['最新流入(亿)']:+.1f}亿 {bar}")
+    print(f"\n  ✓ {csv_path} ({len(results)} 个板块)")
+    return results
+
+
 if __name__ == "__main__":
-    score_all_stocks()
+    import sys
+    if "--sectors" in sys.argv:
+        score_sectors()
+    else:
+        score_all_stocks()

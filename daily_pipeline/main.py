@@ -41,6 +41,10 @@ def main():
         from daily_pipeline.score import score_all_stocks
         score_all_stocks(date_str, snapshot_cutoff=snapshot)
 
+    elif mode == "sectors":
+        from daily_pipeline.score import score_sectors
+        score_sectors(date_str, snapshot_cutoff=snapshot)
+
     elif mode == "backtest":
         from daily_pipeline.backtest import run_daily_backtest
         run_daily_backtest(date_str, eval_date)
