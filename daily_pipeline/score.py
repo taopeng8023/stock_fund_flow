@@ -794,7 +794,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         mcap_yi = f20 / 1e8
         penalty = 0.0
         if f8_val > 13 and cap < 0.75: penalty -= 0.06; comp_sigs.append("P29_high_turnover")
-        if f8_val < 2.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
+        if f8_val < 1.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
         if f10_val < 0.8: penalty -= 0.03; comp_sigs.append("P_low_vol_ratio")
         if mcap_yi < 30: penalty -= 0.04; comp_sigs.append("P_small_cap")
         if f87_val > 30 and f3 < 3: penalty -= 0.08; comp_sigs.append("P6_retail")
@@ -907,6 +907,24 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
 
     sector_traj, concept_traj, sector_static, concept_static = _load_sector_snapshots(date_str, snapshot_cutoff)
 
+    # ── 方案B: 用f100自建行业流补充(与个股行业名100%匹配) ──
+    latest_file = [f for f in os.listdir(os.path.join(RESEARCH_ROOT, date_str, "intraday"))
+                   if f.startswith("fund_flow_") and f.endswith(".csv")]
+    if snapshot_cutoff:
+        latest_file = [f for f in latest_file if f.replace("fund_flow_","").replace(".csv","") <= snapshot_cutoff]
+    if latest_file:
+        latest_file = sorted(latest_file)[-1]
+        with open(os.path.join(RESEARCH_ROOT, date_str, "intraday", latest_file), encoding="utf-8-sig") as fh:
+            for r in csv.DictReader(fh):
+                ind = r.get("行业", "")
+                flow = _tof(r.get("主力净流入"))
+                if ind and ind not in sector_static:
+                    sector_static[ind] = sector_static.get(ind, 0) + flow
+    # 合并概念
+    for name in concept_static:
+        if name not in sector_static:
+            sector_static[name] = concept_static[name]
+
     def _score_one_sector(name, traj, static_flow):
         """板块综合评分 0~1 (6维度: 排名+趋势+持续性+加速度+集中度+稳定性)"""
         if not traj or len(traj) < 2:
@@ -972,9 +990,12 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
             accel_score * 0.15 + conc_score * 0.10 + stability * 0.10, 3
         )
 
-    # 评分
+    # 评分（包含f100自建行业 + API行业 + 概念）
+    all_sector_names = set(sector_traj.keys()) | set(concept_traj.keys()) | set(sector_static.keys())
     results = []
-    for name, traj in {**sector_traj, **concept_traj}.items():
+    for name in all_sector_names:
+        traj = sector_traj.get(name) or concept_traj.get(name) or {}
+        static_flow = sector_static.get(name, 0)
         static_flow = sector_static.get(name) or concept_static.get(name, 0)
         s = _score_one_sector(name, traj, static_flow)
         is_concept = name in concept_traj
@@ -1066,10 +1087,19 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
     if prev_sector_full:
         new_top10 = [r for r in results[:20] if r["排名跨日变化"] > 5]
         fading = [r for r in results if r["排名跨日变化"] < -10]
+        # 资金骤降预警: 排名Top10但资金跨日减少>30亿
+        outflow_warn = [r for r in results[:15]
+                        if r.get("流入跨日变化(亿)", 0) < -30]
         if new_top10:
             print(f"\n  🔥 新进Top20: {', '.join(r['名称'] for r in new_top10[:5])}")
         if fading:
             print(f"  ↘ 退潮板块: {', '.join(r['名称'] for r in fading[:5])}")
+        if outflow_warn:
+            msg = ", ".join(
+                f"{r['名称']}({r.get('流入跨日变化(亿)', 0):+.0f}亿)"
+                for r in outflow_warn[:5]
+            )
+            print(f"  ⚠️ 排名高但资金骤降: {msg}")
 
     print(f"\n  ✓ {csv_path} ({len(results)} 个板块)")
     return results
