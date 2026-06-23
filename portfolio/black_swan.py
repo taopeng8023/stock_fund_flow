@@ -753,10 +753,51 @@ def _print_result(result: dict):
 # CLI
 # ---------------------------------------------------------------------------
 
+def _ensure_data(date_str: str) -> bool:
+    """确保诊断数据存在。缺失时自动采集+诊断。
+
+    Returns:
+        True if data is ready, False if unrecoverable.
+    """
+    # 1. 检查原始数据
+    if not _load_fund_flow(date_str):
+        print(f"⚡ {date_str} 无原始数据，自动采集...")
+        import subprocess
+        project_dir = PROJECT_ROOT
+        cp = subprocess.run(
+            [sys.executable, "-m", "data_collector.main", f"--date={date_str}"],
+            cwd=project_dir,
+        )
+        if cp.returncode != 0:
+            print(f"❌ 自动采集失败，请手动运行: python -m data_collector.main --date={date_str}")
+            return False
+        if not _load_fund_flow(date_str):
+            print(f"❌ 采集完成但数据文件未生成，请检查网络")
+            return False
+        print(f"   ✅ 数据采集完成")
+
+    # 2. 检查诊断数据
+    if not _load_diagnosis(date_str):
+        print(f"⚡ {date_str} 无诊断数据，自动生成...")
+        try:
+            from market_diagnosis import get_diagnosis
+            result = get_diagnosis(date_str)
+            if result is None:
+                print(f"❌ 诊断生成失败")
+                return False
+            print(f"   ✅ 诊断生成完成")
+        except Exception as e:
+            print(f"❌ 诊断生成异常: {e}")
+            return False
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="黑天鹅风险监控")
     parser.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
     parser.add_argument("--no-notify", action="store_true", help="静默模式，不推送")
+    parser.add_argument("--no-collect", action="store_true", help="禁止自动采集，数据缺失直接报错")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     args = parser.parse_args()
 
@@ -765,10 +806,15 @@ def main():
         from datetime import datetime
         date_str = datetime.now().strftime("%Y%m%d")
 
-    # 检查数据是否存在
-    if not (_load_diagnosis(date_str) or _load_fund_flow(date_str)):
-        print(f"❌ {date_str} 无诊断数据，请先运行: python market_diagnosis.py --date={date_str}")
-        sys.exit(1)
+    # 确保数据就绪
+    if args.no_collect:
+        if not (_load_diagnosis(date_str) or _load_fund_flow(date_str)):
+            print(f"❌ {date_str} 无数据，请先运行: python -m data_collector.main --date={date_str}")
+            print(f"   然后运行: python market_diagnosis.py --date={date_str}")
+            sys.exit(1)
+    else:
+        if not _ensure_data(date_str):
+            sys.exit(1)
 
     detector = BlackSwanDetector(date_str)
     result = detector.check()
