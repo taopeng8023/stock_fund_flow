@@ -1003,13 +1003,13 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
         ranks = [d["rank"] for d in traj.values()] if traj else []
         flows = [d["flow"] for d in traj.values()] if traj else []
         n = len(ranks)
-        pos_ratio = sum(1 for f in flows if f > 0) / max(n, 1)
+        pos_ratio = sum(1 for f in flows if f > 0) / max(n, 1) if n > 0 else 0
         rank_change = ranks[0] - ranks[-1] if n >= 2 else 0
 
         results.append({
             "名称": name, "类型": "概念" if is_concept else "行业",
             "得分": s, "快照数": n,
-            "最新排名": ranks[-1] if ranks else 0,
+            "最新排名": ranks[-1] if ranks else (len(all_sector_names) if n == 0 else 0),
             "最新流入(亿)": round(flows[-1] / 1e8, 1) if flows else 0,
             "排名变化": rank_change,
             "正流占比": round(pos_ratio, 2),
@@ -1026,7 +1026,9 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
                     prev_sec_scores[r["名称"]] = float(r["得分"])
     for r in results:
         name = r["名称"]
-        if name in prev_sec_scores:
+        # 仅对今日有轨迹(≥2快照)或今日有实际流入的板块做平滑, 避免幽灵板块
+        has_today_data = int(r["快照数"]) >= 2 or float(r["最新流入(亿)"]) != 0
+        if name in prev_sec_scores and has_today_data:
             r["得分"] = round(float(r["得分"]) * 0.6 + prev_sec_scores[name] * 0.4, 3)
     # 复用已加载的 prev_sec_scores，添加排名/流入信息
     prev_sector_full = {}
