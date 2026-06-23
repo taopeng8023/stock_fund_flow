@@ -1052,8 +1052,8 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
             r["昨日流入(亿)"] = round(p["流入"], 1)
             r["流入跨日变化(亿)"] = round(r["最新流入(亿)"] - p["流入"], 1)
         else:
-            r["昨日排名"] = 0; r["排名跨日变化"] = 0
-            r["昨日流入(亿)"] = 0; r["流入跨日变化(亿)"] = 0
+            r["昨日排名"] = ""; r["排名跨日变化"] = ""
+            r["昨日流入(亿)"] = ""; r["流入跨日变化(亿)"] = ""
 
     results.sort(key=lambda x: -x["得分"])
 
@@ -1072,14 +1072,19 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
         print(f"  对比前日: {date_dirs[0]}")
     print(f"{'='*65}")
     for i, r in enumerate(results[:20]):
-        bar = "█" * int(r["得分"] * 20)
-        trend = "↑" if r["排名变化"] > 0 else ("↓" if r["排名变化"] < 0 else "→")
+        bar = "█" * int(float(r["得分"]) * 20)
+        trend = "↑" if int(r.get("排名变化", 0) or 0) > 0 else ("↓" if int(r.get("排名变化", 0) or 0) < 0 else "→")
         cross = ""
-        if r["排名跨日变化"] > 3: cross = " 🔥新进"
-        elif r["排名跨日变化"] > 0: cross = " ↗"
-        elif r["排名跨日变化"] < -3: cross = " ↘退潮"
-        elif r["排名跨日变化"] < 0: cross = " ↓"
-        flow_diff = r.get("流入跨日变化(亿)", 0)
+        cross_chg = r.get("排名跨日变化") or 0
+        try: cross_chg = int(cross_chg)
+        except: cross_chg = 0
+        if cross_chg > 3: cross = " 🔥新进"
+        elif cross_chg > 0: cross = " ↗"
+        elif cross_chg < -3: cross = " ↘退潮"
+        elif cross_chg < 0: cross = " ↓"
+        flow_diff = r.get("流入跨日变化(亿)") or 0
+        try: flow_diff = float(flow_diff)
+        except: flow_diff = 0
         flow_str = f"资金{flow_diff:+.1f}亿" if flow_diff != 0 else ""
         print(f"  {i+1:>2}. {r['名称']:<10s} {r['类型']} {r['得分']:.3f} "
               f"今#{r['最新排名']}(昨#{r['昨日排名'] or '新'}){trend} 流入{r['最新流入(亿)']:+.1f}亿 "
