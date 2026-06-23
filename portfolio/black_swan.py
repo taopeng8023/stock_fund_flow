@@ -119,7 +119,7 @@ def _find_prev_trading_day(date_str: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _compute_breadth(rows: list) -> dict:
-    """从原始 fund_flow 数据计算市场宽度。"""
+    """从原始 fund_flow 数据计算市场宽度（只计算13条规则实际用到的字段）。"""
     chgs = []
     for r in rows:
         f3 = r.get("f3")
@@ -134,9 +134,6 @@ def _compute_breadth(rows: list) -> dict:
     m = n // 2
 
     return {
-        "total": n,
-        "up": up,
-        "down": sum(1 for c in chgs if c < 0),
         "up_ratio": round(up / n, 3),
         "limit_up": sum(1 for c in chgs if c >= 9.5),
         "limit_down": sum(1 for c in chgs if c <= -9.5),
@@ -160,7 +157,6 @@ def _compute_fund_flow_stats(rows: list) -> dict:
     return {
         "total_main_flow": sum(f62_vals),
         "pos_flow_ratio": round(sum(1 for f in f62_vals if f > 0) / n, 3),
-        "total_margin_net": sum(f168_vals) if f168_vals else 0,
         "margin_pos_ratio": round(sum(1 for f in f168_vals if f > 0) / len(f168_vals), 3) if f168_vals else 0,
         "avg_vol_ratio": round(sum(f10_vals) / len(f10_vals), 2) if f10_vals else 0,
         "high_vol_ratio": round(sum(1 for f in f10_vals if f > 3) / len(f10_vals), 3) if f10_vals else 0,
@@ -227,7 +223,6 @@ class BlackSwanDetector:
 
         # 加载原始数据
         self.fund_flow = _load_fund_flow(date_str) if not preloaded else preloaded.get("rows")
-        self.north = _load_north_flow(date_str)
         self.today_industry = _load_industry_flow(date_str)
         self.prev_north = _load_north_flow(self.prev_date) if self.prev_date else None
         self.prev_industry = _load_industry_flow(self.prev_date) if self.prev_date else None
@@ -242,7 +237,8 @@ class BlackSwanDetector:
             self._breadth = _compute_breadth(self.fund_flow) if self.fund_flow else {}
             self._fund_flow_stats = _compute_fund_flow_stats(self.fund_flow) if self.fund_flow else {}
             self._sentiment = _compute_sentiment(self.fund_flow, date_str) if self.fund_flow else {}
-            self._north_diag = _compute_north_diag(self.north) if self.north else {}
+            north_rows = _load_north_flow(date_str)
+            self._north_diag = _compute_north_diag(north_rows) if north_rows else {}
 
         # 历史诊断（仅 BS-3 需要昨日指数，从 diagnosis JSON 加载）
         self.prev_diag = _load_diagnosis(self.prev_date) if self.prev_date else None
@@ -821,9 +817,12 @@ def _print_result(result: dict):
 # ---------------------------------------------------------------------------
 
 def _ensure_data(date_str: str) -> bool:
-    """确保 fund_flow.json 存在。缺失时自动采集。
+    """确保 fund_flow.json 存在。缺失时只采集黑天鹅必需的 3/10 个模块。
 
-    黑天鹅模块独立计算所有指标，不需要 market_diagnosis 的诊断 JSON。
+    黑天鹅 13 条规则需要的数据源:
+      fund_flow.json   (个股资金流)      → 所有 BS 规则的基础数据
+      north_flow.json  (北向资金)        → BS-5
+      industry_flow.*  (行业资金流)      → BS-6
 
     Returns:
         True if data is ready, False if unrecoverable.
@@ -831,19 +830,31 @@ def _ensure_data(date_str: str) -> bool:
     if _load_fund_flow(date_str):
         return True
 
-    print(f"⚡ {date_str} 无原始数据，自动采集...")
-    import subprocess
-    cp = subprocess.run(
-        [sys.executable, "-m", "data_collector.main", f"--date={date_str}"],
-        cwd=PROJECT_ROOT,
-    )
-    if cp.returncode != 0:
-        print(f"❌ 自动采集失败，请手动运行: python -m data_collector.main --date={date_str}")
+    print(f"⚡ {date_str} 无数据，采集必需模块 (3/10)...")
+    try:
+        from data_collector.fetchers.fund_flow import fetch as fetch_fund_flow
+        from data_collector.fetchers.sector_flow import fetch as fetch_sector_flow
+        from data_collector.fetchers.north_flow import fetch as fetch_north_flow
+
+        for name, fetcher in [("个股资金流", fetch_fund_flow),
+                               ("行业资金流", fetch_sector_flow),
+                               ("北向资金", fetch_north_flow)]:
+            print(f"   📡 {name}...", end=" ", flush=True)
+            try:
+                fetcher(date_str)
+                print("✅")
+            except Exception as e:
+                print(f"❌ {e}")
+                return False
+    except ImportError as e:
+        print(f"❌ 无法导入采集模块: {e}")
+        print(f"   请手动运行: python -m data_collector.main --date={date_str}")
         return False
+
     if not _load_fund_flow(date_str):
         print(f"❌ 采集完成但数据文件未生成，请检查网络")
         return False
-    print(f"   ✅ 数据采集完成")
+    print(f"   ✅ 数据就绪（3/10 模块，耗时远小于全量采集）")
     return True
 
 
