@@ -115,11 +115,99 @@ def _find_prev_trading_day(date_str: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# 自包含诊断计算（不依赖 market_diagnosis.py）
+# ---------------------------------------------------------------------------
+
+def _compute_breadth(rows: list) -> dict:
+    """从原始 fund_flow 数据计算市场宽度。"""
+    chgs = []
+    for r in rows:
+        f3 = r.get("f3")
+        if isinstance(f3, (int, float)):
+            chgs.append(f3)
+    if not chgs:
+        return {}
+
+    n = len(chgs)
+    up = sum(1 for c in chgs if c > 0)
+    chgs_sorted = sorted(chgs)
+    m = n // 2
+
+    return {
+        "total": n,
+        "up": up,
+        "down": sum(1 for c in chgs if c < 0),
+        "up_ratio": round(up / n, 3),
+        "limit_up": sum(1 for c in chgs if c >= 9.5),
+        "limit_down": sum(1 for c in chgs if c <= -9.5),
+        "median": round(chgs_sorted[m], 2),
+    }
+
+
+def _compute_fund_flow_stats(rows: list) -> dict:
+    """从原始 fund_flow 数据计算资金流全景。"""
+    f62_vals, f10_vals, f168_vals = [], [], []
+    for r in rows:
+        for key, lst in [("f62", f62_vals), ("f10", f10_vals), ("f168", f168_vals)]:
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                lst.append(v)
+
+    if not f62_vals:
+        return {}
+
+    n = len(f62_vals)
+    return {
+        "total_main_flow": sum(f62_vals),
+        "pos_flow_ratio": round(sum(1 for f in f62_vals if f > 0) / n, 3),
+        "total_margin_net": sum(f168_vals) if f168_vals else 0,
+        "margin_pos_ratio": round(sum(1 for f in f168_vals if f > 0) / len(f168_vals), 3) if f168_vals else 0,
+        "avg_vol_ratio": round(sum(f10_vals) / len(f10_vals), 2) if f10_vals else 0,
+        "high_vol_ratio": round(sum(1 for f in f10_vals if f > 3) / len(f10_vals), 3) if f10_vals else 0,
+    }
+
+
+def _compute_sentiment(rows: list, date_str: str = None) -> dict:
+    """计算情绪温度计。
+
+    优先从存档诊断读取（保证历史回测一致），当日无存档时才实时计算。
+    """
+    # 优先用存档诊断中的 sentiment（保证跨日一致）
+    diag = _load_diagnosis(date_str) if date_str else None
+    if diag and diag.get("sentiment"):
+        return diag["sentiment"]
+
+    # 实时计算
+    try:
+        from data_collector.fetchers.market_sentiment import compute_sentiment, fetch_indices
+        index_data = fetch_indices()
+        return compute_sentiment(rows, index_data=index_data)
+    except Exception:
+        return {"score": 50, "indices": {}}
+
+
+def _compute_north_diag(north_rows: list) -> dict:
+    """诊断北向数据是否可用。"""
+    if not north_rows:
+        return {"available": False, "reason": "数据不可用"}
+    latest = north_rows[0]
+    net_north = latest.get("net_north", 0)
+    if abs(net_north) > 500 or (net_north == 0 and latest.get("net_south", 0) == 0):
+        return {"available": False, "reason": "盘中数据被屏蔽，盘后更新"}
+    return {
+        "available": True,
+        "net_north": round(net_north, 1),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 规则检测
 # ---------------------------------------------------------------------------
 
 class BlackSwanDetector:
-    """黑天鹅检测器。
+    """黑天鹅检测器 — 完全独立，不依赖 market_diagnosis.py。
+
+    所有指标从 raw fund_flow.json / north_flow.json 直接计算。
 
     用法:
         detector = BlackSwanDetector("20260623")
@@ -127,60 +215,51 @@ class BlackSwanDetector:
         # result = {level: 0, level_name: "正常", rules: [...], actions: [...]}
     """
 
-    def __init__(self, date_str: str):
+    def __init__(self, date_str: str, preloaded: dict = None):
+        """
+        Args:
+            date_str: 日期 YYYYMMDD
+            preloaded: 可选，market_diagnosis 可传入预计算数据避免重复 I/O
+                       {breadth, fund_flow, north_flow, sentiment, rows}
+        """
         self.date_str = date_str
         self.prev_date = _find_prev_trading_day(date_str)
 
-        # 加载数据
-        self.diag = _load_diagnosis(date_str)
-        self.fund_flow = _load_fund_flow(date_str)
+        # 加载原始数据
+        self.fund_flow = _load_fund_flow(date_str) if not preloaded else preloaded.get("rows")
         self.north = _load_north_flow(date_str)
-
-        # 历史数据（可能为 None）
-        self.prev_diag = _load_diagnosis(self.prev_date) if self.prev_date else None
+        self.today_industry = _load_industry_flow(date_str)
         self.prev_north = _load_north_flow(self.prev_date) if self.prev_date else None
         self.prev_industry = _load_industry_flow(self.prev_date) if self.prev_date else None
-        self.today_industry = _load_industry_flow(date_str)
+
+        # 诊断指标 — 优先用预计算值，否则自算
+        if preloaded:
+            self._breadth = preloaded.get("breadth", {})
+            self._fund_flow_stats = preloaded.get("fund_flow", {})
+            self._sentiment = preloaded.get("sentiment", {})
+            self._north_diag = preloaded.get("north_flow", {})
+        else:
+            self._breadth = _compute_breadth(self.fund_flow) if self.fund_flow else {}
+            self._fund_flow_stats = _compute_fund_flow_stats(self.fund_flow) if self.fund_flow else {}
+            self._sentiment = _compute_sentiment(self.fund_flow, date_str) if self.fund_flow else {}
+            self._north_diag = _compute_north_diag(self.north) if self.north else {}
+
+        # 历史诊断（仅 BS-3 需要昨日指数，从 diagnosis JSON 加载）
+        self.prev_diag = _load_diagnosis(self.prev_date) if self.prev_date else None
 
         self._rules = []
-
-    @classmethod
-    def from_diagnosis(cls, diag: dict, fund_flow: list = None):
-        """从已加载的诊断数据构造检测器（供 market_diagnosis.py 调用，避免重复 I/O）。
-
-        Args:
-            diag: get_diagnosis() 返回的诊断 dict
-            fund_flow: 原始 fund_flow 行列表（可选，用于 BS-7 中位波动率计算）
-        """
-        date_str = diag.get("date", "")
-        instance = cls.__new__(cls)
-        instance.date_str = date_str
-        instance.diag = diag
-        instance.fund_flow = fund_flow or []
-        instance.north = None  # diag 中已含北向数据
-        instance.prev_date = _find_prev_trading_day(date_str)
-        instance.prev_diag = _load_diagnosis(instance.prev_date) if instance.prev_date else None
-        instance.prev_north = _load_north_flow(instance.prev_date) if instance.prev_date else None
-        instance.prev_industry = _load_industry_flow(instance.prev_date) if instance.prev_date else None
-        instance.today_industry = _load_industry_flow(date_str)
-        instance._rules = []
-        return instance
 
     # ------------------------------------------------------------------
     # 数据提取辅助
     # ------------------------------------------------------------------
 
     def _b(self, key: str, default=None):
-        """从 breadth 段取值。"""
-        if self.diag and "breadth" in self.diag:
-            return self.diag["breadth"].get(key, default)
-        return default
+        """从 breadth 取值。"""
+        return self._breadth.get(key, default)
 
     def _f(self, key: str, default=None):
-        """从 fund_flow 段取值。"""
-        if self.diag and "fund_flow" in self.diag:
-            return self.diag["fund_flow"].get(key, default)
-        return default
+        """从 fund_flow_stats 取值。"""
+        return self._fund_flow_stats.get(key, default)
 
     # ------------------------------------------------------------------
     # BS-1 宽度熔断 — CRITICAL
@@ -241,10 +320,9 @@ class BlackSwanDetector:
     # ------------------------------------------------------------------
 
     def _check_bs3(self):
-        if not self.diag or self.diag.get("sentiment") is None:
-            return self._rule_skip("BS-3", "连续暴跌", "SEVERE", "缺少今日诊断数据")
-
-        indices = self.diag.get("sentiment", {}).get("indices", {})
+        indices = self._sentiment.get("indices", {})
+        if not indices:
+            return self._rule_skip("BS-3", "连续暴跌", "SEVERE", "缺少指数数据")
         triggered = False
         detail_parts = []
 
@@ -318,21 +396,13 @@ class BlackSwanDetector:
     # ------------------------------------------------------------------
 
     def _check_bs5(self):
-        # 检查诊断中的北向数据是否可用（盘中可能被屏蔽）
-        if self.diag:
-            nf_diag = self.diag.get("north_flow", {})
-            if not nf_diag.get("available", True):
-                return self._rule_skip("BS-5", "北向恐慌", "SEVERE",
-                                       f"盘中数据被屏蔽: {nf_diag.get('reason', '未知')}")
+        # 检查北向数据是否可用（盘中可能被屏蔽）
+        if not self._north_diag.get("available", True):
+            return self._rule_skip("BS-5", "北向恐慌", "SEVERE",
+                                   f"盘中数据被屏蔽: {self._north_diag.get('reason', '未知')}")
 
-        # 获取今日北向净值 — 优先用 diag（已处理屏蔽逻辑），否则用原始 north_flow.json
-        today_net = None
-        if self.diag:
-            nf_diag = self.diag.get("north_flow", {})
-            if nf_diag.get("available"):
-                today_net = nf_diag.get("net_north", 0)
-        if today_net is None and self.north and len(self.north) > 0:
-            today_net = self.north[0].get("net_north", 0)
+        # 获取今日北向净值
+        today_net = self._north_diag.get("net_north") if self._north_diag.get("available") else None
         if today_net is None:
             return self._rule_skip("BS-5", "北向恐慌", "SEVERE", "缺少今日北向数据")
 
@@ -478,10 +548,7 @@ class BlackSwanDetector:
     # ------------------------------------------------------------------
 
     def _check_bs9(self):
-        if not self.diag:
-            return self._rule_skip("BS-9", "情绪冰冻", "CRITICAL", "缺少诊断数据")
-
-        score = self.diag.get("sentiment", {}).get("score", 50)
+        score = self._sentiment.get("score", 50)
         if score < 15:
             severity, triggered = "CRITICAL", True
         elif score < 30:
@@ -754,42 +821,29 @@ def _print_result(result: dict):
 # ---------------------------------------------------------------------------
 
 def _ensure_data(date_str: str) -> bool:
-    """确保诊断数据存在。缺失时自动采集+诊断。
+    """确保 fund_flow.json 存在。缺失时自动采集。
+
+    黑天鹅模块独立计算所有指标，不需要 market_diagnosis 的诊断 JSON。
 
     Returns:
         True if data is ready, False if unrecoverable.
     """
-    # 1. 检查原始数据
+    if _load_fund_flow(date_str):
+        return True
+
+    print(f"⚡ {date_str} 无原始数据，自动采集...")
+    import subprocess
+    cp = subprocess.run(
+        [sys.executable, "-m", "data_collector.main", f"--date={date_str}"],
+        cwd=PROJECT_ROOT,
+    )
+    if cp.returncode != 0:
+        print(f"❌ 自动采集失败，请手动运行: python -m data_collector.main --date={date_str}")
+        return False
     if not _load_fund_flow(date_str):
-        print(f"⚡ {date_str} 无原始数据，自动采集...")
-        import subprocess
-        project_dir = PROJECT_ROOT
-        cp = subprocess.run(
-            [sys.executable, "-m", "data_collector.main", f"--date={date_str}"],
-            cwd=project_dir,
-        )
-        if cp.returncode != 0:
-            print(f"❌ 自动采集失败，请手动运行: python -m data_collector.main --date={date_str}")
-            return False
-        if not _load_fund_flow(date_str):
-            print(f"❌ 采集完成但数据文件未生成，请检查网络")
-            return False
-        print(f"   ✅ 数据采集完成")
-
-    # 2. 检查诊断数据
-    if not _load_diagnosis(date_str):
-        print(f"⚡ {date_str} 无诊断数据，自动生成...")
-        try:
-            from market_diagnosis import get_diagnosis
-            result = get_diagnosis(date_str)
-            if result is None:
-                print(f"❌ 诊断生成失败")
-                return False
-            print(f"   ✅ 诊断生成完成")
-        except Exception as e:
-            print(f"❌ 诊断生成异常: {e}")
-            return False
-
+        print(f"❌ 采集完成但数据文件未生成，请检查网络")
+        return False
+    print(f"   ✅ 数据采集完成")
     return True
 
 
@@ -808,9 +862,8 @@ def main():
 
     # 确保数据就绪
     if args.no_collect:
-        if not (_load_diagnosis(date_str) or _load_fund_flow(date_str)):
-            print(f"❌ {date_str} 无数据，请先运行: python -m data_collector.main --date={date_str}")
-            print(f"   然后运行: python market_diagnosis.py --date={date_str}")
+        if not _load_fund_flow(date_str):
+            print(f"❌ {date_str} 无 fund_flow.json，请先运行: python -m data_collector.main --date={date_str}")
             sys.exit(1)
     else:
         if not _ensure_data(date_str):

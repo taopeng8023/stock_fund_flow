@@ -585,12 +585,13 @@ def get_diagnosis(date_str=None):
     regime_result = diagnose_regime(breadth, flow, history_medians)
     sentiment = diagnose_sentiment(rows, date_str)
 
-    # 黑天鹅检测 — 替代原 diagnose_risks
+    # 黑天鹅检测 — 替代原 diagnose_risks，传入预计算数据避免重复 I/O
     from portfolio.black_swan import BlackSwanDetector
-    bs_result = BlackSwanDetector.from_diagnosis(
-        {"date": date_str, "breadth": breadth, "fund_flow": flow,
-         "sectors": sectors, "north_flow": north, "sentiment": sentiment},
-        fund_flow=rows,
+    bs_result = BlackSwanDetector(
+        date_str,
+        preloaded={"breadth": breadth, "fund_flow": flow,
+                   "north_flow": north, "sentiment": sentiment,
+                   "rows": rows},
     ).check()
 
     # 映射 BlackSwan level → 原 risk level
