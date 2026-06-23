@@ -7,7 +7,7 @@ import json
 import os
 import statistics
 import urllib.request
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import datetime, timezone, timedelta
 
 BJS_TZ = timezone(timedelta(hours=8))
@@ -795,7 +795,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         penalty = 0.0
         if f8_val > 13 and cap < 0.75: penalty -= 0.06; comp_sigs.append("P29_high_turnover")
         if f8_val < 2.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
-        if f10_val < 1.0: penalty -= 0.03; comp_sigs.append("P_low_vol_ratio")
+        if f10_val < 0.8: penalty -= 0.03; comp_sigs.append("P_low_vol_ratio")
         if mcap_yi < 30: penalty -= 0.04; comp_sigs.append("P_small_cap")
         if f87_val > 30 and f3 < 3: penalty -= 0.08; comp_sigs.append("P6_retail")
         if f2 > 200: penalty -= 0.02; comp_sigs.append("P_high_price")
@@ -858,6 +858,16 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "启动信号": ",".join(early_sigs),
             "启动信号说明": "; ".join(EARLY_SIGNALS[s] for s in early_sigs if s in EARLY_SIGNALS),
         })
+
+    # ── 行业集中度保护: 同行业在Top100中超过20%时降权 ──
+    top100 = sorted(results, key=lambda x: -x["综合得分"])[:100]
+    ind_in_top100 = Counter(r["行业"] for r in top100)
+    overconcentrated = {ind for ind, c in ind_in_top100.items() if c > 20}
+    if overconcentrated:
+        print(f"  行业集中度保护: {', '.join(overconcentrated)} (Top100中>20只)")
+        for r in results:
+            if r["行业"] in overconcentrated:
+                r["综合得分"] = round(max(0.0, float(r["综合得分"]) - 0.02), 4)
 
     # ── 排序 + 保存 CSV ──
     results.sort(key=lambda x: -x["综合得分"])
@@ -984,15 +994,27 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
             "正流占比": round(pos_ratio, 2),
         })
 
-    # ── 加载前日板块得分用于跨日对比 ──
-    prev_sector = {}
+    # ── 日间动量平滑 + 跨日对比 ──
     date_dirs = sorted([d for d in os.listdir(RESEARCH_ROOT) if os.path.isdir(os.path.join(RESEARCH_ROOT, d)) and d.isdigit() and d < date_str], reverse=True)
+    prev_sec_scores = {}
     if date_dirs:
         prev_path = os.path.join(RESEARCH_ROOT, date_dirs[0], "sector_scores.csv")
         if os.path.exists(prev_path):
             with open(prev_path, encoding="utf-8-sig") as f:
                 for r in csv.DictReader(f):
-                    prev_sector[r["名称"]] = {
+                    prev_sec_scores[r["名称"]] = float(r["得分"])
+    for r in results:
+        name = r["名称"]
+        if name in prev_sec_scores:
+            r["得分"] = round(float(r["得分"]) * 0.6 + prev_sec_scores[name] * 0.4, 3)
+    # 复用已加载的 prev_sec_scores，添加排名/流入信息
+    prev_sector_full = {}
+    if date_dirs:
+        prev_path = os.path.join(RESEARCH_ROOT, date_dirs[0], "sector_scores.csv")
+        if os.path.exists(prev_path):
+            with open(prev_path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    prev_sector_full[r["名称"]] = {
                         "得分": float(r["得分"]), "排名": int(r["最新排名"]),
                         "流入": float(r.get("最新流入(亿)", 0) or 0),
                     }
@@ -1000,8 +1022,8 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
     # 添加跨日对比列
     for r in results:
         name = r["名称"]
-        if name in prev_sector:
-            p = prev_sector[name]
+        if name in prev_sector_full:
+            p = prev_sector_full[name]
             r["昨日排名"] = p["排名"]
             r["排名跨日变化"] = p["排名"] - r["最新排名"]
             r["昨日流入(亿)"] = round(p["流入"], 1)
@@ -1023,7 +1045,7 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
     # 输出
     print(f"\n{'='*65}")
     print(f"  板块资金流评分 Top 20")
-    if prev_sector:
+    if prev_sector_full:
         print(f"  对比前日: {date_dirs[0]}")
     print(f"{'='*65}")
     for i, r in enumerate(results[:20]):
@@ -1041,7 +1063,7 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
               f"{flow_str} 正流{r['正流占比']:.0%}{cross} {bar}")
 
     # 跨日轮动信号
-    if prev_sector:
+    if prev_sector_full:
         new_top10 = [r for r in results[:20] if r["排名跨日变化"] > 5]
         fading = [r for r in results if r["排名跨日变化"] < -10]
         if new_top10:
