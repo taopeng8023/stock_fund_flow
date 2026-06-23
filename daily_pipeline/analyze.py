@@ -159,7 +159,8 @@ def run(date_str=None):
     rev = []
     for s in sectors:
         try:
-            chg = float(s.get("流入跨日变化(亿)", 0))
+            chg_raw = s.get("流入跨日变化(亿)", 0) or 0
+            chg = float(chg_raw)
             if abs(chg) > 10: rev.append((s["名称"], chg, float(s["得分"]), s.get("最新排名", 0)))
         except: pass
     rev.sort(key=lambda x: -abs(x[1]))

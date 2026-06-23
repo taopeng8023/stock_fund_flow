@@ -1010,7 +1010,7 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
             "名称": name, "类型": "概念" if is_concept else "行业",
             "得分": s, "快照数": n,
             "最新排名": ranks[-1] if ranks else (len(all_sector_names) if n == 0 else 0),
-            "最新流入(亿)": round(flows[-1] / 1e8, 1) if flows else 0,
+            "最新流入(亿)": round((flows[-1] if flows else static_flow) / 1e8, 1),
             "排名变化": rank_change,
             "正流占比": round(pos_ratio, 2),
         })
@@ -1042,10 +1042,11 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
                         "流入": float(r.get("最新流入(亿)", 0) or 0),
                     }
 
-    # 添加跨日对比列
+    # 添加跨日对比列 (仅对有今日轨迹的板块做对比)
     for r in results:
         name = r["名称"]
-        if name in prev_sector_full:
+        has_today = int(r["快照数"]) >= 2
+        if has_today and name in prev_sector_full:
             p = prev_sector_full[name]
             r["昨日排名"] = p["排名"]
             r["排名跨日变化"] = p["排名"] - r["最新排名"]
