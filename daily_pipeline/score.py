@@ -59,6 +59,7 @@ COMPOSITE_SIGNALS = {
     "P35_short_pressure": "融券强做空(净卖出>3亿)",
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
     "P35_short_heavy":    "融券/主力比>3(做空压力大)",
+    "P36_overheat":       "全维度过热(资金>0.85+趋势>0.7+多日>0.85,反转风险)",
 }
 
 # ── 启动得分专属信号 ──
@@ -783,6 +784,11 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         # E6: 逼空启动 (P35回补 + 资金>0.3)
         if "P35_short_cover" in comp_sigs and cap > 0.3:
             early_sigs.append("E6_short_squeeze")
+
+        # ── P36: 全维度过热保护 (回测: 资金>0.85+趋势>0.7+多日>0.85 → -0.86%) ──
+        if cap > 0.85 and sub.get("trend", 0.5) > 0.7 and sub.get("multiday", 0.5) > 0.85:
+            total -= 0.06; comp_sigs.append("P36_overheat")
+            early -= 0.06
 
         results.append({
             "代码": code, "名称": name, "最新价": f2,
