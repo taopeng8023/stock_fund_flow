@@ -60,6 +60,8 @@ COMPOSITE_SIGNALS = {
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
     "P35_short_heavy":    "融券/主力比>3(做空压力大)",
     "P36_overheat":       "全维度过热(资金>0.85+趋势>0.7+多日>0.85,反转风险)",
+    "P37_momentum_up":    "得分动量向上(较前日改善>0.05,资金加速)",
+    "P37_momentum_down":  "得分动量向下(较前日恶化>0.05,资金撤退)",
 }
 
 # ── 启动得分专属信号 ──
@@ -429,6 +431,25 @@ def _multi_snapshot_factors(code, time_series, all_f62_per_ts):
     return round(flow_stab, 3), round(intraday_accel, 3), round(rank_traj, 3), round(vwap_pos, 3)
 
 
+def _load_prev_scores(date_str):
+    """加载前一日评分，返回 {code: score}"""
+    date_dirs = sorted([
+        d for d in os.listdir(RESEARCH_ROOT)
+        if os.path.isdir(os.path.join(RESEARCH_ROOT, d)) and d.isdigit() and d < date_str
+    ], reverse=True)
+    for prev_date in date_dirs:
+        path = os.path.join(RESEARCH_ROOT, prev_date, "scores.csv")
+        if os.path.exists(path):
+            prev = {}
+            with open(path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    prev[r["代码"]] = float(r["综合得分"])
+            if prev:
+                print(f"  前次评分: {prev_date} ({len(prev)}只)")
+                return prev
+    return {}
+
+
 def score_all_stocks(date_str=None, snapshot_cutoff=None):
     """全市场评分，返回 [{...}, ...] + 保存 scores.csv"""
     if date_str is None:
@@ -462,6 +483,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
 
     sector_trajectory, concept_trajectory, sector_flows, concept_flows = _load_sector_snapshots(date_str, snapshot_cutoff)
     print(f"  个股: {len(stocks)} 只, 行业: {len(sector_flows)} 个")
+
+    # ── 加载前一日评分 (用于得分动量) ──
+    prev_scores = _load_prev_scores(date_str)
 
     # ── 轻量过滤（只去掉明显异常值，保留研究样本）──
     stocks = [s for s in stocks if _tof(s.get("最新价")) >= 2.0]      # 去掉仙股
@@ -789,6 +813,16 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if cap > 0.85 and sub.get("trend", 0.5) > 0.7 and sub.get("multiday", 0.5) > 0.85:
             total -= 0.06; comp_sigs.append("P36_overheat")
             early -= 0.06
+
+        # ── P37: 得分动量 (改善>0.05:+0.03, 恶化<-0.05:-0.03) ──
+        if code in prev_scores:
+            score_change = total - prev_scores[code]
+            if score_change > 0.05:
+                total += 0.03; comp_sigs.append("P37_momentum_up")
+                early += 0.03
+            elif score_change < -0.05:
+                total -= 0.03; comp_sigs.append("P37_momentum_down")
+                early -= 0.03
 
         results.append({
             "代码": code, "名称": name, "最新价": f2,
