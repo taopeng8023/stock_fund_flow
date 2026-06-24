@@ -21,6 +21,7 @@ WEIGHTS_BASE = {
     "technical": 0.08, "vwap_position": 0.07,
     "tail_return": 0.06, "tail_volume": 0.05,
     "margin_net": 0.01, "flow_accel": 0.01,
+    "sector_momentum": 0.02,
     "flow_stability": 0.03, "intraday_accel": 0.03,
     "rank_trajectory": 0.02,
     "sector_trajectory": 0.02,
@@ -837,10 +838,12 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     print(f"  市场体制: {regime}  美股: 标普{sp500_chg:+.1f}% 纳指{nasdaq_chg:+.1f}% "
           f"(情绪调整{ext_sentiment:+.2f})")
 
-    # ── 板块价格回报 + 拥挤度（预计算）──
+    # ── 板块价格回报 + 拥挤度 + 板块轮动（预计算）──
     sector_rets = _build_sector_returns(stocks, price_hist)
     sector_ret_vals = list(sector_rets.values())
     crowding_score = _score_crowding(stocks)
+    from daily_pipeline.sector_momentum import compute_sector_momentum
+    sector_momentum_map = compute_sector_momentum(date_str)
 
     # ── 行业列表（用于分散度）──
     all_industries = [s.get("行业", "") for s in stocks]
@@ -1060,9 +1063,10 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["tail_return"] = tail_ret
         sub["tail_volume"] = tail_vol
 
-        # 🆕 全市场拥挤度 + 美股情绪 (所有股票统一)
+        # 🆕 全市场拥挤度 + 美股情绪 + 板块轮动
         sub["crowding"] = crowding_score
         sub["ext_sentiment"] = ext_sentiment
+        sub["sector_momentum"] = sector_momentum_map.get(industry, 0.5)
 
         # ── 综合得分（体制感知权重）──
         total = sum(sub.get(k, 0.5) * weights.get(k, 0) for k in weights)
