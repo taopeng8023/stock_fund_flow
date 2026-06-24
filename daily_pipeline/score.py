@@ -6,7 +6,7 @@ import csv
 import json
 import os
 import statistics
-import urllib.request
+import requests
 from collections import defaultdict, Counter
 from datetime import datetime, timezone, timedelta
 
@@ -15,26 +15,36 @@ RESEARCH_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_data"
 )
 
-# ── 评分权重（对齐 sector_screener 优化后权重） ──
-WEIGHTS = {
+# ── 评分权重（三市场景自适应）──
+WEIGHTS_BASE = {
     "capital": 0.19, "start_signal": 0.13, "trend": 0.10,
-    "position": 0.07, "multiday": 0.06, "sector": 0.05,
-    "analyst": 0.01, "technical": 0.05, "intra_sector": 0.04,
+    "position": 0.06, "multiday": 0.06, "sector": 0.05,
+    "technical": 0.05, "intra_sector": 0.04,
     "margin_net": 0.03, "flow_accel": 0.01,
     "flow_stability": 0.03, "intraday_accel": 0.03,
     "rank_trajectory": 0.02, "vwap_position": 0.02,
     "sector_trajectory": 0.02,
+    "price_momentum": 0.03,   # 🆕 5/10/20日价格回报
+    "limitup_proximity": 0.02, # 🆕 涨停邻近惩罚
+    "sector_diversity": 0.02,  # 🆕 行业分散度
 }
 
-# ── 刚启动检测权重（降资金权重，升启动/位置/趋势）──
+WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.15,
+                "price_momentum": 0.04, "flow_accel": 0.02}
+WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.08, "limitup_proximity": 0.04,
+                "sector_diversity": 0.03, "flow_accel": 0.01}
+
+# ── 刚启动检测权重 ──
 EARLY_WEIGHTS = {
     "capital": 0.10, "start_signal": 0.25, "trend": 0.15,
     "position": 0.15, "multiday": 0.08, "sector": 0.07,
-    "analyst": 0.00, "technical": 0.05, "intra_sector": 0.05,
+    "technical": 0.05, "intra_sector": 0.05,
     "margin_net": 0.03, "flow_accel": 0.02,
     "flow_stability": 0.02, "intraday_accel": 0.02,
     "rank_trajectory": 0.02, "vwap_position": 0.02,
     "sector_trajectory": 0.03,
+    "price_momentum": 0.02, "limitup_proximity": 0.03,
+    "sector_diversity": 0.02,
 }
 
 # ── scores.csv 输出列 ──
@@ -80,6 +90,7 @@ SCORE_HEADERS = [
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
     "日内稳定", "日内加速", "排名轨迹", "VWAP位置", "板块轨迹",
+    "价格动量", "涨停邻近", "行业分散",
     "涨跌幅", "换手率", "量比", "总市值",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
 ]
@@ -107,7 +118,7 @@ KLINE_URL = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 def _tof(val, default=0.0):
     if val is None or val == "" or val == "-": return default
     try: return float(val)
-    except: return default
+    except (ValueError, TypeError): return default
 
 
 def _range_score(value, ideal_min, ideal_max, floor, ceil):
@@ -126,22 +137,22 @@ def _load_stock_prices(codes, max_stocks=200):
     """从腾讯K线获取价格历史（近60日），限制请求数"""
     prices = {}
     count = 0
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
     for code in codes:
         if count >= max_stocks: break
         mkt = "sh" if code.startswith("6") else "sz"
         url = f"{KLINE_URL}?param={mkt}{code},day,,,65,qfq"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode())
+            resp = requests.get(url, headers=headers, timeout=8)
+            data = resp.json()
             key = f"{mkt}{code}"
             if data.get("data") and data["data"].get(key) and data["data"][key].get("qfqday"):
                 closes = [float(k[2]) for k in data["data"][key]["qfqday"]]
                 if len(closes) >= 20:
                     prices[code] = closes
                     count += 1
-        except:
-            pass
+        except Exception:
+            continue
     return prices
 
 
@@ -450,6 +461,67 @@ def _load_prev_scores(date_str):
     return {}
 
 
+def _detect_regime(date_str):
+    """检测市场体制 → 选择对应权重。基于全市场涨跌比和主力资金流向。"""
+    try:
+        rows = _load_latest_fund_flow(date_str)
+        if not rows:
+            return WEIGHTS_BASE, "range"
+        chgs = [_tof(r.get("涨跌幅")) for r in rows if r.get("涨跌幅")]
+        f62s = [_tof(r.get("主力净流入")) for r in rows if r.get("主力净流入")]
+        if not chgs:
+            return WEIGHTS_BASE, "range"
+        up_ratio = sum(1 for c in chgs if c > 0) / len(chgs)
+        pos_ratio = sum(1 for f in f62s if f > 0) / len(f62s) if f62s else 0.5
+        median = sorted(chgs)[len(chgs)//2]
+
+        if up_ratio > 0.55 and pos_ratio > 0.50 and median > 0.3:
+            return WEIGHTS_BULL, "bull"
+        if up_ratio < 0.30 or (median < -1.0 and pos_ratio < 0.35):
+            return WEIGHTS_BEAR, "bear"
+        return WEIGHTS_BASE, "range"
+    except Exception:
+        return WEIGHTS_BASE, "range"
+
+
+def _score_price_momentum(code, price_hist):
+    """5/10/20 日价格回报综合得分。"""
+    ph = price_hist.get(code, {})
+    closes = ph.get("closes", [])
+    if not closes or len(closes) < 5:
+        return 0.5
+    scores = []
+    for days, idx in [("5d", 4), ("10d", 9), ("20d", 19)]:
+        if len(closes) > idx and closes[idx] > 0:
+            ret = (closes[0] - closes[idx]) / closes[idx]
+            scores.append(_range_score(ret * 100, 3, 15, -10, 30))
+    return sum(scores) / len(scores) if scores else 0.5
+
+
+def _score_limitup_proximity(f3):
+    """涨停邻近惩罚：6-8%最优，8%+次日衰减。"""
+    if f3 >= 9.5: return 0.1
+    if f3 >= 8.0: return max(0.2, 0.5 - (f3 - 8.0) * 0.2)
+    if f3 >= 6.0: return 0.7 + (f3 - 6.0) * 0.075
+    if f3 >= 3.0: return 0.5 + (f3 - 3.0) * 0.067
+    if f3 >= 0:   return 0.4 + f3 * 0.033
+    return max(0.3, 0.4 + f3 * 0.02)
+
+
+def _score_sector_diversity(industry, all_industries):
+    """行业分散度：拥挤行业扣分。"""
+    if not industry or not all_industries:
+        return 0.5
+    ind_count = Counter(all_industries)
+    total = sum(ind_count.values())
+    if total == 0: return 0.5
+    ratio = ind_count.get(industry, 0) / total
+    if ratio <= 0.10: return 1.0
+    if ratio <= 0.20: return 0.8
+    if ratio <= 0.30: return 0.5
+    return 0.3
+
+
 def score_all_stocks(date_str=None, snapshot_cutoff=None):
     """全市场评分，返回 [{...}, ...] + 保存 scores.csv"""
     if date_str is None:
@@ -520,6 +592,13 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     # ── 构建价格历史 ──
     # 从已有 intraday CSV 中提取每日收盘价（跨日累积）
     price_hist = _build_price_history(date_str, stocks)
+    # ── 体制感知权重 ──
+    weights, regime = _detect_regime(date_str)
+    print(f"  市场体制: {regime}")
+
+    # ── 行业列表（用于分散度）──
+    all_industries = [s.get("行业", "") for s in stocks]
+
     # ── 逐只评分 ──
     results = []
     for s in stocks:
@@ -724,13 +803,18 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                     accel_score = 0.5
                 sub["sector_trajectory"] = round(rank_score * 0.50 + accel_score * 0.50, 3)
 
-        # ── 综合得分 ──
-        total = sum(sub.get(k, 0.5) * WEIGHTS.get(k, 0) for k in WEIGHTS)
-        for k in WEIGHTS:
-            if k not in sub:
-                total += 0.5 * WEIGHTS[k]
+        # 🆕 price_momentum / limitup_proximity / sector_diversity
+        sub["price_momentum"] = round(_score_price_momentum(code, price_hist), 3)
+        sub["limitup_proximity"] = round(_score_limitup_proximity(f3), 3)
+        sub["sector_diversity"] = round(_score_sector_diversity(industry, all_industries), 3)
 
-        # ── 启动得分（刚启动检测: 降资金权重，升启动/位置/趋势）──
+        # ── 综合得分（体制感知权重）──
+        total = sum(sub.get(k, 0.5) * weights.get(k, 0) for k in weights)
+        for k in weights:
+            if k not in sub:
+                total += 0.5 * weights[k]
+
+        # ── 启动得分 ──
         early = sum(sub.get(k, 0.5) * EARLY_WEIGHTS.get(k, 0) for k in EARLY_WEIGHTS)
         for k in EARLY_WEIGHTS:
             if k not in sub:
@@ -852,6 +936,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "日内稳定": sub.get("flow_stability", 0.5), "日内加速": sub.get("intraday_accel", 0.5),
             "排名轨迹": sub.get("rank_trajectory", 0.5), "VWAP位置": sub.get("vwap_position", 0.5),
             "板块轨迹": sub.get("sector_trajectory", 0.5),
+            "价格动量": sub.get("price_momentum", 0.5),
+            "涨停邻近": sub.get("limitup_proximity", 0.5),
+            "行业分散": sub.get("sector_diversity", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
