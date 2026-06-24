@@ -1,17 +1,17 @@
 """
-买入引擎 — 基于评分结果 + 信号过滤器输出买入推荐
+买入引擎 — 三级买入规则（16503笔回测驱动）
 
-强制执行规则（16503笔回测验证）:
-  必备信号: P37_momentum_up (Top50中80%携带, 胜率+11%)
-  加分信号: P34_gap_strong (胜率+19%, 均收益+0.81%)
-  避雷信号: P36_overheat (胜率-8%), P35_short_pressure (Bot50中38%携带)
-  黑天鹅门禁: Level ≥ 2 → 禁止买入
-  得分门槛: 综合得分 ≥ 0.65 (胜率37% vs 全量25%)
-  行业分散: 同行业最多2只
+Tier 1 (🥇 57%胜率): score≥0.60 + capital≥0.80 + P34_gap − P36_overheat
+Tier 2 (🥈 43%胜率): score≥0.60 + capital≥0.70 + P37_up − P36_overheat
+Tier 3 (🥉 34%胜率): score≥0.55 + capital≥0.60 + P37_up − P36_overheat/P35_short
+
+避雷: P36_overheat(胜率-8%), P35_short_pressure(Bot50专属)
+门禁: 黑天鹅 Level ≥ 2 → 禁止一切买入
+行业: 同行业 ≤ 2只
 
 用法:
   python -m portfolio.buy_engine --date=20260624
-  python -m portfolio.buy_engine --date=20260624 --top=5
+  python -m portfolio.buy_engine --date=20260624 --top=5 --tier=1
   python -m portfolio.buy_engine --date=20260624 --no-notify
 """
 
@@ -25,12 +25,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 
-# ── 买入规则（回测驱动）──
-REQUIRED_SIGNALS = ["P37_momentum_up"]      # 必须携带
-BONUS_SIGNALS = ["P34_gap_strong"]           # 加分信号
-BLOCK_SIGNALS = ["P36_overheat", "P35_short_pressure"]  # 一票否决
-SCORE_CUTOFF = 0.65                           # 最低得分
-MAX_PER_SECTOR = 2                            # 同行业上限
+# ── 三级买入规则 ──
+TIERS = {
+    1: {"score": 0.60, "capital": 0.80, "require": ["P34_gap_strong"],
+        "block": ["P36_overheat"], "label": "🥇 高确定性"},
+    2: {"score": 0.60, "capital": 0.70, "require": ["P37_momentum_up"],
+        "block": ["P36_overheat"], "label": "🥈 中确定性"},
+    3: {"score": 0.55, "capital": 0.60, "require": ["P37_momentum_up"],
+        "block": ["P36_overheat", "P35_short_pressure"], "label": "🥉 基础池"},
+}
+
+MAX_PER_SECTOR = 2
 
 
 def load_scores(date_str: str) -> list:
@@ -54,50 +59,46 @@ def check_black_swan(date_str: str) -> tuple:
         return 0, False
 
 
-def filter_candidates(scores: list) -> list:
-    """筛选买入候选。
+def filter_candidates(scores: list, tier: int = 1) -> list:
+    """三级筛选买入候选。
 
-    流程:
-      1. 基础得分门槛 ≥ SCORE_CUTOFF
-      2. 必须携带 P37_momentum_up
-      3. 不能携带 P36_overheat / P35_short_pressure
-      4. 加分信号 P34_gap_strong 提权
+    Tier 1: score≥0.60 + capital≥0.80 + P34_gap − overheat → 57%胜率
+    Tier 2: score≥0.60 + capital≥0.70 + P37_up − overheat → 43%胜率
+    Tier 3: score≥0.55 + capital≥0.60 + P37_up − overheat/P35 → 34%胜率
+
+    Returns list sorted by composite score desc.
     """
+    rules = TIERS.get(tier, TIERS[1])
     candidates = []
+
     for r in scores:
         score = float(r.get("综合得分", 0) or 0)
-        if score < SCORE_CUTOFF:
+        if score < rules["score"]:
+            continue
+
+        capital = float(r.get("资金得分", 0.5) or 0.5)
+        if capital < rules["capital"]:
             continue
 
         signals = r.get("综合信号", "")
-        # 必备检查
-        if not all(s in signals for s in REQUIRED_SIGNALS):
+        # 必备信号
+        if not all(s in signals for s in rules["require"]):
             continue
-        # 避雷检查
-        if any(s in signals for s in BLOCK_SIGNALS):
+        # 避雷信号
+        if any(s in signals for s in rules["block"]):
             continue
-
-        # 加分信号提权
-        bonus = 0
-        for s in BONUS_SIGNALS:
-            if s in signals:
-                bonus += 0.02
-
-        adjusted_score = score + bonus
 
         candidates.append({
             "code": r["代码"],
             "name": r["名称"],
-            "score": round(adjusted_score, 4),
-            "raw_score": score,
+            "score": round(score, 4),
+            "tier": tier,
+            "tier_label": rules["label"],
             "chg_pct": round(float(r.get("涨跌幅", 0) or 0), 2),
             "price": round(float(r.get("最新价", 0) or 0), 2),
-            "turnover": round(float(r.get("换手率", 0) or 0), 1),
             "industry": r.get("行业", ""),
             "signals": signals,
-            "capital": float(r.get("资金得分", 0.5)),
-            "trend": float(r.get("趋势得分", 0.5)),
-            "position": float(r.get("位置得分", 0.5)),
+            "capital": capital,
             "mcap_yi": round(float(r.get("总市值", 0) or 0), 1),
         })
 
@@ -119,8 +120,8 @@ def apply_sector_diversity(candidates: list, max_n: int) -> list:
 
 
 def generate_recommendations(date_str: str, top_n: int = 10,
-                             no_notify: bool = False) -> dict:
-    """生成买入推荐。"""
+                             tier: int = 0, no_notify: bool = False) -> dict:
+    """生成买入推荐。tier=0 表示合并所有三级。"""
     scores = load_scores(date_str)
 
     # 黑天鹅门禁
@@ -133,16 +134,26 @@ def generate_recommendations(date_str: str, top_n: int = 10,
                 "buys": [], "reason": f"黑天鹅 Level {bs_level}"}
 
     # 筛选
-    candidates = filter_candidates(scores)
-    print(f"  全量评分: {len(scores)} 只 → 通过过滤: {len(candidates)} 只"
-          f" (≥{SCORE_CUTOFF}+P37_up+P34加分−风险信号)")
+    if tier > 0:
+        candidates = filter_candidates(scores, tier)
+    else:
+        # 合并三级
+        candidates = []
+        seen = set()
+        for t in [1, 2, 3]:
+            for c in filter_candidates(scores, t):
+                if c["code"] not in seen:
+                    candidates.append(c)
+                    seen.add(c["code"])
+        candidates.sort(key=lambda x: -x["score"])
+
+    print(f"  全量: {len(scores)}只 → 候选: {len(candidates)}只")
 
     # 行业分散
     buys = apply_sector_diversity(candidates, MAX_PER_SECTOR)[:top_n]
     sector_dist = Counter(b["industry"] for b in buys)
 
-    print(f"  行业分散后: {len(buys)} 只 (同行业≤{MAX_PER_SECTOR})")
-    print(f"  行业分布: {dict(sector_dist)}")
+    print(f"  行业≤{MAX_PER_SECTOR}: {len(buys)}只 分布: {dict(sector_dist)}")
 
     # 输出
     _print_recommendations(date_str, bs_level, buys)
@@ -155,31 +166,30 @@ def generate_recommendations(date_str: str, top_n: int = 10,
 
 
 def _print_recommendations(date_str, bs_level, buys):
-    print(f"\n{'='*65}")
+    print(f"\n{'='*70}")
     print(f"  🎯 买入推荐 [{date_str}]  BS Level {bs_level}")
-    print(f"{'='*65}")
+    print(f"{'='*70}")
 
     if not buys:
         print("  (无符合条件的买入标的)")
         return
 
     print(f"\n  {'':<3s} {'代码':<8s} {'名称':<8s} {'得分':<8s} {'涨跌':<7s} "
-          f"{'资金':<6s} {'行业':<12s} {'信号'}")
-    print(f"  {'─'*65}")
+          f"{'资金':<6s} {'行业':<10s} {'级别':<10s} {'信号'}")
+    print(f"  {'─'*68}")
     for i, b in enumerate(buys):
-        signals_short = []
-        for s in ["P37_up", "P34_gap", "P32_accel"]:
-            s_map = {"P37_up": "P37_momentum_up",
-                     "P34_gap": "P34_gap_strong",
-                     "P32_accel": "P32_ratio_accel"}
-            if s_map.get(s, s) in b["signals"]:
-                signals_short.append(s)
-        sig_str = ",".join(signals_short)
+        sig_short = []
+        if "P34_gap_strong" in b["signals"]: sig_short.append("GAP↑")
+        if "P37_momentum_up" in b["signals"]: sig_short.append("MOM↑")
+        if "P32_ratio_accel" in b["signals"]: sig_short.append("ACC↑")
+        sig_str = ",".join(sig_short)
+        tier_label = b.get("tier_label", "")
         print(f"  {i+1:<2} {b['code']:<8s} {b['name']:<8s} {b['score']:.4f} "
               f"{b['chg_pct']:+.1f}%{'':>2s} {b['capital']:.2f}{'':>2s} "
-              f"{b['industry']:<12s} {sig_str}")
+              f"{b['industry']:<10s} {tier_label:<10s} {sig_str}")
 
-    print(f"\n  规则: 得分≥{SCORE_CUTOFF} + P37_up必备 + P36/P35避开 + 同行业≤{MAX_PER_SECTOR}只")
+    print(f"\n  规则: 🥇分≥0.6+资≥0.8+P34_gap  🥈分≥0.6+资≥0.7+P37_up  🥉分≥0.55+资≥0.6+P37_up")
+    print(f"  避雷: P36_overheat P35_short_pressure | 同行业≤{MAX_PER_SECTOR}只")
 
 
 def _notify_buys(date_str, bs_level, buys):
@@ -206,10 +216,11 @@ def main():
     parser = argparse.ArgumentParser(description="买入推荐引擎")
     parser.add_argument("--date", required=True)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--tier", type=int, default=0, help="1=高确定性 2=中 3=基础 0=合并全部")
     parser.add_argument("--no-notify", action="store_true")
     args = parser.parse_args()
 
-    generate_recommendations(args.date, top_n=args.top,
+    generate_recommendations(args.date, top_n=args.top, tier=args.tier,
                              no_notify=args.no_notify)
 
 
