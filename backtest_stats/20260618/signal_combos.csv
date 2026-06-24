@@ -1,0 +1,10 @@
+﻿signal,count,win_rate,avg_return
++P34_gap_strong+P37_momentum_up,9,0.7778,6.4911
++P34_gap_strong,17,0.6471,4.1876
++P34_gap_strong -P35_short_pressure,17,0.6471,4.1876
++P36_overheat,11,0.6364,1.2136
++P34_gap_strong -P36_overheat,16,0.625,4.2731
++P37_momentum_down,110,0.5818,0.5119
++P37_momentum_up,160,0.45,0.7118
++P37_momentum_up -P36_overheat,160,0.45,0.7118
++P37_momentum_up -P35_short_pressure,160,0.45,0.7118

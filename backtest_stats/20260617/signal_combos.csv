@@ -1,0 +1,12 @@
+﻿signal,count,win_rate,avg_return
++P33_margin_strong -P35_short_pressure,19,0.5263,-0.0037
++P33_margin_strong,21,0.4762,-0.0257
++P33_margin_strong -P36_overheat,21,0.4762,-0.0257
++P34_gap_strong -P35_short_pressure,51,0.451,0.1376
++P34_gap_strong,62,0.4355,0.1911
++P34_gap_strong -P36_overheat,62,0.4355,0.1911
++P34_gap_strong+P35_short_cover,13,0.3846,-0.3785
++P35_short_pressure,162,0.2963,-0.3898
++P35_short_cover,931,0.2374,-0.3959
++P35_short_cover -P36_overheat,931,0.2374,-0.3959
++P35_short_cover -P35_short_pressure,931,0.2374,-0.3959

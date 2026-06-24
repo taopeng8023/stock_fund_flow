@@ -1,0 +1,25 @@
+﻿signal,count,win_rate,avg_return
++P34_gap_strong+P37_momentum_up,6,0.6667,-0.14
++P37_momentum_up+P35_short_cover,5,0.6,-0.144
++P34_gap_strong+P35_short_cover,90,0.5556,1.3901
++P34_gap_strong -P36_overheat,211,0.5024,0.9489
++P34_gap_strong -P35_short_pressure,234,0.4786,0.8117
++P34_gap_strong,237,0.4726,0.7755
++P33_margin_strong,24,0.4583,-0.165
++P33_margin_strong -P36_overheat,24,0.4583,-0.165
++P33_margin_strong -P35_short_pressure,24,0.4583,-0.165
++P37_momentum_up,19,0.3684,-0.5368
++P37_momentum_up -P36_overheat,19,0.3684,-0.5368
++P37_momentum_up -P35_short_pressure,19,0.3684,-0.5368
++P35_short_cover -P36_overheat,326,0.3374,0.1576
++P34_gap_strong+P32_ratio_accel,27,0.3333,-0.2974
++P37_momentum_up+P32_ratio_accel,6,0.3333,-0.4717
++P35_short_cover,355,0.3268,0.1005
++P35_short_cover -P35_short_pressure,355,0.3268,0.1005
++P32_ratio_accel+P35_short_cover,29,0.3103,-0.5717
++P32_ratio_accel -P36_overheat,268,0.2276,-0.4368
++P32_ratio_accel,305,0.2197,-0.5332
++P32_ratio_accel -P35_short_pressure,305,0.2197,-0.5332
++P37_momentum_down,384,0.2188,-0.4175
++P35_short_pressure,42,0.2143,-0.6886
++P36_overheat,119,0.1849,-0.902

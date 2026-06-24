@@ -1,0 +1,73 @@
+{
+  "date": "20260618",
+  "total_stocks": 617,
+  "baseline_win_rate": 0.4733,
+  "baseline_avg_return": 0.4729,
+  "top50_win_rate": 0.6,
+  "top50_avg_return": 1.4946,
+  "top50_excess": 1.0217,
+  "top_signal_combos": [
+    {
+      "signal": "+P34_gap_strong+P37_momentum_up",
+      "win_rate": 0.7778,
+      "count": 9
+    },
+    {
+      "signal": "+P34_gap_strong",
+      "win_rate": 0.6471,
+      "count": 17
+    },
+    {
+      "signal": "+P34_gap_strong -P35_short_pressure",
+      "win_rate": 0.6471,
+      "count": 17
+    },
+    {
+      "signal": "+P36_overheat",
+      "win_rate": 0.6364,
+      "count": 11
+    },
+    {
+      "signal": "+P34_gap_strong -P36_overheat",
+      "win_rate": 0.625,
+      "count": 16
+    }
+  ],
+  "top_score_combos": [
+    {
+      "combo": "分≥0.70 资≥0.80 P34_gap",
+      "win_rate": 1.0,
+      "count": 5
+    },
+    {
+      "combo": "分≥0.70 资≥0.80 P34_gap-P36",
+      "win_rate": 1.0,
+      "count": 5
+    },
+    {
+      "combo": "分0.60-0.70 资0.70-0.80 大盘>500亿",
+      "win_rate": 0.8571,
+      "count": 7
+    },
+    {
+      "combo": "分≥0.70 资≥0.80 大盘>500亿",
+      "win_rate": 0.8182,
+      "count": 11
+    },
+    {
+      "combo": "分≥0.70 资≥0.80 P37_up",
+      "win_rate": 0.7333,
+      "count": 15
+    }
+  ],
+  "weights": {
+    "capital": 0.19,
+    "sector": 0.1,
+    "position": 0.08,
+    "intra_sector": 0.06,
+    "multiday": 0.06,
+    "start_signal": 0.03,
+    "trend": 0.01
+  },
+  "exported_at": "2026-06-24T21:16:10.781709+08:00"
+}
