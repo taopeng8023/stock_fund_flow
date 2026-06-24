@@ -24,15 +24,16 @@ WEIGHTS_BASE = {
     "flow_stability": 0.03, "intraday_accel": 0.03,
     "rank_trajectory": 0.02, "vwap_position": 0.02,
     "sector_trajectory": 0.02,
-    "price_momentum": 0.03,   # 🆕 5/10/20日价格回报
-    "limitup_proximity": 0.02, # 🆕 涨停邻近惩罚
-    "sector_diversity": 0.02,  # 🆕 行业分散度
+    "price_momentum": 0.03,
+    "limitup_proximity": 0.02,
+    "sector_diversity": 0.02,
+    "sector_price": 0.03,       # 🆕 板块价格共振
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.15,
-                "price_momentum": 0.04, "flow_accel": 0.02}
+                "price_momentum": 0.04, "sector_price": 0.04, "flow_accel": 0.02}
 WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.08, "limitup_proximity": 0.04,
-                "sector_diversity": 0.03, "flow_accel": 0.01}
+                "sector_diversity": 0.03, "sector_price": 0.02, "flow_accel": 0.01}
 
 # ── 刚启动检测权重 ──
 EARLY_WEIGHTS = {
@@ -44,7 +45,7 @@ EARLY_WEIGHTS = {
     "rank_trajectory": 0.02, "vwap_position": 0.02,
     "sector_trajectory": 0.03,
     "price_momentum": 0.02, "limitup_proximity": 0.03,
-    "sector_diversity": 0.02,
+    "sector_diversity": 0.02, "sector_price": 0.02,
 }
 
 # ── scores.csv 输出列 ──
@@ -90,7 +91,7 @@ SCORE_HEADERS = [
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
     "日内稳定", "日内加速", "排名轨迹", "VWAP位置", "板块轨迹",
-    "价格动量", "涨停邻近", "行业分散",
+    "价格动量", "涨停邻近", "行业分散", "板块价格",
     "涨跌幅", "换手率", "量比", "总市值",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
 ]
@@ -522,6 +523,25 @@ def _score_sector_diversity(industry, all_industries):
     return 0.3
 
 
+def _build_sector_returns(stocks, price_hist):
+    """从个股价格历史聚合行业中位回报。{industry: ret_5d}"""
+    ind_rets = defaultdict(list)
+    for s in stocks:
+        ind = s.get("行业", "")
+        code = s.get("代码", "")
+        if not ind or not code:
+            continue
+        ph = price_hist.get(code, {})
+        closes = ph.get("closes", [])
+        if len(closes) > 4 and closes[4] > 0:
+            ind_rets[ind].append((closes[0] - closes[4]) / closes[4])
+    result = {}
+    for ind, rets in ind_rets.items():
+        rets.sort()
+        result[ind] = rets[len(rets)//2]
+    return result
+
+
 def score_all_stocks(date_str=None, snapshot_cutoff=None):
     """全市场评分，返回 [{...}, ...] + 保存 scores.csv"""
     if date_str is None:
@@ -592,9 +612,26 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     # ── 构建价格历史 ──
     # 从已有 intraday CSV 中提取每日收盘价（跨日累积）
     price_hist = _build_price_history(date_str, stocks)
-    # ── 体制感知权重 ──
+    # ── 体制感知权重 + 黑天鹅检测 ──
     weights, regime = _detect_regime(date_str)
+    bs_level = 0
+    try:
+        from portfolio.black_swan import BlackSwanDetector
+        bs = BlackSwanDetector(date_str).check()
+        bs_level = bs["level"]
+        if bs_level >= 2:
+            weights = WEIGHTS_BEAR
+            regime = "bear"
+            print(f"  ⚠️ 黑天鹅 Level {bs_level} — 强制切换防御权重")
+        elif bs_level == 1:
+            print(f"  ⚡ 黑天鹅 Level 1 — 偏防御")
+    except Exception:
+        pass
     print(f"  市场体制: {regime}")
+
+    # ── 板块价格回报（预计算）──
+    sector_rets = _build_sector_returns(stocks, price_hist)
+    sector_ret_vals = list(sector_rets.values())
 
     # ── 行业列表（用于分散度）──
     all_industries = [s.get("行业", "") for s in stocks]
@@ -807,6 +844,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["price_momentum"] = round(_score_price_momentum(code, price_hist), 3)
         sub["limitup_proximity"] = round(_score_limitup_proximity(f3), 3)
         sub["sector_diversity"] = round(_score_sector_diversity(industry, all_industries), 3)
+        sub["sector_price"] = round(_pct_rank(sector_ret_vals, sector_rets.get(industry, 0)) if sector_rets and industry in sector_rets else 0.5, 3)
 
         # ── 综合得分（体制感知权重）──
         total = sum(sub.get(k, 0.5) * weights.get(k, 0) for k in weights)
@@ -939,22 +977,13 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "价格动量": sub.get("price_momentum", 0.5),
             "涨停邻近": sub.get("limitup_proximity", 0.5),
             "行业分散": sub.get("sector_diversity", 0.5),
+            "板块价格": sub.get("sector_price", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
             "启动信号": ",".join(early_sigs),
             "启动信号说明": "; ".join(EARLY_SIGNALS[s] for s in early_sigs if s in EARLY_SIGNALS),
         })
-
-    # ── 行业集中度保护: 同行业在Top100中超过20%时降权 ──
-    top100 = sorted(results, key=lambda x: -x["综合得分"])[:100]
-    ind_in_top100 = Counter(r["行业"] for r in top100)
-    overconcentrated = {ind for ind, c in ind_in_top100.items() if c > 20}
-    if overconcentrated:
-        print(f"  行业集中度保护: {', '.join(overconcentrated)} (Top100中>20只)")
-        for r in results:
-            if r["行业"] in overconcentrated:
-                r["综合得分"] = round(max(0.0, float(r["综合得分"]) - 0.02), 4)
 
     # ── 排序 + 保存 CSV ──
     results.sort(key=lambda x: -x["综合得分"])
