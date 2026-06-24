@@ -17,8 +17,8 @@ RESEARCH_ROOT = os.path.join(
 
 # ── 评分权重（三市场景自适应）──
 WEIGHTS_BASE = {
-    "capital": 0.17, "start_signal": 0.11, "trend": 0.09,
-    "position": 0.06, "multiday": 0.06, "sector": 0.05,
+    "capital": 0.15, "start_signal": 0.11, "trend": 0.09,
+    "position": 0.10, "multiday": 0.06, "sector": 0.03,
     "technical": 0.05, "intra_sector": 0.04,
     "margin_net": 0.03, "flow_accel": 0.01,
     "flow_stability": 0.03, "intraday_accel": 0.03,
@@ -27,17 +27,62 @@ WEIGHTS_BASE = {
     "price_momentum": 0.03,
     "limitup_proximity": 0.02,
     "sector_diversity": 0.02,
-    "sector_price": 0.03,
-    "tail_return": 0.03,        # 🆕 尾盘30min收益
-    "tail_volume": 0.02,         # 🆕 尾盘量能集中度
-    "crowding": 0.02,            # 🆕 全市场拥挤度惩罚
-    "ext_sentiment": 0.01,       # 🆕 美股隔夜情绪
+    "sector_price": 0.05,        # ↑ 0.03→0.05 (修复数据覆盖后生效)
+    "tail_return": 0.03,
+    "tail_volume": 0.02,
+    "crowding": 0.02,
+    "ext_sentiment": 0.01,
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.13,
                 "price_momentum": 0.04, "tail_return": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.02}
 WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.08, "limitup_proximity": 0.04,
                 "sector_diversity": 0.03, "crowding": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.01}
+
+# ── 短线交易权重 ──
+SHORT_WEIGHTS = {
+    "capital": 0.10, "start_signal": 0.12, "trend": 0.06,
+    "position": 0.04, "multiday": 0.03, "sector": 0.04,
+    "technical": 0.03, "intra_sector": 0.04,
+    "margin_net": 0.03, "flow_accel": 0.02,
+    "flow_stability": 0.08, "intraday_accel": 0.08,
+    "rank_trajectory": 0.05, "vwap_position": 0.05,
+    "sector_trajectory": 0.02,
+    "price_momentum": 0.02, "limitup_proximity": 0.04,
+    "sector_diversity": 0.01, "sector_price": 0.02,
+    "tail_return": 0.06, "tail_volume": 0.04, "crowding": 0.02,
+    "ext_sentiment": 0.01,
+}
+
+# ── 中线趋势权重 ──
+MID_WEIGHTS = {
+    "capital": 0.15, "start_signal": 0.10, "trend": 0.14,
+    "position": 0.10, "multiday": 0.12, "sector": 0.06,
+    "technical": 0.08, "intra_sector": 0.04,
+    "margin_net": 0.03, "flow_accel": 0.02,
+    "flow_stability": 0.01, "intraday_accel": 0.01,
+    "rank_trajectory": 0.01, "vwap_position": 0.02,
+    "sector_trajectory": 0.02,
+    "price_momentum": 0.06, "limitup_proximity": 0.01,
+    "sector_diversity": 0.02, "sector_price": 0.04,
+    "tail_return": 0.01, "tail_volume": 0.01, "crowding": 0.02,
+    "ext_sentiment": 0.02,
+}
+
+# ── 启动检测权重 ──
+EARLY_WEIGHTS = {
+    "capital": 0.10, "start_signal": 0.25, "trend": 0.15,
+    "position": 0.15, "multiday": 0.08, "sector": 0.07,
+    "technical": 0.05, "intra_sector": 0.05,
+    "margin_net": 0.03, "flow_accel": 0.02,
+    "flow_stability": 0.02, "intraday_accel": 0.02,
+    "rank_trajectory": 0.02, "vwap_position": 0.02,
+    "sector_trajectory": 0.03,
+    "price_momentum": 0.02, "limitup_proximity": 0.03,
+    "sector_diversity": 0.02, "sector_price": 0.02,
+    "tail_return": 0.02, "tail_volume": 0.01, "crowding": 0.01,
+    "ext_sentiment": 0.01,
+}
 
 # ── 短线交易权重 (日内+情绪+缺口 提权) ──
 SHORT_WEIGHTS = {
@@ -804,8 +849,22 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sector_groups[s.get("行业", "其他")].append(_tof(s.get("主力净流入")))
 
     # ── 构建价格历史 ──
-    # 从已有 intraday CSV 中提取每日收盘价（跨日累积）
     price_hist = _build_price_history(date_str, stocks)
+    # 补充K线数据: top 500只主力流入最大的（最有评分的候选股）
+    top_codes = sorted(stocks, key=lambda s: -_tof(s.get("主力净流入")))[:500]
+    kline_prices = _load_stock_prices([s.get("代码","") for s in top_codes], max_stocks=500)
+    with_kline = 0
+    for code, closes in kline_prices.items():
+        if code in price_hist:
+            # 用K线数据覆盖/补充(更准确的前复权价格)
+            price_hist[code]["closes"] = closes
+        else:
+            price_hist[code] = {"closes": closes, "high_60": max(closes), "low_60": min(closes)}
+            with_kline += 1
+    n_with_hist = sum(1 for v in price_hist.values() if len(v["closes"]) >= 5)
+    print(f"  价格历史覆盖: {n_with_hist}/{len(stocks)} ({n_with_hist/len(stocks)*100:.0f}%)"
+          + (f" K线补充{with_kline}只" if with_kline else ""))
+
     # ── 体制感知 + 黑天鹅 + 外部情绪 ──
     weights, regime = _detect_regime(date_str)
     bs_level = 0
