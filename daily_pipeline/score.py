@@ -17,7 +17,7 @@ RESEARCH_ROOT = os.path.join(
 
 # ── 评分权重（三市场景自适应）──
 WEIGHTS_BASE = {
-    "capital": 0.19, "start_signal": 0.13, "trend": 0.10,
+    "capital": 0.17, "start_signal": 0.11, "trend": 0.09,
     "position": 0.06, "multiday": 0.06, "sector": 0.05,
     "technical": 0.05, "intra_sector": 0.04,
     "margin_net": 0.03, "flow_accel": 0.01,
@@ -27,15 +27,46 @@ WEIGHTS_BASE = {
     "price_momentum": 0.03,
     "limitup_proximity": 0.02,
     "sector_diversity": 0.02,
-    "sector_price": 0.03,       # 🆕 板块价格共振
+    "sector_price": 0.03,
+    "tail_return": 0.03,        # 🆕 尾盘30min收益
+    "tail_volume": 0.02,         # 🆕 尾盘量能集中度
+    "crowding": 0.02,            # 🆕 全市场拥挤度惩罚
 }
 
-WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.15,
-                "price_momentum": 0.04, "sector_price": 0.04, "flow_accel": 0.02}
+WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.13,
+                "price_momentum": 0.04, "tail_return": 0.04, "flow_accel": 0.02}
 WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.08, "limitup_proximity": 0.04,
-                "sector_diversity": 0.03, "sector_price": 0.02, "flow_accel": 0.01}
+                "sector_diversity": 0.03, "crowding": 0.04, "flow_accel": 0.01}
 
-# ── 刚启动检测权重 ──
+# ── 短线交易权重 (日内+情绪+缺口 提权) ──
+SHORT_WEIGHTS = {
+    "capital": 0.10, "start_signal": 0.12, "trend": 0.06,
+    "position": 0.04, "multiday": 0.03, "sector": 0.04,
+    "technical": 0.03, "intra_sector": 0.04,
+    "margin_net": 0.03, "flow_accel": 0.02,
+    "flow_stability": 0.08, "intraday_accel": 0.08,
+    "rank_trajectory": 0.05, "vwap_position": 0.05,
+    "sector_trajectory": 0.02,
+    "price_momentum": 0.02, "limitup_proximity": 0.04,
+    "sector_diversity": 0.01, "sector_price": 0.02,
+    "tail_return": 0.06, "tail_volume": 0.04, "crowding": 0.02,
+}
+
+# ── 中线趋势权重 (趋势+多日+位置+技术 提权) ──
+MID_WEIGHTS = {
+    "capital": 0.15, "start_signal": 0.10, "trend": 0.14,
+    "position": 0.10, "multiday": 0.12, "sector": 0.06,
+    "technical": 0.08, "intra_sector": 0.04,
+    "margin_net": 0.03, "flow_accel": 0.02,
+    "flow_stability": 0.01, "intraday_accel": 0.01,
+    "rank_trajectory": 0.01, "vwap_position": 0.02,
+    "sector_trajectory": 0.02,
+    "price_momentum": 0.06, "limitup_proximity": 0.01,
+    "sector_diversity": 0.02, "sector_price": 0.04,
+    "tail_return": 0.01, "tail_volume": 0.01, "crowding": 0.02,
+}
+
+# ── 启动检测权重 ──
 EARLY_WEIGHTS = {
     "capital": 0.10, "start_signal": 0.25, "trend": 0.15,
     "position": 0.15, "multiday": 0.08, "sector": 0.07,
@@ -46,6 +77,7 @@ EARLY_WEIGHTS = {
     "sector_trajectory": 0.03,
     "price_momentum": 0.02, "limitup_proximity": 0.03,
     "sector_diversity": 0.02, "sector_price": 0.02,
+    "tail_return": 0.02, "tail_volume": 0.01, "crowding": 0.01,
 }
 
 # ── scores.csv 输出列 ──
@@ -92,8 +124,10 @@ SCORE_HEADERS = [
     "融资得分", "加速度得分", "占比趋势得分",
     "日内稳定", "日内加速", "排名轨迹", "VWAP位置", "板块轨迹",
     "价格动量", "涨停邻近", "行业分散", "板块价格",
+    "尾盘收益", "尾盘量能", "拥挤度",
     "涨跌幅", "换手率", "量比", "总市值",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
+    "短线得分", "中线得分",
 ]
 
 # ── 因子中文说明 ──
@@ -523,6 +557,79 @@ def _score_sector_diversity(industry, all_industries):
     return 0.3
 
 
+def _score_tail_factors(code, time_series):
+    """尾盘微观结构: (tail_return, tail_volume)
+
+    A股尾盘30分钟是主力意图最集中的时段。
+    tail_return: 尾盘价格变动 vs 14:00
+    tail_volume: 尾盘资金集中度 (最后2快照f62均值 / 全天f62均值)
+    """
+    if code not in time_series or len(time_series[code]) < 3:
+        return 0.5, 0.5
+
+    ts_data = time_series[code]
+    sorted_ts = sorted(ts_data.keys())
+    n = len(sorted_ts)
+
+    # 尾盘: 最后2个快照
+    tail_snaps = sorted_ts[-2:]
+    early_snaps = sorted_ts[:max(n-2, 2)]
+
+    # tail_return: 尾盘价格变动
+    tail_prices = [ts_data[ts]["f2"] for ts in tail_snaps if ts_data[ts]["f2"] > 0]
+    early_prices = [ts_data[ts]["f2"] for ts in early_snaps if ts_data[ts]["f2"] > 0]
+    if tail_prices and early_prices and early_prices[0] > 0:
+        tail_ret = (tail_prices[-1] - early_prices[-1]) / early_prices[-1] * 100
+        # 尾盘拉升 → 次日大概率高开; 尾盘跳水 → 次日承压
+        tail_ret_score = _range_score(tail_ret, 0.3, 2.0, -2.0, 5.0)
+    else:
+        tail_ret_score = 0.5
+
+    # tail_volume: 尾盘资金集中度
+    tail_f62 = [ts_data[ts]["f62"] for ts in tail_snaps]
+    all_f62 = [ts_data[ts]["f62"] for ts in sorted_ts]
+    if all_f62 and sum(abs(f) for f in all_f62) > 0:
+        tail_conc = sum(abs(f) for f in tail_f62) / max(sum(abs(f) for f in all_f62), 1)
+        # 尾盘资金占比高 → 主力在尾盘行动
+        tail_vol_score = min(1.0, tail_conc * 3)  # 33%以上满分
+    else:
+        tail_vol_score = 0.5
+
+    return round(tail_ret_score, 3), round(tail_vol_score, 3)
+
+
+def _score_crowding(stocks):
+    """全市场拥挤度: 成交额集中度 + 涨停占比 → 惩罚分。
+
+    返回 (crowding_factor, crowding_detail)
+    crowding_factor: 0~1, 1=不拥挤, 0=极度拥挤
+    """
+    if not stocks:
+        return 0.5
+
+    # 成交额集中度: 前100只成交额 / 全市场成交额
+    f6_vals = sorted([_tof(s.get("成交额", s.get("f6", 0))) for s in stocks], reverse=True)
+    total_amount = sum(f6_vals)
+    if total_amount > 0:
+        top100_conc = sum(f6_vals[:100]) / total_amount
+    else:
+        top100_conc = 0
+
+    # 涨停占比
+    f3_vals = [_tof(s.get("涨跌幅", s.get("f3", 0))) for s in stocks]
+    limit_up_cnt = sum(1 for v in f3_vals if v >= 9.5)
+    limit_up_ratio = limit_up_cnt / max(len(f3_vals), 1)
+
+    # 综合拥挤度
+    score = 1.0
+    if top100_conc > 0.30: score -= 0.15  # 资金过度集中
+    if top100_conc > 0.50: score -= 0.15  # 极度集中
+    if limit_up_ratio > 0.05: score -= 0.10  # 涨停>5%
+    if limit_up_ratio > 0.10: score -= 0.10  # 涨停>10%
+
+    return round(max(0.0, min(1.0, score)), 3)
+
+
 def _build_sector_returns(stocks, price_hist):
     """从个股价格历史聚合行业中位回报。{industry: ret_5d}"""
     ind_rets = defaultdict(list)
@@ -629,9 +736,10 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         pass
     print(f"  市场体制: {regime}")
 
-    # ── 板块价格回报（预计算）──
+    # ── 板块价格回报 + 拥挤度（预计算）──
     sector_rets = _build_sector_returns(stocks, price_hist)
     sector_ret_vals = list(sector_rets.values())
+    crowding_score = _score_crowding(stocks)
 
     # ── 行业列表（用于分散度）──
     all_industries = [s.get("行业", "") for s in stocks]
@@ -846,17 +954,24 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["sector_diversity"] = round(_score_sector_diversity(industry, all_industries), 3)
         sub["sector_price"] = round(_pct_rank(sector_ret_vals, sector_rets.get(industry, 0)) if sector_rets and industry in sector_rets else 0.5, 3)
 
+        # 🆕 tail_return + tail_volume
+        tail_ret, tail_vol = _score_tail_factors(code, time_series)
+        sub["tail_return"] = tail_ret
+        sub["tail_volume"] = tail_vol
+
+        # 🆕 全市场拥挤度 (所有股票统一)
+        sub["crowding"] = crowding_score
+
         # ── 综合得分（体制感知权重）──
         total = sum(sub.get(k, 0.5) * weights.get(k, 0) for k in weights)
         for k in weights:
             if k not in sub:
                 total += 0.5 * weights[k]
 
-        # ── 启动得分 ──
+        # ── 策略周期分离: 短线 / 中线 / 启动 ──
+        short = sum(sub.get(k, 0.5) * SHORT_WEIGHTS.get(k, 0) for k in SHORT_WEIGHTS)
+        mid   = sum(sub.get(k, 0.5) * MID_WEIGHTS.get(k, 0) for k in MID_WEIGHTS)
         early = sum(sub.get(k, 0.5) * EARLY_WEIGHTS.get(k, 0) for k in EARLY_WEIGHTS)
-        for k in EARLY_WEIGHTS:
-            if k not in sub:
-                early += 0.5 * EARLY_WEIGHTS[k]
 
         # ── P32: 占比趋势 ──
         ratio_score = 0.0
@@ -965,6 +1080,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         results.append({
             "代码": code, "名称": name, "最新价": f2, "行业": industry,
             "综合得分": round(total, 4), "启动得分": round(early, 4),
+            "短线得分": round(short, 4), "中线得分": round(mid, 4),
             "资金得分": sub.get("capital", 0.5), "趋势得分": sub.get("trend", 0.5),
             "启动因子": round(sub.get("start_signal", 0.5), 3), "板块得分": sub.get("sector", 0.5),
             "位置得分": sub.get("position", 0.5), "分析师得分": sub.get("analyst", 0.5),
@@ -978,6 +1094,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "涨停邻近": sub.get("limitup_proximity", 0.5),
             "行业分散": sub.get("sector_diversity", 0.5),
             "板块价格": sub.get("sector_price", 0.5),
+            "尾盘收益": sub.get("tail_return", 0.5),
+            "尾盘量能": sub.get("tail_volume", 0.5),
+            "拥挤度": sub.get("crowding", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
