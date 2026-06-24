@@ -33,16 +33,34 @@ def _load_scores(date_str):
     return rows
 
 
-def _load_next_day_open(date_str):
-    """从次日首条 intraday 快照获取开盘价"""
+def _load_next_day_prices(date_str):
+    """获取次日价格 — 优先 fund_flow.json(全量), 否则 intraday CSV。
+    返回 {code: {open, close, chg}}
+    """
+    # 1. fund_flow.json — 全市场覆盖(~5100只)
+    import json
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    ff_path = os.path.join(data_dir, date_str, "fund_flow.json")
+    if os.path.exists(ff_path):
+        price_map = {}
+        with open(ff_path, encoding="utf-8") as f:
+            for r in json.load(f):
+                code = r.get("f12", "")
+                open_p = _tof(r.get("f17"))
+                close_p = _tof(r.get("f2"))
+                chg = _tof(r.get("f3"))
+                if code and open_p > 0:
+                    price_map[code] = {"open": open_p, "close": close_p, "chg": chg}
+        if price_map:
+            return price_map
+
+    # 2. 回退到 intraday CSV
     intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
     if not os.path.isdir(intraday_dir): return {}
-
     files = sorted(
         [f for f in os.listdir(intraday_dir) if f.startswith("fund_flow_") and f.endswith(".csv")]
     )
     if not files: return {}
-
     path = os.path.join(intraday_dir, files[0])
     open_map = {}
     with open(path, encoding="utf-8-sig") as f:
@@ -52,9 +70,7 @@ def _load_next_day_open(date_str):
             close_price = _tof(r.get("最新价"))
             chg = _tof(r.get("涨跌幅"))
             if code and open_price > 0:
-                open_map[code] = {
-                    "open": open_price, "close": close_price, "chg": chg,
-                }
+                open_map[code] = {"open": open_price, "close": close_price, "chg": chg}
     return open_map
 
 
@@ -85,9 +101,9 @@ def run_daily_backtest(pick_date, eval_date=None):
         print(f"  ✗ {pick_date} 无评分数据")
         return None
 
-    next_open = _load_next_day_open(eval_date)
-    if not next_open:
-        print(f"  ✗ {eval_date} 无开盘数据")
+    next_prices = _load_next_day_prices(eval_date)
+    if not next_prices:
+        print(f"  ✗ {eval_date} 无价格数据")
         return None
 
     # 匹配
@@ -96,13 +112,12 @@ def run_daily_backtest(pick_date, eval_date=None):
     rets = []
     for s in scores:
         code = s["代码"]
-        if code not in next_open: continue
+        if code not in next_prices: continue
         pick_price = _tof(s.get("最新价"))
         if pick_price <= 0: continue
 
-        t = next_open[code]
+        t = next_prices[code]
         open_p = t["open"]
-        # 使用开盘价计算次日收益
         next_ret = round((open_p - pick_price) / pick_price * 100, 2)
         win = "胜" if next_ret > 0 else ("平" if next_ret == 0 else "负")
 
