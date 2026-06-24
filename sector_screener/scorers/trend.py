@@ -28,6 +28,10 @@ def _detect_oversold_bounce(closes, today_chg):
 def score_trend(stock, context):
     """返回 0~1
     回溯优化: vol_ratio 35→15% (零预测力), 新增中期动量 20% (10d/20d)
+
+    换手率体制感知:
+      牛市(bull/bull_bias): 高换手 = 强势燃料 → 阈值上移
+      熊市(bear/bear_bias): 高换手 = 出货信号 → 阈值下移，高分变低分
     """
     f10 = to_float(stock.get("f10"))
     f8 = to_float(stock.get("f8"))
@@ -36,7 +40,17 @@ def score_trend(stock, context):
     closes = context.get("price_history", {}).get(code, [])
 
     s_vol_ratio = range_score(f10, 1.5, 4.0, 0.8, 8.0)
-    s_turnover = range_score(f8, 5.0, 18.0, 2.0, 25.0)
+
+    # 换手率评分 — 体制感知
+    regime = context.get("_regime", "range")
+    if regime in ("bull", "bull_bias"):
+        # 牛市：高换手是好信号，阈值抬高
+        s_turnover = range_score(f8, 8.0, 22.0, 3.0, 30.0)
+    elif regime in ("bear", "bear_bias"):
+        # 熊市：高换手是出货信号，阈值压低，超过15%就开始扣分
+        s_turnover = range_score(f8, 2.0, 8.0, 1.0, 15.0)
+    else:
+        s_turnover = range_score(f8, 5.0, 18.0, 2.0, 25.0)
     s_momentum = range_score(f3, 2.5, 7.0, -2.0, 9.5)
     short_trend = _calc_short_trend(closes)
     s_short = max(0.0, min(1.0, short_trend * 3 + 0.5))

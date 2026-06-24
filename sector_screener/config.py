@@ -48,6 +48,8 @@ WEIGHTS_BASE = {
     "intraday_trend":0.02,  # 🆕 日内轨迹动量(排名+资金加速)
     "price_momentum":0.03,  # 🆕 多日价格回报(5/10/20日)
     "sector_price": 0.03,   # 🆕 行业板块价格共振
+    "limitup_proximity":0.02,  # 🆕 涨停邻近惩罚
+    "sector_diversity":0.02,    # 🆕 行业分散度
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
@@ -56,6 +58,7 @@ WEIGHTS_BULL = {**WEIGHTS_BASE,
     "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
     "margin_long": 0.03, "volume_quality": 0.02, "intraday_trend": 0.03,
     "price_momentum": 0.04, "sector_price": 0.04,
+    "limitup_proximity": 0.03, "sector_diversity": 0.02,
     "ratio_rank": 0.00,
 }
 
@@ -65,6 +68,7 @@ WEIGHTS_BEAR = {**WEIGHTS_BASE,
     "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
     "margin_short": 0.04, "volume_quality": 0.01, "intraday_trend": 0.015,
     "price_momentum": 0.02, "sector_price": 0.02,
+    "limitup_proximity": 0.04, "sector_diversity": 0.03,
     "ratio_rank": 0.00,
 }
 

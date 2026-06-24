@@ -24,3 +24,5 @@ from .volume_quality import score_volume_quality
 from .intraday import score_intraday_trend
 from .price_momentum import score_price_momentum
 from .sector_price import score_sector_price
+from .limitup_proximity import score_limitup_proximity
+from .sector_diversity import score_sector_diversity

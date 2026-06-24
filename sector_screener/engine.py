@@ -9,6 +9,7 @@ from sector_screener.scorers import (
     score_block_trade, score_org_research, score_earnings, score_lockup,
     score_margin_short, score_margin_long, score_volume_quality,
     score_intraday_trend, score_price_momentum, score_sector_price,
+    score_limitup_proximity, score_sector_diversity,
     apply_p_factors, get_tracker,
 )
 
@@ -135,8 +136,10 @@ def score_candidates(candidates, context):
         s_intraday = score_intraday_trend(s, context)
         s_pm       = score_price_momentum(s, context)
         s_sp       = score_sector_price(s, context)
+        s_lup      = score_limitup_proximity(s, context)
+        s_sdiv     = score_sector_diversity(s, context)
 
-        # 加权求和 (24维)
+        # 加权求和 (26维)
         total = (
             s_start    * weights.get("start_signal", 0)
             + s_capital * weights.get("capital", 0)
@@ -162,6 +165,8 @@ def score_candidates(candidates, context):
             + s_intraday * weights.get("intraday_trend", 0)
             + s_pm       * weights.get("price_momentum", 0)
             + s_sp       * weights.get("sector_price", 0)
+            + s_lup      * weights.get("limitup_proximity", 0)
+            + s_sdiv     * weights.get("sector_diversity", 0)
         )
 
         # P因子调整
@@ -228,6 +233,8 @@ def score_candidates(candidates, context):
             "_s_intraday_trend": round(s_intraday, 3),
             "_s_price_momentum": round(s_pm, 3),
             "_s_sector_price": round(s_sp, 3),
+            "_s_limitup_proximity": round(s_lup, 3),
+            "_s_sector_diversity": round(s_sdiv, 3),
             "_f62_5d": md.get("f62_5d", 0),
             "_f62_10d": md.get("f62_10d", 0),
             "_cum3": round(cum3 / 1e8, 2),

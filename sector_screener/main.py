@@ -229,6 +229,8 @@ def get_enhanced_picks(date_str=None, top_sectors=8, top_picks=10):
                 "intraday_trend": s.get("_s_intraday_trend", 0),
                 "price_momentum": s.get("_s_price_momentum", 0),
                 "sector_price": s.get("_s_sector_price", 0),
+                "limitup_proximity": s.get("_s_limitup_proximity", 0),
+                "sector_diversity": s.get("_s_sector_diversity", 0),
             },
             "sector_name": s.get("_sector_name", ""),
             "analyst_num": s.get("_analyst_num", 0),
