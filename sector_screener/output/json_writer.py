@@ -79,6 +79,8 @@ def save_json(scored, limit_up, date_str, top_n=10, weights=None, regime="range"
                 "margin_net": s.get("_s_margin_net", 0),
                 "flow_accel": s.get("_s_flow_accel", 0),
                 "intraday_trend": s.get("_s_intraday_trend", 0),
+                "price_momentum": s.get("_s_price_momentum", 0),
+                "sector_price": s.get("_s_sector_price", 0),
             },
             "intraday": {
                 "snapshots": s.get("_intraday_snapshots", 0),

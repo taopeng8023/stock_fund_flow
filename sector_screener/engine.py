@@ -226,6 +226,8 @@ def score_candidates(candidates, context):
             "_s_margin_net": round(s_margin, 3),
             "_s_flow_accel": round(s_accel, 3),
             "_s_intraday_trend": round(s_intraday, 3),
+            "_s_price_momentum": round(s_pm, 3),
+            "_s_sector_price": round(s_sp, 3),
             "_f62_5d": md.get("f62_5d", 0),
             "_f62_10d": md.get("f62_10d", 0),
             "_cum3": round(cum3 / 1e8, 2),
