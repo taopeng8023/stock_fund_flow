@@ -25,25 +25,20 @@ RESEARCH_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_data"
 )
 
-# ── 四级买入规则（全量回测+多时点+交互分析）──
+# ── 全局最优Top3组合（16503笔全量统计验证）──
 TIERS = {
-    1: {"score": 0.60, "capital": 0.80,
-        "require": ["P34_gap_strong", "P35_short_cover"],  # 双确认
-        "block": ["P36_overheat"], "label": "🥇王者(50%)", "bonus": 0.12,
-        "desc": "P34_gap+空头回补双确认,50%胜率"},
-    2: {"score": 0.60, "capital": 0.70,
+    1: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
+        "require": ["P34_gap_strong", "P35_short_cover"],
+        "block": ["P36_overheat"], "label": "🥇王者(62%)", "bonus": 0.12,
+        "desc": "分0.60-0.70+资≥0.8+P34_gap+P35_cover-P36"},
+    2: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
         "require": ["P34_gap_strong"],
-        "block": ["P36_overheat"], "label": "🥈高胜率(55%)", "bonus": 0.08,
-        "desc": "P34_gap单信号+资金≥0.7"},
-    3: {"score": 0.60, "capital": 0.70,
-        "require": ["P37_momentum_up"],
-        "block": ["P36_overheat", "P35_short_pressure"], "label": "🥉动量(43%)", "bonus": 0.00,
-        "desc": "P37_up兜底,反转日可能失效"},
-    4: {"score": 0.55, "capital": 0.60,
-        "require": [],
-        "block": ["P36_overheat", "P35_short_pressure"],
-        "mcap_min": 500, "label": "🏛️大盘(38%)", "bonus": 0.04,
-        "desc": "大市值>500亿+中等资金,防御型"},
+        "block": ["P36_overheat"], "label": "🥈高胜率(62%)", "bonus": 0.08,
+        "desc": "分0.60-0.70+资≥0.8+P34_gap-P36"},
+    3: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
+        "require": ["P34_gap_strong"],
+        "block": [], "label": "🥉稳健(59%)", "bonus": 0.04,
+        "desc": "分0.60-0.70+资≥0.8+P34_gap"},
 }
 
 SIGNAL_VACUUM_BLOCK = True  # 排除无任何P3x信号的股票(胜率仅23%)
@@ -101,15 +96,10 @@ def filter_overnight(date_str=None, top_n=20):
 
         # 逐级匹配
         matched_tier = 0
-        for t in [1, 2, 3, 4]:
+        for t in [1, 2, 3]:
             rules = TIERS[t]
-            if score < rules["score"]: continue
+            if score < rules["score_lo"] or score >= rules["score_hi"]: continue
             if capital < rules["capital"]: continue
-            # 大市值门槛
-            mcap_min = rules.get("mcap_min", 0)
-            if mcap_min > 0:
-                mcap = float(r.get("总市值", 0) or 0)
-                if mcap < mcap_min: continue
             if not all(s in signals for s in rules["require"]): continue
             if any(s in signals for s in rules["block"]): continue
             matched_tier = t
@@ -180,9 +170,9 @@ def filter_overnight(date_str=None, top_n=20):
         avg_cap = sum(c["资金得分"] for c in top) / len(top)
         avg_chg = sum(c["涨跌幅"] for c in top) / len(top)
         print(f"\n  均综合={avg_score:.3f} 均资金={avg_cap:.3f} 均涨跌={avg_chg:+.1f}%")
-        print(f"\n  规则: 🥇分≥0.6+资≥0.8+P34_gap+P35_cover(50%,双确认)")
-        print(f"        🥈分≥0.6+资≥0.7+P34_gap(55%)  🥉分≥0.6+资≥0.7+P37_up(43%)  🏛️大盘>500亿(38%)")
-        print(f"  避雷: P36 P35_short | 信号真空排除 | 同行业≤2只")
+    print(f"\n  规则: 全局最优Top3组合 (16503笔统计验证)")
+    print(f"        🥇分0.60-0.70+资≥0.8+P34_gap+P35_cover-P36(62%WR)")
+    print(f"        🥈分0.60-0.70+资≥0.8+P34_gap-P36(62%)  🥉分0.60-0.70+资≥0.8+P34_gap(59%)")
 
     # 保存
     out_path = os.path.join(RESEARCH_ROOT, date_str, "overnight_picks.csv")

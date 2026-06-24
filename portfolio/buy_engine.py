@@ -25,29 +25,28 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 
-# ── 四级买入规则（全量回测+多时点+交互分析）──
+# ── 全局最优Top3组合（16503笔全量统计验证）──
+# 🥇 分0.60-0.70 资≥0.80 P34_gap-P36 → 92笔 62%WR +1.75% (4日全正,最低57%)
+# 🥈 分0.60-0.70 资≥0.80 P34_gap+P35_cover → 42笔 62%WR +2.01%
+# 🥉 分0.60-0.70 资≥0.80 P34_gap → 101笔 59%WR +1.59%
+# ⚠️ 分≥0.70反而更差(46%WR) — "过度优秀"已充分定价
+# ⚠️ 资≥0.80是唯一硬门槛,趋势/位置/板块无贡献
 TIERS = {
-    1: {"score": 0.60, "capital": 0.80,
-        "require": ["P34_gap_strong", "P35_short_cover"],  # 双确认
+    1: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
+        "require": ["P34_gap_strong", "P35_short_cover"],
         "block": ["P36_overheat"],
-        "label": "🥇王者(50%)",
-        "desc": "P34_gap+空头回补双确认,胜率50%+0.90%"},
-    2: {"score": 0.60, "capital": 0.70,
+        "label": "🥇王者(62%)",
+        "desc": "分0.60-0.70+资≥0.80+P34_gap+P35_cover-P36"},
+    2: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
         "require": ["P34_gap_strong"],
         "block": ["P36_overheat"],
-        "label": "🥈高胜率(55%)",
-        "desc": "P34_gap单信号+资金≥0.7"},
-    3: {"score": 0.60, "capital": 0.70,
-        "require": ["P37_momentum_up"],
-        "block": ["P36_overheat", "P35_short_pressure"],
-        "label": "🥉动量(43%)",
-        "desc": "P37_up兜底,反转日可能失效"},
-    4: {"score": 0.55, "capital": 0.60,
-        "require": [],
-        "block": ["P36_overheat", "P35_short_pressure"],
-        "mcap_min": 500,  # 大市值>500亿防御层
-        "label": "🏛️大盘(38%)",
-        "desc": "大市值+中等资金,防御型"},
+        "label": "🥈高胜率(62%)",
+        "desc": "分0.60-0.70+资≥0.80+P34_gap-P36"},
+    3: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
+        "require": ["P34_gap_strong"],
+        "block": [],
+        "label": "🥉稳健(59%)",
+        "desc": "分0.60-0.70+资≥0.80+P34_gap"},
 }
 
 # 信号真空排除（16503笔回测: 无信号股胜率仅23%）
@@ -91,26 +90,20 @@ def filter_candidates(scores: list, tier: int = 1) -> list:
 
     for r in scores:
         score = float(r.get("综合得分", 0) or 0)
-        if score < rules["score"]:
+        # 得分区间（最优0.60-0.70, ≥0.70反而差）
+        score_lo = rules.get("score_lo", rules.get("score", 0))
+        score_hi = rules.get("score_hi", 1.0)
+        if score < score_lo or score >= score_hi:
             continue
 
         capital = float(r.get("资金得分", 0.5) or 0.5)
         if capital < rules["capital"]:
             continue
 
-        # 大市值门槛（Tier 4）
-        mcap_min = rules.get("mcap_min", 0)
-        if mcap_min > 0:
-            mcap = float(r.get("总市值", 0) or 0)
-            if mcap < mcap_min:
-                continue
-
         signals = r.get("综合信号", "")
         # 信号真空排除
         if SIGNAL_VACUUM_BLOCK:
             has_signal = any(s in signals for s in [
-                "P3"  # P32/P33/P34/P35/P36/P37 都匹配
-            ]) or any(s in signals for s in [
                 "P32_", "P33_", "P34_", "P35_", "P36_", "P37_"
             ])
             if not has_signal:
@@ -175,7 +168,7 @@ def generate_recommendations(date_str: str, top_n: int = 10,
         # 合并三级
         candidates = []
         seen = set()
-        for t in [1, 2, 3, 4]:
+        for t in [1, 2, 3]:
             for c in filter_candidates(scores, t):
                 if c["code"] not in seen:
                     candidates.append(c)
@@ -222,9 +215,10 @@ def _print_recommendations(date_str, bs_level, buys):
         print(f"  {i+1:<2} {b['code']:<8s} {b['name']:<8s} {b['score']:.4f} "
               f"{b['chg_pct']:+.1f}%{'':>2s} {b['capital']:.2f}{'':>2s} "
               f"{b['industry']:<10s} {tier_label:<10s} {sig_str}")
-
-    print(f"\n  规则: 🥇分≥0.6+资≥0.8+P34_gap(57-60%,全天正收益)")
-    print(f"        🥈分≥0.6+资≥0.7+P34_gap(55-60%)  🥉分≥0.6+资≥0.7+P37_up(43%,兜底)")
+    print(f"\n  规则: 全局最优Top3组合 (16503笔统计验证)")
+    print(f"        🥇分0.60-0.70+资≥0.8+P34_gap+P35_cover-P36(62%WR)")
+    print(f"        🥈分0.60-0.70+资≥0.8+P34_gap-P36(62%)  🥉分0.60-0.70+资≥0.8+P34_gap(59%)")
+    print(f"  ⚠️ 分≥0.70反而46%WR | 同行业≤{MAX_PER_SECTOR}只")
     print(f"  避雷: P36_overheat P35_short_pressure | 同行业≤{MAX_PER_SECTOR}只")
 
 
