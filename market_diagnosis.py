@@ -333,15 +333,13 @@ def diagnose_regime(breadth, flow, history_medians):
 
 
 # ============================================================
-# 6. 风险预警 — 委托给 BlackSwanDetector
+# 6. 风险预警 — 已委托给 portfolio.black_swan.BlackSwanDetector
 # ============================================================
 def diagnose_risks(breadth, flow, north, regime_result):
-    """多维度风险检测（委托给 portfolio.black_swan.BlackSwanDetector）。
-
-    保留此函数签名以兼容旧调用方，内部使用 BlackSwanDetector.from_diagnosis()
-    在 get_diagnosis() 中统一调用。
+    """@deprecated — 实际逻辑已迁移到 BlackSwanDetector，
+    保留签名仅供旧调用方兼容。新代码请用 portfolio.black_swan。
     """
-    return {"alerts": [], "level": "low"}  # 占位，实际值在 get_diagnosis() 中覆盖
+    return {"alerts": [], "level": "low"}
 
 
 # ============================================================

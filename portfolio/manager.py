@@ -19,8 +19,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-import time
-
 import requests
 
 logger = logging.getLogger(__name__)

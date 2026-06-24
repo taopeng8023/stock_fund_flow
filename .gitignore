@@ -12,4 +12,6 @@ performance.json
 data/
 research_data/
 portfolio/positions.json
+web_dashboard/.web/
+*.log
 .env

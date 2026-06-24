@@ -15,12 +15,9 @@ from sector_screener.loaders import (
     load_sector_top_codes, load_sector_stocks, load_sector_multiday, load_sector_intraday,
     load_fund_flow_cross_ref, load_analyst_data, load_dragon_tiger_data,
     load_north_flow_data, load_ratio_rank, load_stock_multiday, load_past_closes,
+    load_block_trade, load_org_research, load_earnings_forecast, load_lockup_expiry,
+    load_sector_rotation,
 )
-from sector_screener.loaders.block_trade import load_block_trade
-from sector_screener.loaders.org_research import load_org_research
-from sector_screener.loaders.earnings_forecast import load_earnings_forecast
-from sector_screener.loaders.lockup_expiry import load_lockup_expiry
-from sector_screener.loaders.sector_rotation import load_sector_rotation
 from sector_screener.filters import split_stocks
 from sector_screener.engine import build_context, score_candidates
 from sector_screener.output import print_results, print_diagnosis, save_json, save_csv
