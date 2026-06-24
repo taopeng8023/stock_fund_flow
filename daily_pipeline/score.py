@@ -17,15 +17,15 @@ RESEARCH_ROOT = os.path.join(
 
 # ── 评分权重（三市场景自适应）──
 WEIGHTS_BASE = {
-    "capital": 0.15, "start_signal": 0.11, "trend": 0.09,
-    "position": 0.10, "multiday": 0.06, "sector": 0.03,
-    "technical": 0.05, "intra_sector": 0.04,
-    "margin_net": 0.03, "flow_accel": 0.01,
+    "capital": 0.18, "start_signal": 0.06, "trend": 0.03,
+    "position": 0.10, "multiday": 0.06, "sector": 0.06,
+    "technical": 0.05, "intra_sector": 0.06,
+    "margin_net": 0.01, "flow_accel": 0.01,
     "flow_stability": 0.03, "intraday_accel": 0.03,
-    "rank_trajectory": 0.02, "vwap_position": 0.02,
+    "rank_trajectory": 0.02, "vwap_position": 0.03,
     "sector_trajectory": 0.02,
     "price_momentum": 0.03,
-    "limitup_proximity": 0.02,
+    "limitup_proximity": 0.01,
     "sector_diversity": 0.02,
     "sector_price": 0.05,        # ↑ 0.03→0.05 (修复数据覆盖后生效)
     "tail_return": 0.03,
@@ -34,9 +34,9 @@ WEIGHTS_BASE = {
     "ext_sentiment": 0.01,
 }
 
-WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.13,
+WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.05, "start_signal": 0.08,
                 "price_momentum": 0.04, "tail_return": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.02}
-WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.08, "limitup_proximity": 0.04,
+WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.12, "limitup_proximity": 0.02,
                 "sector_diversity": 0.03, "crowding": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.01}
 
 # ── 短线交易权重 ──
@@ -55,51 +55,6 @@ SHORT_WEIGHTS = {
 }
 
 # ── 中线趋势权重 ──
-MID_WEIGHTS = {
-    "capital": 0.15, "start_signal": 0.10, "trend": 0.14,
-    "position": 0.10, "multiday": 0.12, "sector": 0.06,
-    "technical": 0.08, "intra_sector": 0.04,
-    "margin_net": 0.03, "flow_accel": 0.02,
-    "flow_stability": 0.01, "intraday_accel": 0.01,
-    "rank_trajectory": 0.01, "vwap_position": 0.02,
-    "sector_trajectory": 0.02,
-    "price_momentum": 0.06, "limitup_proximity": 0.01,
-    "sector_diversity": 0.02, "sector_price": 0.04,
-    "tail_return": 0.01, "tail_volume": 0.01, "crowding": 0.02,
-    "ext_sentiment": 0.02,
-}
-
-# ── 启动检测权重 ──
-EARLY_WEIGHTS = {
-    "capital": 0.10, "start_signal": 0.25, "trend": 0.15,
-    "position": 0.15, "multiday": 0.08, "sector": 0.07,
-    "technical": 0.05, "intra_sector": 0.05,
-    "margin_net": 0.03, "flow_accel": 0.02,
-    "flow_stability": 0.02, "intraday_accel": 0.02,
-    "rank_trajectory": 0.02, "vwap_position": 0.02,
-    "sector_trajectory": 0.03,
-    "price_momentum": 0.02, "limitup_proximity": 0.03,
-    "sector_diversity": 0.02, "sector_price": 0.02,
-    "tail_return": 0.02, "tail_volume": 0.01, "crowding": 0.01,
-    "ext_sentiment": 0.01,
-}
-
-# ── 短线交易权重 (日内+情绪+缺口 提权) ──
-SHORT_WEIGHTS = {
-    "capital": 0.10, "start_signal": 0.12, "trend": 0.06,
-    "position": 0.04, "multiday": 0.03, "sector": 0.04,
-    "technical": 0.03, "intra_sector": 0.04,
-    "margin_net": 0.03, "flow_accel": 0.02,
-    "flow_stability": 0.08, "intraday_accel": 0.08,
-    "rank_trajectory": 0.05, "vwap_position": 0.05,
-    "sector_trajectory": 0.02,
-    "price_momentum": 0.02, "limitup_proximity": 0.04,
-    "sector_diversity": 0.01, "sector_price": 0.02,
-    "tail_return": 0.06, "tail_volume": 0.04, "crowding": 0.02,
-    "ext_sentiment": 0.01,
-}
-
-# ── 中线趋势权重 (趋势+多日+位置+技术 提权) ──
 MID_WEIGHTS = {
     "capital": 0.15, "start_signal": 0.10, "trend": 0.14,
     "position": 0.10, "multiday": 0.12, "sector": 0.06,
