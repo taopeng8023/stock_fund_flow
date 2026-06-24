@@ -17,16 +17,16 @@ RESEARCH_ROOT = os.path.join(
 
 # ── 评分权重（三市场景自适应）──
 WEIGHTS_BASE = {
-    "capital": 0.18, "start_signal": 0.06, "trend": 0.03,
-    "position": 0.10, "multiday": 0.06, "sector": 0.06,
+    "capital": 0.19, "start_signal": 0.03, "trend": 0.03,
+    "position": 0.08, "multiday": 0.06, "sector": 0.08,
     "technical": 0.05, "intra_sector": 0.06,
     "margin_net": 0.01, "flow_accel": 0.01,
     "flow_stability": 0.03, "intraday_accel": 0.03,
-    "rank_trajectory": 0.02, "vwap_position": 0.03,
+    "rank_trajectory": 0.02, "vwap_position": 0.04,
     "sector_trajectory": 0.02,
     "price_momentum": 0.03,
     "limitup_proximity": 0.01,
-    "sector_diversity": 0.02,
+    "sector_diversity": 0.01,
     "sector_price": 0.05,        # ↑ 0.03→0.05 (修复数据覆盖后生效)
     "tail_return": 0.03,
     "tail_volume": 0.02,
