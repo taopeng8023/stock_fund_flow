@@ -12,11 +12,18 @@
 
 import argparse
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+import time
+
+import requests
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 POSITIONS_FILE = PROJECT_ROOT / "portfolio" / "positions.json"
@@ -126,27 +133,49 @@ def update_price(code: str, price: float):
     print(f"⚠️ {code} 非活跃持仓")
 
 
-def update_all_prices(date_str: str):
-    """从当日 fund_flow.json 批量更新所有持仓价格。"""
-    rows = _load_fund_flow(date_str)
-    if not rows:
-        print(f"❌ {date_str} 无 fund_flow 数据")
-        return
+def update_all_prices(date_str: str, manual_prices: dict = None):
+    """更新所有持仓价格。
 
+    优先级: 手动指定 > 实时API > fund_flow.json
+    """
+    manual_prices = manual_prices or {}
+    active = get_active_positions()
+    codes = [p["code"] for p in active]
     price_map = {}
-    for r in rows:
-        code = r.get("f12", "")
-        price = r.get("f2")
-        if code and isinstance(price, (int, float)) and price > 0:
+    sources = {}
+
+    # 1. fund_flow.json（兜底）
+    rows = _load_fund_flow(date_str)
+    if rows:
+        for r in rows:
+            code = r.get("f12", "")
+            price = r.get("f2")
+            if code and isinstance(price, (int, float)) and price > 0:
+                price_map[code] = price
+                sources[code] = "fund_flow"
+
+    # 2. 实时 API（覆盖 fund_flow）
+    realtime = _fetch_realtime_prices(codes)
+    for code, price in realtime.items():
+        if price > 0:
             price_map[code] = price
+            sources[code] = "realtime"
+
+    # 3. 手动指定（最高优先级）
+    for code, price in manual_prices.items():
+        price_map[code] = price
+        sources[code] = "manual"
 
     updated = 0
-    for p in get_active_positions():
+    for p in active:
         if p["code"] in price_map:
             update_price(p["code"], price_map[p["code"]])
             updated += 1
 
-    print(f"✅ 价格更新: {updated}/{len(get_active_positions())} 只持仓")
+    print(f"✅ 价格更新: {updated}/{len(active)} 只"
+          + f"（实时API {sum(1 for v in sources.values() if v=='realtime')}"
+          + f"/fund_flow {sum(1 for v in sources.values() if v=='fund_flow')}"
+          + f"/手动 {sum(1 for v in sources.values() if v=='manual')}）")
 
 
 # ---------------------------------------------------------------------------
@@ -169,13 +198,16 @@ SELL_RULES = {
 }
 
 
-def check_sell_signals(date_str: str, enable_notify: bool = True) -> list:
+def check_sell_signals(date_str: str, enable_notify: bool = True,
+                       manual_prices: dict = None) -> list:
     """检查所有持仓的卖出信号。
 
-    Returns:
-        [{"code": str, "signals": [...]}, ...]
+    Args:
+        date_str: 日期
+        enable_notify: 是否推送企业微信
+        manual_prices: 手动价格覆盖 {code: price}，优先于 fund_flow
     """
-    update_all_prices(date_str)
+    update_all_prices(date_str, manual_prices=manual_prices)
 
     # 检查黑天鹅
     bs_level = 0
@@ -320,6 +352,46 @@ def _load_fund_flow(date_str: str) -> Optional[list]:
         return json.load(f)
 
 
+def _fetch_realtime_prices(codes: list) -> dict:
+    """从腾讯财经行情 API 拉取最新价。
+
+    腾讯 API 比东方财富稳定，不封 IP。项目已在 scripts/backtest_price.py 和
+    daily_pipeline/score.py 中使用，经实战验证。
+
+    API: web.ifzq.gtimg.cn/appstock/app/minute/query
+    """
+    if not codes:
+        return {}
+
+    price_map = {}
+    for code in codes:
+        try:
+            # 判断市场前缀: 60xxxx→sh, 00xxxx/30xxxx→sz
+            prefix = "sh" if code.startswith(("60", "68")) else "sz"
+            url = (
+                f"http://web.ifzq.gtimg.cn/appstock/app/minute/query"
+                f"?code={prefix}{code}"
+            )
+            resp = requests.get(url, timeout=5,
+                               headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            qt = data.get("data", {}).get(f"{prefix}{code}", {}).get("qt", {})
+            price = qt.get(f"{prefix}{code}", [None])[3]  # 第4个元素=最新价
+            if price:
+                try:
+                    p = float(price)
+                    if p > 0:
+                        price_map[code] = p
+                except (ValueError, TypeError):
+                    continue
+        except Exception:
+            continue
+
+    return price_map
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -362,12 +434,28 @@ def cmd_list(args):
         print("\n  (空 — 使用 add 添加第一笔持仓)")
 
 
+def _parse_price_map(raw: str) -> dict:
+    """解析 'CODE:PRICE,CODE:PRICE' 格式的手动价格。"""
+    if not raw:
+        return {}
+    pm = {}
+    for pair in raw.split(","):
+        parts = pair.strip().split(":")
+        if len(parts) == 2:
+            try:
+                pm[parts[0].strip()] = float(parts[1].strip())
+            except ValueError:
+                pass
+    return pm
+
+
 def cmd_update(args):
-    update_all_prices(args.date)
+    update_all_prices(args.date, manual_prices=_parse_price_map(args.prices or ""))
 
 
 def cmd_check(args):
-    check_sell_signals(args.date, enable_notify=not args.no_notify)
+    check_sell_signals(args.date, enable_notify=not args.no_notify,
+                       manual_prices=_parse_price_map(args.prices or ""))
 
 
 def cmd_sell(args):
@@ -401,10 +489,12 @@ def main():
     # update
     p_up = sub.add_parser("update", help="更新当日价格")
     p_up.add_argument("--date", required=True)
+    p_up.add_argument("--prices", default="", help="手动价格 CODE:PRICE,...")
 
     # check
     p_chk = sub.add_parser("check", help="检查卖出信号")
     p_chk.add_argument("--date", required=True)
+    p_chk.add_argument("--prices", default="", help="手动价格 CODE:PRICE,...")
     p_chk.add_argument("--no-notify", action="store_true")
 
     # sell
