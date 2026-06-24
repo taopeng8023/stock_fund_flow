@@ -2,7 +2,7 @@
 板块轮动动量 — 从日内板块资金流快照检测轮动早期信号
 
 三个维度:
-  1. 日内加速度: 后半段 vs 前半段资金流均值差
+  1. 日内排名改善: 后半段 vs 前半段排名变化 (排名上升=板块启动)
   2. 跨日排名跃升: 今日排名 vs 昨日排名变化  
   3. 连续正流天数: 持续资金净流入天数
 
@@ -63,13 +63,13 @@ def compute_sector_momentum(date_str):
         n = len(flows)
         if n < 2: scores[name] = 0.5; continue
 
-        # 1. 日内加速度 (40%): 后半段/前半段均值差
+        # 1. 日内排名改善 (40%): 用排名变化替代百分比 (避免分母为零爆炸)
         mid = n // 2
-        first_half = statistics.mean(flows[:mid])
-        second_half = statistics.mean(flows[mid:])
-        denom = max(abs(first_half), 1e8)
-        accel = (second_half - first_half) / denom
-        accel_score = 0.5 + max(-0.5, min(0.5, accel * 3))
+        early_avg_rank = statistics.mean(ranks[:mid])
+        late_avg_rank = statistics.mean(ranks[mid:])
+        # 排名下降=变好 (从#82升到#5 = early-late>0)
+        rank_improve = (early_avg_rank - late_avg_rank) / total_sectors
+        accel_score = 0.5 + max(-0.5, min(0.5, rank_improve * 8))
 
         # 2. 跨日排名跃升 (35%): 昨日排名 → 今日排名
         rank_jump = 0
