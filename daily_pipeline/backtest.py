@@ -34,44 +34,45 @@ def _load_scores(date_str):
 
 
 def _load_next_day_prices(date_str):
-    """获取次日价格 — 优先 fund_flow.json(全量), 否则 intraday CSV。
+    """获取次日价格 — intraday CSV(含北交所) + fund_flow.json 互补。
     返回 {code: {open, close, chg}}
     """
-    # 1. fund_flow.json — 全市场覆盖(~5100只)
+    price_map = {}
+
+    # 1. intraday CSV — 覆盖全交易所(含92xxxx北交所)
+    intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
+    if os.path.isdir(intraday_dir):
+        files = sorted(
+            [f for f in os.listdir(intraday_dir) if f.startswith("fund_flow_") and f.endswith(".csv")]
+        )
+        if files:
+            path = os.path.join(intraday_dir, files[0])
+            with open(path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    code = r.get("代码", "")
+                    open_p = _tof(r.get("开盘"))
+                    close_p = _tof(r.get("最新价"))
+                    chg = _tof(r.get("涨跌幅"))
+                    if code and open_p > 0:
+                        price_map[code] = {"open": open_p, "close": close_p, "chg": chg}
+
+    # 2. fund_flow.json — 补充缺失(含更多主板股票)
     import json
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
     ff_path = os.path.join(data_dir, date_str, "fund_flow.json")
     if os.path.exists(ff_path):
-        price_map = {}
         with open(ff_path, encoding="utf-8") as f:
             for r in json.load(f):
                 code = r.get("f12", "")
+                if code in price_map:
+                    continue  # 已有 intraday 数据，不覆盖
                 open_p = _tof(r.get("f17"))
                 close_p = _tof(r.get("f2"))
                 chg = _tof(r.get("f3"))
                 if code and open_p > 0:
                     price_map[code] = {"open": open_p, "close": close_p, "chg": chg}
-        if price_map:
-            return price_map
 
-    # 2. 回退到 intraday CSV
-    intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
-    if not os.path.isdir(intraday_dir): return {}
-    files = sorted(
-        [f for f in os.listdir(intraday_dir) if f.startswith("fund_flow_") and f.endswith(".csv")]
-    )
-    if not files: return {}
-    path = os.path.join(intraday_dir, files[0])
-    open_map = {}
-    with open(path, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
-            code = r.get("代码", "")
-            open_price = _tof(r.get("开盘"))
-            close_price = _tof(r.get("最新价"))
-            chg = _tof(r.get("涨跌幅"))
-            if code and open_price > 0:
-                open_map[code] = {"open": open_price, "close": close_price, "chg": chg}
-    return open_map
+    return price_map
 
 
 def _find_next_trading_day(date_str):
