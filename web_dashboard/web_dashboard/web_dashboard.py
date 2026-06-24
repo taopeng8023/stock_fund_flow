@@ -59,6 +59,23 @@ class DashboardState(rx.State):
     cron_output: str = ""
     cron_running: bool = False
 
+    # ── Portfolio ──
+    positions: list[dict] = []
+    positions_loaded: bool = False
+    total_pnl: str = ""
+
+    # ── Risk ──
+    bs_level: int = -1
+    bs_level_name: str = ""
+    bs_triggered: list[dict] = []
+    bs_summary: dict = {}
+    bs_actions: list[str] = []
+    bs_loaded: bool = False
+
+    # ── Trades ──
+    trades: list[dict] = []
+    trades_loaded: bool = False
+
     def set_date(self, date_str: str):
         self.selected_date = date_str
         self.diag_loaded = False
@@ -196,10 +213,89 @@ class DashboardState(rx.State):
         self.cron_running = False
         self.load_picks()
 
+    def load_portfolio(self):
+        """加载持仓数据"""
+        try:
+            from portfolio.manager import _load, _fetch_realtime_prices
+            data = _load()
+            active = [p for p in data.get("positions", []) if p.get("status") == "active"]
+            codes = [p["code"] for p in active]
+            prices = _fetch_realtime_prices(codes)
+            positions = []
+            for p in active:
+                entry = float(p.get("entry_price", 1))
+                cp = prices.get(p["code"]) or p.get("current_price") or entry
+                pnl = round((cp - entry) / entry * 100, 2) if cp else 0
+                positions.append({
+                    "code": p["code"],
+                    "name": p.get("name", ""),
+                    "entry_price": f"{entry:.2f}",
+                    "current_price": f"{cp:.2f}" if cp else "—",
+                    "pnl_pct": f"{pnl:+.1f}%",
+                    "pnl_val": pnl,
+                    "hold_days": _hold_days(p.get("entry_date", "")),
+                    "sl_tp": f"{p.get('stop_loss_pct', -5):+.0f}%/{p.get('take_profit_pct', 15):+.0f}%",
+                })
+            self.positions = positions
+            total = sum(p["pnl_val"] for p in positions)
+            self.total_pnl = f"{total:+.1f}%"
+            self.positions_loaded = True
+        except Exception as e:
+            self.positions = []
+            self.total_pnl = f"加载失败: {e}"
+            self.positions_loaded = True
+
+    def load_trades(self):
+        """加载交易历史"""
+        try:
+            from portfolio.manager import _load
+            data = _load()
+            trades = []
+            for t in data.get("trades", [])[-50:]:
+                pnl = t.get("pnl_pct")
+                trades.append({
+                    "date": t.get("date", ""),
+                    "code": t.get("code", ""),
+                    "name": t.get("name", ""),
+                    "action": t.get("action", ""),
+                    "price": f"{t.get('price', 0):.2f}",
+                    "pnl_pct": f"{pnl:+.1f}%" if pnl is not None else "—",
+                    "reason": (t.get("reason", "") or "")[:30],
+                })
+            self.trades = trades
+            self.trades_loaded = True
+        except Exception:
+            self.trades = []
+            self.trades_loaded = True
+
+    def load_risk(self):
+        """加载黑天鹅风险"""
+        try:
+            from portfolio.black_swan import BlackSwanDetector
+            bs = BlackSwanDetector(self.selected_date).check()
+            self.bs_level = bs["level"]
+            self.bs_level_name = bs["level_name"]
+            self.bs_triggered = bs.get("triggered_rules", [])
+            self.bs_summary = bs.get("summary", {})
+            self.bs_actions = bs.get("actions", [])
+            self.bs_loaded = True
+        except Exception as e:
+            self.bs_level_name = f"错误: {e}"
+            self.bs_loaded = True
+
 
 # ============================================================
 # Helpers
 # ============================================================
+
+def _hold_days(entry_date: str) -> str:
+    try:
+        from datetime import datetime
+        days = (datetime.now() - datetime.strptime(entry_date, "%Y%m%d")).days
+        return f"{days}天"
+    except Exception:
+        return "—"
+
 
 def _fmt_yi(v):
     if v is None: return "0"
@@ -431,6 +527,163 @@ def cron_tab():
     )
 
 
+# ═══════════════════ Tab 5: 持仓管理 ═══════════════════
+
+def portfolio_tab():
+    emoji_map = {"URGENT": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
+    return rx.vstack(
+        rx.hstack(
+            rx.button("🔄 刷新持仓", on_click=DashboardState.load_portfolio, size="2"),
+            rx.button("🚀 检查卖出信号", on_click=DashboardState.load_risk, size="2", color_scheme="orange"),
+        ),
+        rx.cond(
+            ~DashboardState.positions_loaded,
+            rx.text("点击刷新加载持仓", color="gray"),
+            rx.cond(
+                DashboardState.positions.length() > 0,
+                rx.vstack(
+                    rx.hstack(
+                        rx.heading(f"💼 当前持仓 ({DashboardState.positions.length()} 只)", size="5"),
+                        rx.spacer(),
+                        rx.text(DashboardState.total_pnl, size="4", weight="bold"),
+                    ),
+                    rx.table.root(
+                        rx.table.header(rx.table.row(
+                            rx.table.column_header_cell("代码"),
+                            rx.table.column_header_cell("名称"),
+                            rx.table.column_header_cell("入场价"),
+                            rx.table.column_header_cell("现价"),
+                            rx.table.column_header_cell("盈亏%"),
+                            rx.table.column_header_cell("持有天"),
+                            rx.table.column_header_cell("止损/止盈"),
+                        )),
+                        rx.table.body(rx.foreach(DashboardState.positions, _pos_row)),
+                        width="100%",
+                    ),
+                    spacing="3", width="100%",
+                ),
+                rx.text("📭 暂无持仓，使用 portfolio.manager 添加", color="gray"),
+            ),
+        ),
+        width="100%", padding="1em",
+    )
+
+def _pos_row(p: dict):
+    return rx.table.row(
+        rx.table.cell(p["code"]),
+        rx.table.cell(p["name"]),
+        rx.table.cell(p["entry_price"]),
+        rx.table.cell(p["current_price"]),
+        rx.table.cell(p["pnl_pct"]),
+        rx.table.cell(p["hold_days"]),
+        rx.table.cell(p["sl_tp"]),
+    )
+
+
+# ═══════════════════ Tab 6: 风险监控 ═══════════════════
+
+def risk_tab():
+    level_colors = {0: "green", 1: "yellow", 2: "orange", 3: "red"}
+    level_emoji = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
+    return rx.vstack(
+        rx.button("🔄 加载风险数据", on_click=DashboardState.load_risk, size="2"),
+        rx.cond(
+            ~DashboardState.bs_loaded,
+            rx.text("点击加载黑天鹅风险数据", color="gray"),
+            rx.vstack(
+                rx.hstack(
+                    rx.heading(f"{level_emoji.get(DashboardState.bs_level, '⚪')} "
+                               f"Level {DashboardState.bs_level} — {DashboardState.bs_level_name}",
+                               size="6"),
+                    rx.spacer(),
+                    rx.card(
+                        rx.vstack(
+                            rx.text("风险统计", size="3", weight="bold"),
+                            rx.text(f"CRITICAL: {DashboardState.bs_summary.get('critical', 0)}", color="red"),
+                            rx.text(f"SEVERE: {DashboardState.bs_summary.get('severe', 0)}", color="orange"),
+                            rx.text(f"HIGH: {DashboardState.bs_summary.get('high', 0)}", color="yellow"),
+                            spacing="1",
+                        ),
+                        padding="1em",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.bs_triggered.length() > 0,
+                    rx.vstack(
+                        rx.heading("⚠️ 触发规则", size="4", color="red"),
+                        rx.foreach(DashboardState.bs_triggered, _trigger_row),
+                        width="100%",
+                    ),
+                    rx.text("✅ 无规则触发，市场正常", color="green", size="3"),
+                ),
+                rx.cond(
+                    DashboardState.bs_actions.length() > 0,
+                    rx.vstack(
+                        rx.heading("📋 建议动作", size="4"),
+                        rx.foreach(DashboardState.bs_actions,
+                                   lambda a: rx.text(f"→ {a}", size="2")),
+                        width="100%",
+                    ),
+                ),
+                spacing="3", width="100%",
+            ),
+        ),
+        width="100%", padding="1em",
+    )
+
+def _trigger_row(r: dict):
+    severity_colors = {"CRITICAL": "red", "SEVERE": "orange", "HIGH": "yellow"}
+    return rx.card(
+        rx.hstack(
+            rx.badge(r.get("rule_id", ""), color_scheme=severity_colors.get(r.get("severity", ""), "gray")),
+            rx.text(r.get("name", ""), weight="bold"),
+            rx.text(r.get("detail", ""), size="2", color="gray"),
+        ),
+        padding="0.5em", width="100%",
+    )
+
+
+# ═══════════════════ Tab 7: 交易历史 ═══════════════════
+
+def trades_tab():
+    return rx.vstack(
+        rx.button("🔄 刷新", on_click=DashboardState.load_trades, size="2"),
+        rx.cond(
+            ~DashboardState.trades_loaded,
+            rx.text("点击刷新加载交易记录", color="gray"),
+            rx.cond(
+                DashboardState.trades.length() > 0,
+                rx.table.root(
+                    rx.table.header(rx.table.row(
+                        rx.table.column_header_cell("日期"),
+                        rx.table.column_header_cell("代码"),
+                        rx.table.column_header_cell("名称"),
+                        rx.table.column_header_cell("操作"),
+                        rx.table.column_header_cell("价格"),
+                        rx.table.column_header_cell("盈亏%"),
+                        rx.table.column_header_cell("原因"),
+                    )),
+                    rx.table.body(rx.foreach(DashboardState.trades, _trade_row)),
+                    width="100%",
+                ),
+                rx.text("暂无交易记录", color="gray"),
+            ),
+        ),
+        width="100%", padding="1em",
+    )
+
+def _trade_row(t: dict):
+    return rx.table.row(
+        rx.table.cell(t["date"]),
+        rx.table.cell(t["code"]),
+        rx.table.cell(t["name"]),
+        rx.table.cell(t["action"]),
+        rx.table.cell(t["price"]),
+        rx.table.cell(t["pnl_pct"]),
+        rx.table.cell(t["reason"]),
+    )
+
+
 # ═══════════════════ Main App ═══════════════════
 
 def index():
@@ -439,13 +692,19 @@ def index():
         rx.tabs.root(
             rx.tabs.list(
                 rx.tabs.trigger("📈 盘面诊断", value="diag"),
-                rx.tabs.trigger("📁 数据采集", value="collector"),
+                rx.tabs.trigger("💼 持仓管理", value="portfolio"),
+                rx.tabs.trigger("⚠️ 风险监控", value="risk"),
                 rx.tabs.trigger("🔥 选股结果", value="picks"),
+                rx.tabs.trigger("📊 交易历史", value="trades"),
+                rx.tabs.trigger("📁 数据采集", value="collector"),
                 rx.tabs.trigger("⏰ 定时任务", value="cron"),
             ),
             rx.tabs.content(diagnosis_tab(), value="diag"),
-            rx.tabs.content(collector_tab(), value="collector"),
+            rx.tabs.content(portfolio_tab(), value="portfolio"),
+            rx.tabs.content(risk_tab(), value="risk"),
             rx.tabs.content(picks_tab(), value="picks"),
+            rx.tabs.content(trades_tab(), value="trades"),
+            rx.tabs.content(collector_tab(), value="collector"),
             rx.tabs.content(cron_tab(), value="cron"),
             default_value="diag", width="100%",
         ),
