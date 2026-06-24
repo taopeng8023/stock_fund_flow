@@ -500,6 +500,44 @@ def _load_prev_scores(date_str):
     return {}
 
 
+def _print_contribution_summary(results, weights):
+    """打印因子贡献度分析 — Top100 vs 全市场。"""
+    if not results:
+        return
+    top100 = results[:100]
+    all_r = results
+
+    print(f"\n{'='*65}")
+    print(f"  因子贡献度分析 (weight × score)")
+    print(f"{'='*65}")
+    print(f"  {'因子':<20s} {'权重':<6s} {'Top100均值':<10s} {'全市场均值':<10s} {'差值':<8s} {'评级'}")
+    print(f"  {'─'*18} {'─'*4} {'─'*8} {'─'*8} {'─'*6} {'─'*4}")
+
+    factor_ranks = []
+    for k in weights:
+        top_contribs = [r.get("_contributions", {}).get(k, 0) for r in top100]
+        all_contribs = [r.get("_contributions", {}).get(k, 0) for r in all_r]
+        top_avg = sum(top_contribs) / len(top_contribs)
+        all_avg = sum(all_contribs) / len(all_contribs)
+        diff = top_avg - all_avg
+        # 评级: 差值>0.005=A, >0.002=B, >0=C, <0=D
+        if diff > 0.005: grade = "A"
+        elif diff > 0.002: grade = "B"
+        elif diff > 0: grade = "C"
+        else: grade = "D"
+        factor_ranks.append((k, top_avg, all_avg, diff, grade))
+
+    factor_ranks.sort(key=lambda x: -x[3])  # 按差值降序
+    for k, top_avg, all_avg, diff, grade in factor_ranks:
+        bar = "█" * max(0, int(diff * 500))
+        print(f"  {k:<20s} {weights.get(k,0):.2f}{'':>2s} "
+              f"{top_avg:.4f}{'':>3s}   {all_avg:.4f}{'':>3s}   "
+              f"{diff:+.4f}{'':>2s} {grade} {bar}")
+
+    print(f"\n  A=区分度优秀 B=良好 C=一般 D=无效/反向")
+    print(f"  建议: D级因子降权或替换, C级因子观察, A/B级因子保留")
+
+
 def _detect_regime(date_str):
     """检测市场体制 → 选择对应权重。基于全市场涨跌比和主力资金流向。"""
     try:
@@ -1100,6 +1138,15 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         # 🆕 得分动量平滑: 日间跳变 >0.1 时EMA缓冲
         total = _score_momentum_smooth(code, total, prev_scores)
 
+        # ── 因子贡献度 (weight × sub_score, 用于权重优化) ──
+        contributions = {
+            k: round(sub.get(k, 0.5) * weights.get(k, 0), 4)
+            for k in weights
+        }
+        # 加入P因子贡献
+        contributions["p_factor_total"] = round(
+            ratio_score + margin_quality + gap_signal + short_signal + penalty, 4)
+
         # ── 启动专属信号 ──
         # E1: 低位启动 (位置<0.25 + 启动因子>0.5)
         if p_score < 0.55 and sub.get("start_signal", 0.5) > 0.5:
@@ -1160,7 +1207,11 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
             "启动信号": ",".join(early_sigs),
             "启动信号说明": "; ".join(EARLY_SIGNALS[s] for s in early_sigs if s in EARLY_SIGNALS),
+            "_contributions": contributions,
         })
+
+    # ── 因子贡献汇总分析 ──
+    _print_contribution_summary(results, weights)
 
     # ── 排序 + 保存 CSV ──
     results.sort(key=lambda x: -x["综合得分"])
