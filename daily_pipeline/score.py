@@ -1109,7 +1109,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if f18_val > 0 and f17_val > 0:
             gap = (f17_val - f18_val) / f18_val * 100  # 开盘缺口%
             if gap > 2 and f3 > 2:
-                gap_signal = 0.04; comp_sigs.append("P34_gap_strong")       # 回测+0.76%最强信号
+                gap_signal = 0.06; comp_sigs.append("P34_gap_strong")       # 胜率+19%最强信号
             elif gap < -2 and f3 > 1:
                 gap_signal = 0.01; comp_sigs.append("P34_gap_reverse")      # 回测-0.72%降权
             elif gap > 3 and f3 < 0:
@@ -1135,7 +1135,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         # ── 风险惩罚（综合+启动均适用）──
         mcap_yi = f20 / 1e8
         penalty = 0.0
-        if f8_val > 13 and cap < 0.75: penalty -= 0.06; comp_sigs.append("P29_high_turnover")
+        if f8_val > 13 and cap < 0.75: penalty -= 0.08; comp_sigs.append("P29_high_turnover")
         if f8_val < 1.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
         if f10_val < 0.8: penalty -= 0.03; comp_sigs.append("P_low_vol_ratio")
         if mcap_yi < 30: penalty -= 0.04; comp_sigs.append("P_small_cap")
@@ -1180,7 +1180,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
 
         # ── P36: 全维度过热保护 (回测: P32+P36叠加→-1.45%, 互斥处理) ──
         if cap > 0.85 and sub.get("trend", 0.5) > 0.7 and sub.get("multiday", 0.5) > 0.85:
-            total -= 0.06; comp_sigs.append("P36_overheat")
+            total -= 0.10; comp_sigs.append("P36_overheat")
             early -= 0.06
             # P32_accel与P36互斥: 过热股不享受占比加速加分
             if ratio_score > 0:
@@ -1190,11 +1190,11 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if code in prev_scores:
             score_change = total - prev_scores[code]
             if score_change > 0.05:
-                total += 0.03; comp_sigs.append("P37_momentum_up")
-                early += 0.03
+                total += 0.05; comp_sigs.append("P37_momentum_up")
+                early += 0.05
             elif score_change < -0.05:
-                total -= 0.03; comp_sigs.append("P37_momentum_down")
-                early -= 0.03
+                total -= 0.05; comp_sigs.append("P37_momentum_down")
+                early -= 0.05
 
         results.append({
             "代码": code, "名称": name, "最新价": f2, "行业": industry,
