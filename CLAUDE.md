@@ -4,19 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A股量化选股系统 — A-share quantitative stock selection system that fetches market data from 东方财富 (East Money), runs multi-factor scoring, market diagnosis, and performance tracking. The system exposes a Reflex web dashboard with bash-scheduled daily automation.
+A股量化选股系统 — 23因子盘中评分 + 三级买入引擎 + 黑天鹅风险监控 + 企业微信推送。
 
-**增强计划**: 详见 [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — 8 阶段增量构建买入推荐、卖出信号、黑天鹅监控、飞书通知、调度守护、Dashboard 增强。
+核心流水线: 数据采集 → 盘中评分(scores.csv) → 买入引擎 → 回测验证。
+完整评分逻辑: [SCORING_LOGIC.md](./SCORING_LOGIC.md)
+
+**已实施模块**: 黑天鹅监控 ✅ | 企业微信通知 ✅ | 持仓管理 ✅ | 买入引擎 ✅ | 7Tab Dashboard ✅
 
 ## Common Commands
 
 ```bash
-# Activate virtualenv
 source .venv/bin/activate
 
-# Full data fetch (10 modules) for today or a specific date
-python -m data_collector.main
-python -m data_collector.main --date=20260520
+# 数据采集
+python -m data_collector.main --date=20260624
+
+# 盘中全市场评分 (23因子)
+python -c "from daily_pipeline.score import score_all_stocks; score_all_stocks('20260624')"
+
+# 买入推荐 (三级引擎)
+python -m portfolio.buy_engine --date=20260624 --top=10
+
+# 黑天鹅检测
+python -m portfolio.black_swan --date=20260624
+
+# 持仓管理 + 卖出信号
+python -m portfolio.manager check --date=20260624
+python -m portfolio.manager list
+
+# 全量回测
+python -m daily_pipeline.main --mode=backtest --date=20260623 --eval=20260624
+
+# Dashboard
+cd web_dashboard && reflex run
 
 # Market diagnosis (regime detection, breadth, sentiment, risk, position advice)
 python market_diagnosis.py
@@ -79,16 +99,17 @@ daily_pipeline/run.sh
 |-------|----------|------|
 | Data fetching | `data_collector/fetchers/` | East Money API wrappers, save JSON+CSV to `data/<date>/` |
 | Data orchestration | `data_collector/` | Pipeline engine, collector registry (10 collectors), retry logic |
-| Intraday snapshots | `daily_pipeline/` | Intraday collect → score → analyze → backtest (独立 pipeline) |
-| Stock screening | `sector_screener/` | Multi-factor scoring, sector-first filtering, 22 dimensions + P-factor adjustments |
-| Analysis | `market_diagnosis.py`, `performance.py` | Read raw JSON, compute signals, produce structured results |
-| Web UI | `web_dashboard/` | Reflex app (port 8000), 4 tabs: 盘面诊断/数据采集/选股结果/定时任务 |
-| Entry points | `data_collector/main.py`, `sector_screener/main.py`, `daily_pipeline/main.py` | CLI for data fetch, stock picking, intraday scoring |
+| Intraday scoring | `daily_pipeline/score.py` | **主力评分** — 23因子+体制感知+P因子修正+三级买入引擎 |
+| Stock screening | `sector_screener/` | 26因子板块增强评分 (独立体系，侧重板块共振) |
+| Risk management | `portfolio/` | 黑天鹅13条规则、持仓管理、卖出信号、买入引擎 |
+| Notification | `notify/` | 企业微信 Webhook (text/markdown/news) |
+| Web UI | `web_dashboard/` | Reflex app (port 8000), 7 tabs: 诊断/持仓/风险/选股/交易/采集/调度 |
+| Backtest | `daily_pipeline/backtest.py` | 全量回测 + 因子IC/分层分析 + 因子贡献度追踪 |
 
 ### Key Design Decisions
 
 - **Data format**: Raw data stored as date-partitioned JSON+CSV under `data/YYYYMMDD/`. Analysis modules read from these files, not from the database. No ORM currently in use (Peewee planned in Phase 1 of enhancement plan).
-- **22-factor model** (`sector_screener/scorers/`): Sector-first filtering + weighted scoring with regime-dependent weight adjustments (bull/bear/range). Three weight maps in `sector_screener/config.py`: WEIGHTS_BASE, WEIGHTS_BULL, WEIGHTS_BEAR. Post-scoring P-factor adjustment layer (P0-P33) in `scorers/p_factors.py` modifies total by up to ±0.15.
+- **23-factor model (回测驱动权重校准)** (`sector_screener/scorers/`): Sector-first filtering + weighted scoring with regime-dependent weight adjustments (bull/bear/range). Three weight maps in `sector_screener/config.py`: WEIGHTS_BASE, WEIGHTS_BULL, WEIGHTS_BEAR. Post-scoring P-factor adjustment layer (P0-P33) in `scorers/p_factors.py` modifies total by up to ±0.15.
 - **16-factor intraday model** (`daily_pipeline/score.py`): Full-market scoring with intraday trajectory factors (flow_stability, intraday_accel, rank_trajectory, vwap_position) not available in sector_screener.
 - **Beijing time throughout**: `BJS_TZ = timezone(timedelta(hours=8))` used consistently. Dates formatted as `YYYYMMDD`.
 - **market_sentiment.py**: Standalone module (not in collector registry). Computes 0-100 composite sentiment from 5 components: breadth, fund flow, volume, margin, index. Must be called separately; depends on existing fund_flow.json data.
@@ -188,10 +209,20 @@ rich==14.3.4
 
 No `requirements.txt` present. Key absent packages (to be installed per enhancement plan): `peewee`, `apscheduler`, `numpy`.
 
-### Things That Don't Exist Yet (but are referenced)
+### Current Module Inventory
 
-- `daily_run.sh` — referenced by web_dashboard Cron tab, DOES NOT EXIST. Will be created in Phase 7.
-- Peewee ORM models — referenced in old CLAUDE.md, never implemented. Will be created in Phase 1.
-- Any sell/exit strategy code — the system is purely buy-side. Will be created in Phase 4.
-- Any notification code (飞书/email/etc.) — completely absent. Will be created in Phase 6.
-- APScheduler daemon — all scheduling is bash-based. Will be created in Phase 7.
+| Module | File | Status |
+|--------|------|--------|
+| 黑天鹅监控 | `portfolio/black_swan.py` | ✅ 13条规则, Level 0-3响应 |
+| 企业微信通知 | `notify/wecom_sender.py` | ✅ text/markdown/news |
+| 持仓管理 | `portfolio/manager.py` | ✅ 6条卖出规则+BS联动 |
+| 买入引擎 | `portfolio/buy_engine.py` | ✅ 三级规则(P34_gap封王) |
+| 盘中评分 | `daily_pipeline/score.py` | ✅ 23因子+体制感知 |
+| 全量回测 | `daily_pipeline/backtest.py` | ✅ IC+分层+贡献度 |
+| Dashboard | `web_dashboard/` | ✅ 7 Tab |
+
+### Still TODO
+
+- `daily_run.sh` — 调度入口脚本
+- APScheduler daemon — 自动化定时任务
+- Peewee ORM — 数据库替代 JSON 文件
