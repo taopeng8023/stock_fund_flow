@@ -31,12 +31,13 @@ WEIGHTS_BASE = {
     "tail_return": 0.03,        # 🆕 尾盘30min收益
     "tail_volume": 0.02,         # 🆕 尾盘量能集中度
     "crowding": 0.02,            # 🆕 全市场拥挤度惩罚
+    "ext_sentiment": 0.01,       # 🆕 美股隔夜情绪
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE, "trend": 0.12, "start_signal": 0.13,
-                "price_momentum": 0.04, "tail_return": 0.04, "flow_accel": 0.02}
+                "price_momentum": 0.04, "tail_return": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.02}
 WEIGHTS_BEAR = {**WEIGHTS_BASE, "position": 0.08, "limitup_proximity": 0.04,
-                "sector_diversity": 0.03, "crowding": 0.04, "flow_accel": 0.01}
+                "sector_diversity": 0.03, "crowding": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.01}
 
 # ── 短线交易权重 (日内+情绪+缺口 提权) ──
 SHORT_WEIGHTS = {
@@ -50,6 +51,7 @@ SHORT_WEIGHTS = {
     "price_momentum": 0.02, "limitup_proximity": 0.04,
     "sector_diversity": 0.01, "sector_price": 0.02,
     "tail_return": 0.06, "tail_volume": 0.04, "crowding": 0.02,
+    "ext_sentiment": 0.01,
 }
 
 # ── 中线趋势权重 (趋势+多日+位置+技术 提权) ──
@@ -64,6 +66,7 @@ MID_WEIGHTS = {
     "price_momentum": 0.06, "limitup_proximity": 0.01,
     "sector_diversity": 0.02, "sector_price": 0.04,
     "tail_return": 0.01, "tail_volume": 0.01, "crowding": 0.02,
+    "ext_sentiment": 0.02,
 }
 
 # ── 启动检测权重 ──
@@ -78,6 +81,7 @@ EARLY_WEIGHTS = {
     "price_momentum": 0.02, "limitup_proximity": 0.03,
     "sector_diversity": 0.02, "sector_price": 0.02,
     "tail_return": 0.02, "tail_volume": 0.01, "crowding": 0.01,
+    "ext_sentiment": 0.01,
 }
 
 # ── scores.csv 输出列 ──
@@ -630,6 +634,51 @@ def _score_crowding(stocks):
     return round(max(0.0, min(1.0, score)), 3)
 
 
+def _fetch_external_sentiment():
+    """获取美股隔夜涨跌 → A股情绪调整因子。
+
+    腾讯API免费稳定。返回 (sp500_chg, nasdaq_chg, sentiment_score)
+    sentiment_score: 0.3-0.7, 0.5=中性
+    """
+    try:
+        url = ("http://web.ifzq.gtimg.cn/appstock/app/minute/query"
+               "?code=usINDU,usIXIC")
+        resp = requests.get(url, timeout=5,
+                           headers={"User-Agent": "Mozilla/5.0"})
+        data = resp.json()
+        sp500_chg = 0.0; nasdaq_chg = 0.0
+
+        sp = data.get("data", {}).get("usINDU", {}).get("qt", {}).get("usINDU", [])
+        if sp and len(sp) > 4:
+            sp500_chg = float(sp[4]) if sp[4] else 0  # 涨跌幅%
+
+        nq = data.get("data", {}).get("usIXIC", {}).get("qt", {}).get("usIXIC", [])
+        if nq and len(nq) > 4:
+            nasdaq_chg = float(nq[4]) if nq[4] else 0
+
+        # 合成情绪分: 标普×0.6 + 纳指×0.4 → 映射到0.3-0.7
+        weighted = sp500_chg * 0.6 + nasdaq_chg * 0.4
+        sentiment = 0.5 + max(-0.2, min(0.2, weighted * 0.05))
+        return round(sp500_chg, 2), round(nasdaq_chg, 2), round(sentiment, 3)
+    except Exception:
+        return 0.0, 0.0, 0.5
+
+
+def _score_momentum_smooth(code, current_score, prev_scores):
+    """得分动量平滑: 日间跳变 >0.1 时用EMA缓冲。
+
+    避免评分因单日噪声剧烈波动, 提升排名的稳定性。
+    """
+    if code not in prev_scores:
+        return current_score
+    prev = prev_scores[code]
+    jump = current_score - prev
+    if abs(jump) > 0.10:
+        # 大跳变 → EMA平滑 (30%新值 + 70%旧值)
+        return prev + jump * 0.3
+    return current_score
+
+
 def _build_sector_returns(stocks, price_hist):
     """从个股价格历史聚合行业中位回报。{industry: ret_5d}"""
     ind_rets = defaultdict(list)
@@ -719,7 +768,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     # ── 构建价格历史 ──
     # 从已有 intraday CSV 中提取每日收盘价（跨日累积）
     price_hist = _build_price_history(date_str, stocks)
-    # ── 体制感知权重 + 黑天鹅检测 ──
+    # ── 体制感知 + 黑天鹅 + 外部情绪 ──
     weights, regime = _detect_regime(date_str)
     bs_level = 0
     try:
@@ -734,7 +783,10 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             print(f"  ⚡ 黑天鹅 Level 1 — 偏防御")
     except Exception:
         pass
-    print(f"  市场体制: {regime}")
+
+    sp500_chg, nasdaq_chg, ext_sentiment = _fetch_external_sentiment()
+    print(f"  市场体制: {regime}  美股: 标普{sp500_chg:+.1f}% 纳指{nasdaq_chg:+.1f}% "
+          f"(情绪调整{ext_sentiment:+.2f})")
 
     # ── 板块价格回报 + 拥挤度（预计算）──
     sector_rets = _build_sector_returns(stocks, price_hist)
@@ -959,8 +1011,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["tail_return"] = tail_ret
         sub["tail_volume"] = tail_vol
 
-        # 🆕 全市场拥挤度 (所有股票统一)
+        # 🆕 全市场拥挤度 + 美股情绪 (所有股票统一)
         sub["crowding"] = crowding_score
+        sub["ext_sentiment"] = ext_sentiment
 
         # ── 综合得分（体制感知权重）──
         total = sum(sub.get(k, 0.5) * weights.get(k, 0) for k in weights)
@@ -1041,6 +1094,11 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
 
         total = max(0.0, min(1.0, total))
         early = max(0.0, min(1.0, early))
+        short = max(0.0, min(1.0, short))
+        mid   = max(0.0, min(1.0, mid))
+
+        # 🆕 得分动量平滑: 日间跳变 >0.1 时EMA缓冲
+        total = _score_momentum_smooth(code, total, prev_scores)
 
         # ── 启动专属信号 ──
         # E1: 低位启动 (位置<0.25 + 启动因子>0.5)
