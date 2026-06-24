@@ -1093,11 +1093,11 @@ def score_sectors(date_str=None, snapshot_cutoff=None):
 
     # 跨日轮动信号
     if prev_sector_full:
-        new_top10 = [r for r in results[:20] if r["排名跨日变化"] > 5]
-        fading = [r for r in results if r["排名跨日变化"] < -10]
+        new_top10 = [r for r in results[:20] if int(r.get("排名跨日变化") or 0) > 5]
+        fading = [r for r in results if int(r.get("排名跨日变化") or 0) < -10]
         # 资金骤降预警: 排名Top10但资金跨日减少>30亿
         outflow_warn = [r for r in results[:15]
-                        if r.get("流入跨日变化(亿)", 0) < -30]
+                        if float(r.get("流入跨日变化(亿)", 0) or 0) < -30]
         if new_top10:
             print(f"\n  🔥 新进Top20: {', '.join(r['名称'] for r in new_top10[:5])}")
         if fading:
