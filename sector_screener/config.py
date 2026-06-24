@@ -29,7 +29,7 @@ WEIGHTS_BASE = {
     "capital":       0.19,   # 真金白银 > 板块新鲜度
     "trend":         0.10,
     "sector":        0.05,   # 回溯优化: 0.07→0.05 板块过热信号反向
-    "position":      0.07,
+    "position":      0.06,
     "analyst":       0.05,   # 回溯优化: 有分析师覆盖的票次日更稳
     "multiday":      0.06,   # 回溯优化: 0.04→0.06 多日累计流2.11x正向最强
     "technical":     0.05,  # 回溯优化: 0.04→0.05 MA排列最佳单因子
@@ -37,7 +37,7 @@ WEIGHTS_BASE = {
     "north_flow":    0.02,
     "intra_sector":  0.04,  # 行业内排名（合并原 ratio_rank 0.01）
     "margin_net":    0.03,
-    "flow_accel":    0.02,  # 回溯优化: 0.03→0.02
+    "flow_accel":    0.01,  # 回溯优化: 0.03→0.01
     "block_trade":   0.02,   # 🆕 大宗交易溢价信号
     "org_research":  0.02,   # 🆕 机构调研热度
     "earnings":      0.02,   # 🆕 业绩预告类型
@@ -46,6 +46,8 @@ WEIGHTS_BASE = {
     "margin_long":   0.02,   # 🆕 融资力度(已有字段f174/f175/f169)
     "volume_quality":0.02,   # 🆕 成交额质量(已有字段f5/f6)
     "intraday_trend":0.02,  # 🆕 日内轨迹动量(排名+资金加速)
+    "price_momentum":0.03,  # 🆕 多日价格回报(5/10/20日)
+    "sector_price": 0.03,   # 🆕 行业板块价格共振
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
@@ -53,6 +55,7 @@ WEIGHTS_BULL = {**WEIGHTS_BASE,
     "start_signal": 0.15, "capital": 0.17, "intra_sector": 0.05, "margin_net": 0.04,
     "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
     "margin_long": 0.03, "volume_quality": 0.02, "intraday_trend": 0.03,
+    "price_momentum": 0.04, "sector_price": 0.04,
     "ratio_rank": 0.00,
 }
 
@@ -61,6 +64,7 @@ WEIGHTS_BEAR = {**WEIGHTS_BASE,
     "trend": 0.09, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
     "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
     "margin_short": 0.04, "volume_quality": 0.01, "intraday_trend": 0.015,
+    "price_momentum": 0.02, "sector_price": 0.02,
     "ratio_rank": 0.00,
 }
 

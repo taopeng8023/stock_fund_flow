@@ -8,7 +8,7 @@ from sector_screener.scorers import (
     score_intra_sector, score_margin_net, score_flow_accel,
     score_block_trade, score_org_research, score_earnings, score_lockup,
     score_margin_short, score_margin_long, score_volume_quality,
-    score_intraday_trend,
+    score_intraday_trend, score_price_momentum, score_sector_price,
     apply_p_factors, get_tracker,
 )
 
@@ -21,6 +21,9 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
                   earnings_forecast=None, lockup_expiry=None,
                   sector_intraday=None, sector_momentum=None, rotation_signals=None):
     """构建评分上下文 — 预计算所有候选池的 percentile 数组"""
+    # 因子 #24: 从个股价格聚合板块价格回报
+    from sector_screener.scorers.sector_price import _build_sector_price_returns
+    sector_price_returns = _build_sector_price_returns(candidates, price_history)
     ctx = {
         "sector_freshness": sector_freshness,
         "sector_persistence": sector_persistence,
@@ -55,8 +58,29 @@ def build_context(candidates, price_history, sector_freshness, sector_persistenc
         "sector_intraday": sector_intraday or {},
         "sector_momentum": sector_momentum or {},
         "_rotation_signals": rotation_signals or {},
+        # 因子 #23: 多日价格回报
+        "_ret5d_vals": _build_price_ret_vals(candidates, price_history, 4),
+        "_ret10d_vals": _build_price_ret_vals(candidates, price_history, 9),
+        "_ret20d_vals": _build_price_ret_vals(candidates, price_history, 19),
+        # 因子 #24: 行业板块价格
+        "sector_price_returns": sector_price_returns or {},
+        "_sector_ret5d_vals": [s.get("ret_5d", 0) for s in (sector_price_returns or {}).values()],
+        "_sector_ret10d_vals": [s.get("ret_10d", 0) for s in (sector_price_returns or {}).values()],
     }
     return ctx
+
+
+def _build_price_ret_vals(candidates, price_history, offset):
+    """计算候选池中每只股票的 N 日价格回报，返回列表。"""
+    vals = []
+    for s in candidates:
+        code = s.get("f12", "")
+        closes = price_history.get(code, [])
+        if len(closes) > offset and closes[offset] and closes[offset] > 0:
+            vals.append((closes[0] - closes[offset]) / closes[offset])
+        else:
+            vals.append(0.0)
+    return vals
 
 
 def _build_cum_vals(candidates, stock_multiday, key):
@@ -109,8 +133,10 @@ def score_candidates(candidates, context):
         s_mlong    = score_margin_long(s, context)
         s_vq       = score_volume_quality(s, context)
         s_intraday = score_intraday_trend(s, context)
+        s_pm       = score_price_momentum(s, context)
+        s_sp       = score_sector_price(s, context)
 
-        # 加权求和 (22维)
+        # 加权求和 (24维)
         total = (
             s_start    * weights.get("start_signal", 0)
             + s_capital * weights.get("capital", 0)
@@ -134,6 +160,8 @@ def score_candidates(candidates, context):
             + s_mlong    * weights.get("margin_long", 0)
             + s_vq       * weights.get("volume_quality", 0)
             + s_intraday * weights.get("intraday_trend", 0)
+            + s_pm       * weights.get("price_momentum", 0)
+            + s_sp       * weights.get("sector_price", 0)
         )
 
         # P因子调整
