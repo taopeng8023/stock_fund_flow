@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
-.env
 .venv/
 .vntrader/
 .DS_Store
@@ -12,4 +11,5 @@ __pycache__/
 performance.json
 data/
 research_data/
+portfolio/positions.json
 .env
