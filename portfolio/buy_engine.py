@@ -25,18 +25,33 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 
-# ── 三级买入规则（全量回测+多时点验证）──
+# ── 四级买入规则（全量回测+多时点+交互分析）──
 TIERS = {
-    1: {"score": 0.60, "capital": 0.80, "require": ["P34_gap_strong"],
-        "block": ["P36_overheat"], "label": "🥇王者(57-60%)",
-        "desc": "P34_gap封王,全天正收益,14:00后+2.03%"},
-    2: {"score": 0.60, "capital": 0.70, "require": ["P34_gap_strong"],
-        "block": ["P36_overheat"], "label": "🥈高胜率(55-60%)",
-        "desc": "资金门槛放宽,胜率55%+"},
-    3: {"score": 0.60, "capital": 0.70, "require": ["P37_momentum_up"],
-        "block": ["P36_overheat", "P35_short_pressure"], "label": "🥉备选(43%)",
+    1: {"score": 0.60, "capital": 0.80,
+        "require": ["P34_gap_strong", "P35_short_cover"],  # 双确认
+        "block": ["P36_overheat"],
+        "label": "🥇王者(50%)",
+        "desc": "P34_gap+空头回补双确认,胜率50%+0.90%"},
+    2: {"score": 0.60, "capital": 0.70,
+        "require": ["P34_gap_strong"],
+        "block": ["P36_overheat"],
+        "label": "🥈高胜率(55%)",
+        "desc": "P34_gap单信号+资金≥0.7"},
+    3: {"score": 0.60, "capital": 0.70,
+        "require": ["P37_momentum_up"],
+        "block": ["P36_overheat", "P35_short_pressure"],
+        "label": "🥉动量(43%)",
         "desc": "P37_up兜底,反转日可能失效"},
+    4: {"score": 0.55, "capital": 0.60,
+        "require": [],
+        "block": ["P36_overheat", "P35_short_pressure"],
+        "mcap_min": 500,  # 大市值>500亿防御层
+        "label": "🏛️大盘(38%)",
+        "desc": "大市值+中等资金,防御型"},
 }
+
+# 信号真空排除（16503笔回测: 无信号股胜率仅23%）
+SIGNAL_VACUUM_BLOCK = True  # 排除没有任何P3x信号的股票
 
 MAX_PER_SECTOR = 2
 
@@ -83,7 +98,24 @@ def filter_candidates(scores: list, tier: int = 1) -> list:
         if capital < rules["capital"]:
             continue
 
+        # 大市值门槛（Tier 4）
+        mcap_min = rules.get("mcap_min", 0)
+        if mcap_min > 0:
+            mcap = float(r.get("总市值", 0) or 0)
+            if mcap < mcap_min:
+                continue
+
         signals = r.get("综合信号", "")
+        # 信号真空排除
+        if SIGNAL_VACUUM_BLOCK:
+            has_signal = any(s in signals for s in [
+                "P3"  # P32/P33/P34/P35/P36/P37 都匹配
+            ]) or any(s in signals for s in [
+                "P32_", "P33_", "P34_", "P35_", "P36_", "P37_"
+            ])
+            if not has_signal:
+                continue
+
         # 必备信号
         if not all(s in signals for s in rules["require"]):
             continue
@@ -143,7 +175,7 @@ def generate_recommendations(date_str: str, top_n: int = 10,
         # 合并三级
         candidates = []
         seen = set()
-        for t in [1, 2, 3]:
+        for t in [1, 2, 3, 4]:
             for c in filter_candidates(scores, t):
                 if c["code"] not in seen:
                     candidates.append(c)
