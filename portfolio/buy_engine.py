@@ -25,14 +25,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 
-# ── 三级买入规则 ──
+# ── 三级买入规则（全量回测+多时点验证）──
 TIERS = {
     1: {"score": 0.60, "capital": 0.80, "require": ["P34_gap_strong"],
-        "block": ["P36_overheat"], "label": "🥇 高确定性"},
-    2: {"score": 0.60, "capital": 0.70, "require": ["P37_momentum_up"],
-        "block": ["P36_overheat"], "label": "🥈 中确定性"},
-    3: {"score": 0.55, "capital": 0.60, "require": ["P37_momentum_up"],
-        "block": ["P36_overheat", "P35_short_pressure"], "label": "🥉 基础池"},
+        "block": ["P36_overheat"], "label": "🥇王者(57-60%)",
+        "desc": "P34_gap封王,全天正收益,14:00后+2.03%"},
+    2: {"score": 0.60, "capital": 0.70, "require": ["P34_gap_strong"],
+        "block": ["P36_overheat"], "label": "🥈高胜率(55-60%)",
+        "desc": "资金门槛放宽,胜率55%+"},
+    3: {"score": 0.60, "capital": 0.70, "require": ["P37_momentum_up"],
+        "block": ["P36_overheat", "P35_short_pressure"], "label": "🥉备选(43%)",
+        "desc": "P37_up兜底,反转日可能失效"},
 }
 
 MAX_PER_SECTOR = 2
@@ -188,7 +191,8 @@ def _print_recommendations(date_str, bs_level, buys):
               f"{b['chg_pct']:+.1f}%{'':>2s} {b['capital']:.2f}{'':>2s} "
               f"{b['industry']:<10s} {tier_label:<10s} {sig_str}")
 
-    print(f"\n  规则: 🥇分≥0.6+资≥0.8+P34_gap  🥈分≥0.6+资≥0.7+P37_up  🥉分≥0.55+资≥0.6+P37_up")
+    print(f"\n  规则: 🥇分≥0.6+资≥0.8+P34_gap(57-60%,全天正收益)")
+    print(f"        🥈分≥0.6+资≥0.7+P34_gap(55-60%)  🥉分≥0.6+资≥0.7+P37_up(43%,兜底)")
     print(f"  避雷: P36_overheat P35_short_pressure | 同行业≤{MAX_PER_SECTOR}只")
 
 
