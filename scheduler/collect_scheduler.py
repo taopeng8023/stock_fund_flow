@@ -29,7 +29,7 @@ MORNING_START = (9, 30)
 MORNING_END = (11, 35)   # 含 11:30
 # 下午时段
 AFTERNOON_START = (13, 0)
-AFTERNOON_END = (15, 5)  # 含 15:00
+AFTERNOON_END = (15, 1)  # 15:00 后即结束,不等到15:05
 # 采集间隔（分钟）
 INTERVAL_MINUTES = 5
 
@@ -129,9 +129,9 @@ def run(date_str: str = None, dry_run: bool = False):
             print(f"\n  日期已变为 {now.strftime('%Y%m%d')}，退出")
             break
 
-        # 检查是否已过收盘时间
-        if now.hour >= 15 and now.minute > 5:
-            print(f"\n  已过收盘时间 15:00，今日采集结束")
+        # 15:00 采集完成后退出（15:01即退出）
+        if now.hour == 15 and now.minute >= 1:
+            print(f"\n  ✅ 收盘 15:00 已采集，今日结束")
             break
 
         # 等待进入交易时段
