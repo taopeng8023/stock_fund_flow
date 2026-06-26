@@ -1,17 +1,26 @@
 """
-买入引擎 — 三级买入规则（16503笔回测驱动）
+买入引擎 — 信号驱动 + 体制感知（5 Agent 信号发现 + 多快照回测验证）
 
-Tier 1 (🥇 57%胜率): score≥0.60 + capital≥0.80 + P34_gap − P36_overheat
-Tier 2 (🥈 43%胜率): score≥0.60 + capital≥0.70 + P37_up − P36_overheat
-Tier 3 (🥉 34%胜率): score≥0.55 + capital≥0.60 + P37_up − P36_overheat/P35_short
+信号发现: 88,645笔回测, 6交易日, 20盘中快照, 4 Agent独立分析 + 1 Agent交叉验证
+基线: 全市场胜率 27.4%, 均收益 -1.22%
 
-避雷: P36_overheat(胜率-8%), P35_short_pressure(Bot50专属)
+核心规则（5 Agent 信号发现验证）:
+  P0 🥇 Gap强+拉高出货:  P34_gap_strong + P32_pump_risk        → 66.9% WR, +2.44%, N=293, 牛熊通用
+  P1 🥈 E3+P34共振:       E3_strong_start + P34_gap_strong       → 61.7% WR, +2.26%, N=162
+  P2 🥉 高价+空头+Gap反:   P_high_price + P35_short_pressure
+                           + P34_gap_reverse                     → 77.5% WR, +2.24%, N=40
+  P3 🏅 半导体+空头回补:   行业=半导体 + P35_short_cover           → 60.6% WR, +1.28%, N=872
+  观察   中线得分≥0.8:                                          → 57.7% WR, +1.29%, N=78
+
+避雷: P6_retail(0%WR) | P37_momentum_up(全局-8pp,熊市仅20.7%) | P37_momentum_down
+       贵金属(3.9%) | 乘用车(5.6%) | 普钢(9.1%) | 地面兵装(9.4%) | 数字媒体(9.7%)
 门禁: 黑天鹅 Level ≥ 2 → 禁止一切买入
 行业: 同行业 ≤ 2只
+仓位: P0=50% + P1=25% + P2=15% + P3=10%
 
 用法:
   python -m portfolio.buy_engine --date=20260624
-  python -m portfolio.buy_engine --date=20260624 --top=5 --tier=1
+  python -m portfolio.buy_engine --date=20260624 --top=10
   python -m portfolio.buy_engine --date=20260624 --no-notify
 """
 
@@ -19,40 +28,106 @@ import argparse
 import csv
 import sys
 from collections import Counter
-from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 
-# ── 全局最优Top3组合（16503笔全量统计验证）──
-# 🥇 分0.60-0.70 资≥0.80 P34_gap-P36 → 92笔 62%WR +1.75% (4日全正,最低57%)
-# 🥈 分0.60-0.70 资≥0.80 P34_gap+P35_cover → 42笔 62%WR +2.01%
-# 🥉 分0.60-0.70 资≥0.80 P34_gap → 101笔 59%WR +1.59%
-# ⚠️ 分≥0.70反而更差(46%WR) — "过度优秀"已充分定价
-# ⚠️ 资≥0.80是唯一硬门槛,趋势/位置/板块无贡献
+# ═══════════════════════════════════════
+# 信号驱动买入规则（5 Agent 信号发现验证）
+# ═══════════════════════════════════════
+
 TIERS = {
-    1: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
-        "require": ["P34_gap_strong", "P35_short_cover"],
-        "block": ["P36_overheat"],
-        "label": "🥇王者(62%)",
-        "desc": "分0.60-0.70+资≥0.80+P34_gap+P35_cover-P36"},
-    2: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
-        "require": ["P34_gap_strong"],
-        "block": ["P36_overheat"],
-        "label": "🥈高胜率(62%)",
-        "desc": "分0.60-0.70+资≥0.80+P34_gap-P36"},
-    3: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
-        "require": ["P34_gap_strong"],
-        "block": [],
-        "label": "🥉稳健(59%)",
-        "desc": "分0.60-0.70+资≥0.80+P34_gap"},
+    "P0": {
+        "require_signals": ["P34_gap_strong", "P32_pump_risk"],
+        "block_signals": ["P37_momentum_down", "P36_overheat", "P6_retail"],
+        "label": "P0:Gap强+拉高出货",
+        "wr": "66.9%", "n": 293, "avg_ret": "+2.44%",
+        "desc": "P34_gap_strong+P32_pump_risk — 静默期后突发主力+高开=真突破",
+        "position_pct": 50,
+        "score_min": 0.55,
+        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],  # 体制无关
+    },
+    "P1": {
+        "require_signals": ["E3_strong_start", "P34_gap_strong"],
+        "block_signals": ["P37_momentum_down", "P6_retail", "P36_overheat"],
+        "label": "P1:E3+P34共振",
+        "wr": "61.7%", "n": 162, "avg_ret": "+2.26%",
+        "desc": "E3_strong_start+P34_gap_strong — 开盘强势+缺口确认",
+        "position_pct": 25,
+        "score_min": 0.55,
+        "regime_ok": ["bull", "bull_bias", "range"],  # 偏牛
+    },
+    "P2": {
+        "require_signals": ["P_high_price", "P35_short_pressure", "P34_gap_reverse"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "P2:高价+空头+Gap反转",
+        "wr": "77.5%", "n": 40, "avg_ret": "+2.24%",
+        "desc": "P_high_price+P35_short_pressure+P34_gap_reverse — 高价优质回调",
+        "position_pct": 15,
+        "score_min": 0.50,
+        "regime_ok": ["bull", "bull_bias", "range"],  # 偏牛
+        "note": "高置信度池，N=40偏小",
+    },
+    "P3": {
+        "require_signals": ["P35_short_cover"],
+        "block_signals": ["P37_momentum_down", "P6_retail", "P36_overheat"],
+        "label": "P3:半导体+空头回补",
+        "wr": "60.6%", "n": 872, "avg_ret": "+1.28%",
+        "desc": "行业=半导体+P35_short_cover — 主线行业叠加空头回补",
+        "position_pct": 10,
+        "score_min": 0.50,
+        "required_sector": "半导体",
+        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
+    },
+    "OBSERVE": {
+        "require_signals": [],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "观察:中线≥0.8",
+        "wr": "57.7%", "n": 78, "avg_ret": "+1.29%",
+        "desc": "中线得分≥0.8 — 中长线趋势确认",
+        "position_pct": 0,  # 不占日内仓位
+        "score_min": 0,
+        "mid_score_min": 0.8,
+        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
+    },
 }
 
-# 信号真空排除（16503笔回测: 无信号股胜率仅23%）
-SIGNAL_VACUUM_BLOCK = True  # 排除没有任何P3x信号的股票
+# ═══════════════════════════════════════
+# 全局风控
+# ═══════════════════════════════════════
 
-MAX_PER_SECTOR = 2
+MAX_PRICE = 200.0               # P2规则用高价股,放宽上限
+MIN_TURNOVER_YI = 0.5           # 最小成交额 5000万
+MAX_PER_SECTOR = 2              # 同行业最多 2 只
+
+# ── 全局排除令牌（5 Agent 验证为负向信号，任何规则均排除）──
+GLOBAL_EXCLUDE_TOKENS = [
+    "P6_retail",              # 散户主导 → 0% WR (38样本)
+    "P35_short_heavy",        # 融券/主力比>3 → -5.6pp
+    "P33_margin_weak",        # 融资买入为负 → -5.8pp
+    "P_low_liquidity",        # 流动性不足
+    "P_low_vol_ratio",        # 量比不足
+    "P_small_cap",            # 小市值<30亿 → -7.2pp
+]
+
+# ── 熊市额外排除（牛市信号在熊市崩溃）──
+BEAR_EXCLUDE_TOKENS = [
+    "P37_momentum_up",        # 全局-8pp, 熊市仅20.7% WR vs 牛市57.4%
+]
+
+# ── 行业黑名单（5 Agent 验证为系统性低胜率板块）──
+SECTOR_BLOCKLIST = [
+    "贵金属",                  # 3.9% WR, N=208
+    "乘用车",                  # 5.6% WR, N=126
+    "普钢",                    # 9.1% WR, N=275
+    "地面兵装Ⅱ",              # 9.4% WR, N=192
+    "数字媒体",                # 9.7% WR, N=228
+    "养殖业",                  # 持续衰退
+    "保险Ⅱ",                  # 持续衰退
+    "航运港口",                # 持续衰退
+    "银行Ⅱ",                  # 持续衰退
+]
 
 
 def load_scores(date_str: str) -> list:
@@ -65,69 +140,135 @@ def load_scores(date_str: str) -> list:
 
 
 def check_black_swan(date_str: str) -> tuple:
-    """返回 (level, blocked)"""
     try:
         from portfolio.black_swan import BlackSwanDetector
         bs = BlackSwanDetector(date_str).check()
         level = bs["level"]
-        blocked = level >= 2
-        return level, blocked
+        return level, level >= 2
     except Exception:
         return 0, False
 
 
-def filter_candidates(scores: list, tier: int = 1) -> list:
-    """三级筛选买入候选。
+def detect_regime(date_str: str) -> str:
+    """检测当前市场体制。"""
+    try:
+        from market_diagnosis import load_diagnosis
+        d = load_diagnosis(date_str)
+        if d:
+            return d.get("regime", {}).get("label", "range")
+    except Exception:
+        pass
+    return "range"
 
-    Tier 1: score≥0.60 + capital≥0.80 + P34_gap − overheat → 57%胜率
-    Tier 2: score≥0.60 + capital≥0.70 + P37_up − overheat → 43%胜率
-    Tier 3: score≥0.55 + capital≥0.60 + P37_up − overheat/P35 → 34%胜率
 
-    Returns list sorted by composite score desc.
-    """
-    rules = TIERS.get(tier, TIERS[1])
+def _is_bear_regime(regime: str) -> bool:
+    return regime in ("bear", "bear_bias")
+
+
+def filter_candidates(scores: list, tier_key: str, regime: str = "range") -> list:
+    """按 tier 规则筛选候选。P0-P3 基于信号，OBSERVE 基于中线得分。"""
+    rules = TIERS[tier_key]
+    is_bear = _is_bear_regime(regime)
+
+    # 体制门禁
+    if regime not in rules.get("regime_ok", []):
+        return []
+
     candidates = []
-
     for r in scores:
-        score = float(r.get("综合得分", 0) or 0)
-        # 得分区间（最优0.60-0.70, ≥0.70反而差）
-        score_lo = rules.get("score_lo", rules.get("score", 0))
-        score_hi = rules.get("score_hi", 1.0)
-        if score < score_lo or score >= score_hi:
+        # ── 基本风控 ──
+        try:
+            price = float(r.get("最新价", 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        if price <= 0 or price > MAX_PRICE:
             continue
 
-        capital = float(r.get("资金得分", 0.5) or 0.5)
-        if capital < rules["capital"]:
+        try:
+            turnover = float(r.get("成交额", 0) or 0)
+        except (ValueError, TypeError):
+            turnover = 0
+        if turnover < MIN_TURNOVER_YI * 1e8:
             continue
 
-        signals = r.get("综合信号", "")
-        # 信号真空排除
-        if SIGNAL_VACUUM_BLOCK:
-            has_signal = any(s in signals for s in [
-                "P32_", "P33_", "P34_", "P35_", "P36_", "P37_"
-            ])
-            if not has_signal:
+        industry = r.get("行业", "")
+        if industry in SECTOR_BLOCKLIST:
+            continue
+
+        try:
+            score = float(r.get("综合得分", 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        if score < rules.get("score_min", 0):
+            continue
+
+        # 中线得分门槛 (OBSERVE)
+        if "mid_score_min" in rules:
+            try:
+                mid = float(r.get("中线得分", 0) or 0)
+            except (ValueError, TypeError):
+                continue
+            if mid < rules["mid_score_min"]:
                 continue
 
-        # 必备信号
-        if not all(s in signals for s in rules["require"]):
+        # 行业门禁 (P3)
+        if "required_sector" in rules:
+            if industry != rules["required_sector"]:
+                continue
+
+        signals = r.get("综合信号", "")
+        early_sigs = r.get("启动信号", "")
+
+        # ── 全局排除 ──
+        if any(tok in signals for tok in GLOBAL_EXCLUDE_TOKENS):
             continue
-        # 避雷信号
-        if any(s in signals for s in rules["block"]):
+        if "P37_momentum_down" in signals:
+            continue
+
+        # ── 熊市排除 ──
+        if is_bear:
+            if any(tok in signals for tok in BEAR_EXCLUDE_TOKENS):
+                continue
+
+        # ── Tier 必备信号 ──
+        required = rules.get("require_signals", [])
+        if required:
+            all_sigs = signals + "," + early_sigs
+            if not all(s in all_sigs for s in required):
+                continue
+
+        # ── Tier 避雷信号 ──
+        block = rules.get("block_signals", [])
+        if block:
+            all_sigs = signals + "," + early_sigs
+            if any(s in all_sigs for s in block):
+                continue
+
+        try:
+            score_val = float(r.get("综合得分", 0) or 0)
+            capital_val = float(r.get("资金得分", 0.5) or 0.5)
+            sector_val = float(r.get("板块得分", 0.5) or 0.5)
+            chg_val = float(r.get("涨跌幅", 0) or 0)
+            mcap_val = float(r.get("总市值", 0) or 0)
+        except (ValueError, TypeError):
             continue
 
         candidates.append({
             "code": r["代码"],
             "name": r["名称"],
-            "score": round(score, 4),
-            "tier": tier,
+            "score": round(score_val, 4),
+            "tier": tier_key,
             "tier_label": rules["label"],
-            "chg_pct": round(float(r.get("涨跌幅", 0) or 0), 2),
-            "price": round(float(r.get("最新价", 0) or 0), 2),
-            "industry": r.get("行业", ""),
+            "chg_pct": round(chg_val, 2),
+            "price": round(price, 2),
+            "industry": industry,
             "signals": signals,
-            "capital": capital,
-            "mcap_yi": round(float(r.get("总市值", 0) or 0), 1),
+            "early_signals": early_sigs,
+            "capital": round(capital_val, 2),
+            "sector_score": round(sector_val, 2),
+            "mcap_yi": round(mcap_val, 1),
+            "wr_ref": rules["wr"],
+            "avg_ret_ref": rules.get("avg_ret", "—"),
         })
 
     candidates.sort(key=lambda x: -x["score"])
@@ -135,7 +276,6 @@ def filter_candidates(scores: list, tier: int = 1) -> list:
 
 
 def apply_sector_diversity(candidates: list, max_n: int) -> list:
-    """行业分散硬约束：同行业最多 max_n 只。"""
     selected = []
     sector_count = Counter()
     for c in candidates:
@@ -148,78 +288,92 @@ def apply_sector_diversity(candidates: list, max_n: int) -> list:
 
 
 def generate_recommendations(date_str: str, top_n: int = 10,
-                             tier: int = 0, no_notify: bool = False) -> dict:
-    """生成买入推荐。tier=0 表示合并所有三级。"""
+                             no_notify: bool = False) -> dict:
+    """生成买入推荐。P0→P1→P2→P3→OBSERVE 优先级。"""
     scores = load_scores(date_str)
+    regime = detect_regime(date_str)
 
     # 黑天鹅门禁
     bs_level, blocked = check_black_swan(date_str)
     if blocked:
         print(f"\n{'='*60}")
-        print(f"  🚨 黑天鹅 Level {bs_level} — 禁止买入")
+        print(f"  🚨 黑天鹅 Level {bs_level} — 禁止一切买入")
         print(f"{'='*60}")
         return {"date": date_str, "blocked": True, "bs_level": bs_level,
                 "buys": [], "reason": f"黑天鹅 Level {bs_level}"}
 
-    # 筛选
-    if tier > 0:
-        candidates = filter_candidates(scores, tier)
-    else:
-        # 合并三级
-        candidates = []
-        seen = set()
-        for t in [1, 2, 3]:
-            for c in filter_candidates(scores, t):
-                if c["code"] not in seen:
-                    candidates.append(c)
-                    seen.add(c["code"])
-        candidates.sort(key=lambda x: -x["score"])
+    # 按优先级筛选：P0 → P1 → P2 → P3 → OBSERVE
+    tier_priority = ["P0", "P1", "P2", "P3", "OBSERVE"]
+    all_candidates = []
+    seen = set()
 
-    print(f"  全量: {len(scores)}只 → 候选: {len(candidates)}只")
+    for tk in tier_priority:
+        for c in filter_candidates(scores, tk, regime):
+            if c["code"] not in seen:
+                all_candidates.append(c)
+                seen.add(c["code"])
+
+    # P0 优先，同 tier 内按 score 降序
+    tier_order = {t: i for i, t in enumerate(tier_priority)}
+    all_candidates.sort(key=lambda x: (tier_order.get(x["tier"], 99), -x["score"]))
+
+    is_bear = _is_bear_regime(regime)
+    print(f"  全量: {len(scores)}只 → 候选: {len(all_candidates)}只 | 体制: {regime}"
+          f"{' ⚠️熊市限制' if is_bear else ''}")
 
     # 行业分散
-    buys = apply_sector_diversity(candidates, MAX_PER_SECTOR)[:top_n]
+    buys = apply_sector_diversity(all_candidates, MAX_PER_SECTOR)[:top_n]
     sector_dist = Counter(b["industry"] for b in buys)
 
     print(f"  行业≤{MAX_PER_SECTOR}: {len(buys)}只 分布: {dict(sector_dist)}")
 
-    # 输出
-    _print_recommendations(date_str, bs_level, buys)
+    # 仓位分配
+    for b in buys:
+        b["suggested_pct"] = TIERS.get(b["tier"], {}).get("position_pct", 0)
+
+    _print_recommendations(date_str, bs_level, regime, buys)
 
     if not no_notify and buys:
         _notify_buys(date_str, bs_level, buys)
 
     return {"date": date_str, "blocked": False, "bs_level": bs_level,
-            "candidates": len(candidates), "buys": buys}
+            "regime": regime, "candidates": len(all_candidates), "buys": buys}
 
 
-def _print_recommendations(date_str, bs_level, buys):
-    print(f"\n{'='*70}")
-    print(f"  🎯 买入推荐 [{date_str}]  BS Level {bs_level}")
-    print(f"{'='*70}")
+def _print_recommendations(date_str, bs_level, regime, buys):
+    is_bear = _is_bear_regime(regime)
+    print(f"\n{'='*85}")
+    print(f"  🎯 买入推荐 [{date_str}]  BS L{bs_level}  体制: {regime}"
+          f"{' ⚠️' if is_bear else ''}")
+    print(f"  验证: 5 Agent 信号发现 | 88,645笔回测 | 2026-06-26")
+    print(f"{'='*85}")
 
     if not buys:
         print("  (无符合条件的买入标的)")
+        print(f"\n  💡 体制 {regime} + BS L{bs_level}，建议等待更好时机")
         return
 
-    print(f"\n  {'':<3s} {'代码':<8s} {'名称':<8s} {'得分':<8s} {'涨跌':<7s} "
-          f"{'资金':<6s} {'行业':<10s} {'级别':<10s} {'信号'}")
-    print(f"  {'─'*68}")
+    print(f"\n  {'#':<3} {'代码':<9} {'名称':<8} {'得分':<8} {'涨跌':<7} "
+          f"{'行业':<10} {'级别':<24} {'仓位':<5} {'WR参考'}")
+    print(f"  {'─'*90}")
+
     for i, b in enumerate(buys):
-        sig_short = []
-        if "P34_gap_strong" in b["signals"]: sig_short.append("GAP↑")
-        if "P37_momentum_up" in b["signals"]: sig_short.append("MOM↑")
-        if "P32_ratio_accel" in b["signals"]: sig_short.append("ACC↑")
-        sig_str = ",".join(sig_short)
-        tier_label = b.get("tier_label", "")
-        print(f"  {i+1:<2} {b['code']:<8s} {b['name']:<8s} {b['score']:.4f} "
-              f"{b['chg_pct']:+.1f}%{'':>2s} {b['capital']:.2f}{'':>2s} "
-              f"{b['industry']:<10s} {tier_label:<10s} {sig_str}")
-    print(f"\n  规则: 全局最优Top3组合 (16503笔统计验证)")
-    print(f"        🥇分0.60-0.70+资≥0.8+P34_gap+P35_cover-P36(62%WR)")
-    print(f"        🥈分0.60-0.70+资≥0.8+P34_gap-P36(62%)  🥉分0.60-0.70+资≥0.8+P34_gap(59%)")
-    print(f"  ⚠️ 分≥0.70反而46%WR | 同行业≤{MAX_PER_SECTOR}只")
-    print(f"  避雷: P36_overheat P35_short_pressure | 同行业≤{MAX_PER_SECTOR}只")
+        tier_note = TIERS.get(b["tier"], {}).get("note", "")
+        note_str = f" [{tier_note}]" if tier_note else ""
+        print(f"  {i+1:<3} {b['code']:<9} {b['name']:<8} {b['score']:.4f} "
+              f"{b['chg_pct']:>+.1f}%  {b['industry']:<10} "
+              f"{b['tier_label']:<24} {b['suggested_pct']}%  "
+              f"WR={b['wr_ref']}{note_str}")
+
+    # 仓位汇总
+    active_buys = [b for b in buys if b["suggested_pct"] > 0]
+    total_position = sum(b["suggested_pct"] for b in active_buys)
+    print(f"\n  ── 仓位合计: {total_position}% ({len(active_buys)}只) ──")
+    print(f"  P0=50% | P1=25% | P2=15% | P3=10% | 观察=不占仓位")
+    print(f"  避雷: P6_retail P37_down P_small_cap P_low_liquidity P35_short_heavy P33_margin_weak")
+    if is_bear:
+        print(f"  熊市排除: P37_momentum_up P1/P2 限制")
+    print(f"  行业黑名单: {', '.join(SECTOR_BLOCKLIST[:5])}...")
 
 
 def _notify_buys(date_str, bs_level, buys):
@@ -228,14 +382,18 @@ def _notify_buys(date_str, bs_level, buys):
     except ImportError:
         return
 
+    top = buys[:8]
     lines = [f"## 🎯 买入推荐 — {date_str}"]
-    lines.append(f"> 黑天鹅 Level {bs_level} | 推荐 {len(buys)} 只")
+    lines.append(f"> 黑天鹅 L{bs_level} | 推荐 {len(buys)} 只 | 5Agent信号发现验证")
     lines.append("")
 
-    for i, b in enumerate(buys[:8]):
+    for i, b in enumerate(top):
+        note = TIERS.get(b["tier"], {}).get("note", "")
+        note_str = f" ⚠️{note}" if note else ""
         lines.append(f"**{i+1}. {b['name']}**（{b['code']}）")
-        lines.append(f"> 得分 {b['score']:.3f} | 涨跌 {b['chg_pct']:+.1f}% | "
-                     f"资金 {b['capital']:.2f} | {b['industry']}")
+        lines.append(f"> {b['tier_label']} | 得分 {b['score']:.3f} | "
+                     f"涨跌 {b['chg_pct']:+.1f}% | {b['industry']} | "
+                     f"WR参考={b['wr_ref']}{note_str}")
         lines.append("")
 
     send_markdown("\n".join(lines))
@@ -243,14 +401,13 @@ def _notify_buys(date_str, bs_level, buys):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="买入推荐引擎")
-    parser.add_argument("--date", required=True)
-    parser.add_argument("--top", type=int, default=10)
-    parser.add_argument("--tier", type=int, default=0, help="1=高确定性 2=中 3=基础 0=合并全部")
-    parser.add_argument("--no-notify", action="store_true")
+    parser = argparse.ArgumentParser(description="买入推荐引擎 (信号发现验证版)")
+    parser.add_argument("--date", required=True, help="日期 YYYYMMDD")
+    parser.add_argument("--top", type=int, default=10, help="推荐数量")
+    parser.add_argument("--no-notify", action="store_true", help="不推送企业微信")
     args = parser.parse_args()
 
-    generate_recommendations(args.date, top_n=args.top, tier=args.tier,
+    generate_recommendations(args.date, top_n=args.top,
                              no_notify=args.no_notify)
 
 

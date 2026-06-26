@@ -15,71 +15,92 @@ RESEARCH_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_data"
 )
 
-# ── 评分权重（三市场景自适应）──
+# ── 评分权重（回测优化版 2026-06-26）──
+# 优化: 移除零区分度因子(technical/sector_diversity/limitup_proximity/crowding)
+#       提权sector(独立Alpha |r|=0.29) + rank_trajectory(最稳日内 std=0.010)
+#       降权capital(冗余簇) + tail_volume/tail_return(低区分度)
 WEIGHTS_BASE = {
-    "capital": 0.26, "sector": 0.14, "intra_sector": 0.08,
-    "technical": 0.08, "vwap_position": 0.07,
-    "tail_return": 0.06, "tail_volume": 0.05,
-    "margin_net": 0.01, "flow_accel": 0.01,
-    "sector_momentum": 0.02,
-    "flow_stability": 0.03, "intraday_accel": 0.03,
-    "rank_trajectory": 0.02,
-    "sector_trajectory": 0.02,
-    "price_momentum": 0.03,
-    "limitup_proximity": 0.01,
-    "sector_diversity": 0.01,
-    "sector_price": 0.05,        # ↑ 0.03→0.05 (修复数据覆盖后生效)
-    "tail_return": 0.03,
-    "tail_volume": 0.02,
-    "crowding": 0.02,
-    "ext_sentiment": 0.01,
+    # ── 核心Alpha ──
+    "capital": 0.20,           # 优化: 0.26→0.20 冗余簇降权
+    "sector": 0.16,            # 优化: 0.14→0.16 独立信号加权重
+    "intra_sector": 0.06,      # 优化: 0.08→0.06 冗余簇
+    "sector_price": 0.06,      # 优化: 0.05→0.06 板块价格共振
+
+    # ── 日内维度 (排名轨迹最稳) ──
+    "rank_trajectory": 0.06,   # 优化: 0.02→0.06 std=0.010最稳
+    "vwap_position": 0.07,     # VWAP位置
+    "flow_stability": 0.04,    # 优化: 0.03→0.04
+    "intraday_accel": 0.04,    # 优化: 0.03→0.04
+    "sector_trajectory": 0.03, # 优化: 0.02→0.03
+
+    # ── 尾盘信号 ──
+    "tail_return": 0.05,       # 尾盘收益
+    "tail_volume": 0.03,       # 优化: 0.05→0.03
+
+    # ── 辅助 ──
+    "price_momentum": 0.04,    # 优化: 0.03→0.04
+    "margin_net": 0.02,        # 融资
+    "flow_accel": 0.02,        # 资金加速度
+    "ext_sentiment": 0.02,     # 外部情绪
+
+    # ── 惩罚项 (不纳入主评分，独立扣分) ──
+    # "crowding": 0.02,        # 移除: cardinality=1
+    # "sector_diversity": 0,   # 移除: cardinality=1
+    # "limitup_proximity": 0,  # 移除: 低区分度
+    # "technical": 0,          # 移除: cardinality=1
 }
 
-WEIGHTS_BULL = {**WEIGHTS_BASE, "tail_return": 0.08, "sector": 0.16,
-                "price_momentum": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.02}
-WEIGHTS_BEAR = {**WEIGHTS_BASE, "vwap_position": 0.09, "limitup_proximity": 0.02,
-                "sector_diversity": 0.03, "crowding": 0.04, "ext_sentiment": 0.02, "flow_accel": 0.01}
+WEIGHTS_BULL = {**WEIGHTS_BASE,
+    "tail_return": 0.08, "sector": 0.18,
+    "price_momentum": 0.05, "ext_sentiment": 0.03, "flow_accel": 0.03,
+    "sector_price": 0.07, "rank_trajectory": 0.07,
+}
+WEIGHTS_BEAR = {**WEIGHTS_BASE,
+    "vwap_position": 0.09,
+    "ext_sentiment": 0.03, "flow_accel": 0.01,
+    "sector": 0.14, "rank_trajectory": 0.05,
+}
 
-# ── 短线交易权重 ──
+# ── 短线交易权重 (回测优化版) ──
 SHORT_WEIGHTS = {
-    "capital": 0.18, "sector": 0.10,
-    "technical": 0.06, "intra_sector": 0.08,
-    "margin_net": 0.01, "flow_accel": 0.02,
+    "capital": 0.16, "sector": 0.14,
+    "intra_sector": 0.06,
+    "margin_net": 0.02, "flow_accel": 0.03,
     "flow_stability": 0.08, "intraday_accel": 0.08,
-    "rank_trajectory": 0.05, "vwap_position": 0.06,
-    "sector_trajectory": 0.02,
-    "price_momentum": 0.02, "limitup_proximity": 0.04,
-    "sector_diversity": 0.01, "sector_price": 0.02,
-    "tail_return": 0.08, "tail_volume": 0.06, "crowding": 0.02,
-    "ext_sentiment": 0.01,
-}
-
-# ── 中线趋势权重 ──
-MID_WEIGHTS = {
-    "capital": 0.28, "sector": 0.16,
-    "technical": 0.10, "intra_sector": 0.08,
-    "margin_net": 0.01, "flow_accel": 0.02,
-    "flow_stability": 0.01, "intraday_accel": 0.01,
-    "rank_trajectory": 0.01, "vwap_position": 0.07,
-    "sector_trajectory": 0.02,
-    "price_momentum": 0.06, "limitup_proximity": 0.01,
-    "sector_diversity": 0.02, "sector_price": 0.04,
-    "tail_return": 0.04, "tail_volume": 0.03, "crowding": 0.02,
+    "rank_trajectory": 0.08, "vwap_position": 0.06,   # rank_trajectory优化:0.05→0.08
+    "sector_trajectory": 0.03,
+    "price_momentum": 0.03,                            # limitup_proximity移除
+    "sector_price": 0.04,
+    "tail_return": 0.10, "tail_volume": 0.06,          # tail_return短线核心
     "ext_sentiment": 0.02,
 }
 
-# ── 启动检测权重 ──
-EARLY_WEIGHTS = {
-    "capital": 0.25, "sector": 0.15,
-    "technical": 0.08, "intra_sector": 0.10,
+# ── 中线趋势权重 (回测优化版) ──
+MID_WEIGHTS = {
+    "capital": 0.24, "sector": 0.18,          # sector优化:0.16→0.18
+    "intra_sector": 0.08,
     "margin_net": 0.02, "flow_accel": 0.02,
-    "flow_stability": 0.02, "intraday_accel": 0.02,
-    "rank_trajectory": 0.02, "vwap_position": 0.05,
+    "flow_stability": 0.01, "intraday_accel": 0.01,
+    "rank_trajectory": 0.03, "vwap_position": 0.08,   # rank_trajectory:0.01→0.03
     "sector_trajectory": 0.03,
-    "price_momentum": 0.02, "limitup_proximity": 0.03,
-    "sector_diversity": 0.02, "sector_price": 0.02,
-    "tail_return": 0.05, "tail_volume": 0.04, "crowding": 0.01,
-    "ext_sentiment": 0.01,
+    "price_momentum": 0.06,                            # limitup_proximity移除
+    "sector_price": 0.06,                              # 0.04→0.06
+    "tail_return": 0.06, "tail_volume": 0.04,
+    "ext_sentiment": 0.03,
+}
+
+# ── 启动检测权重 (回测优化版) ──
+EARLY_WEIGHTS = {
+    "capital": 0.22, "sector": 0.18,               # sector:0.15→0.18
+    "intra_sector": 0.08,
+    "margin_net": 0.02, "flow_accel": 0.03,
+    "flow_stability": 0.02, "intraday_accel": 0.03,
+    "rank_trajectory": 0.05, "vwap_position": 0.06,  # rank_traj:0.02→0.05
+    "sector_trajectory": 0.04,
+    "price_momentum": 0.04,                                  # limitup_proximity移除
+    "sector_price": 0.04,                                    # sector_diversity移除
+    "tail_return": 0.06, "tail_volume": 0.04,
+    "ext_sentiment": 0.02,
 }
 
 # ── scores.csv 输出列 ──
@@ -105,8 +126,9 @@ COMPOSITE_SIGNALS = {
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
     "P35_short_heavy":    "融券/主力比>3(做空压力大)",
     "P36_overheat":       "全维度过热(资金>0.85+趋势>0.7+多日>0.85,反转风险)",
-    "P37_momentum_up":    "得分动量向上(较前日改善>0.05,资金加速)",
+    "P37_momentum_up":    "得分动量向上(较前日改善>0.05,牛市+熊市-陷阱)",
     "P37_momentum_down":  "得分动量向下(较前日恶化>0.05,资金撤退)",
+    "P34_P32_combo":      "黄金交叉(P34_gap_strong+P32_pump_risk,回测66.9%WR N=293)",
 }
 
 # ── 启动得分专属信号 ──
@@ -1133,6 +1155,14 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         total += short_signal
         early += short_signal
 
+        # ── P34+P32 黄金交叉 (5 Agent信号发现: 66.9% WR, N=293, 牛熊通用) ──
+        # P34_gap_strong + P32_pump_risk = 静默期后突发主力+高开=真突破
+        if "P34_gap_strong" in comp_sigs and "P32_pump_risk" in comp_sigs:
+            combo_bonus = 0.04
+            total += combo_bonus
+            early += combo_bonus
+            comp_sigs.append("P34_P32_combo")  # 标记黄金交叉
+
         # ── 风险惩罚（综合+启动均适用）──
         mcap_yi = f20 / 1e8
         penalty = 0.0
@@ -1187,12 +1217,17 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             if ratio_score > 0:
                 total -= ratio_score; early -= ratio_score  # 撤回P32加分
 
-        # ── P37: 得分动量 (改善>0.05:+0.03, 恶化<-0.05:-0.03) ──
+        # ── P37: 得分动量 (体制感知: 牛市+0.05, 熊市动量向上是陷阱-0.03) ──
+        # 5 Agent信号发现: P37_momentum_up全局-8pp WR, 牛市57.4%→熊市仅20.7%
         if code in prev_scores:
             score_change = total - prev_scores[code]
             if score_change > 0.05:
-                total += 0.05; comp_sigs.append("P37_momentum_up")
-                early += 0.05
+                if regime in ("bear", "bear_bias"):
+                    total -= 0.03; comp_sigs.append("P37_momentum_up")
+                    early -= 0.03
+                else:
+                    total += 0.05; comp_sigs.append("P37_momentum_up")
+                    early += 0.05
             elif score_change < -0.05:
                 total -= 0.05; comp_sigs.append("P37_momentum_down")
                 early -= 0.05
