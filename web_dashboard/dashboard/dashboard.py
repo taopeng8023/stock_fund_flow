@@ -86,6 +86,7 @@ class DashboardState(rx.State):
     positions: list[dict] = []
     positions_loaded: bool = False
     total_pnl: str = ""
+    total_pnl_color: str = "gray"
 
     # ── Risk ──
     bs_level: int = -1
@@ -318,6 +319,7 @@ class DashboardState(rx.State):
             self.positions = positions
             total = sum(p["pnl_val"] for p in positions)
             self.total_pnl = f"{total:+.1f}%"
+            self.total_pnl_color = "green" if total > 0 else ("red" if total < 0 else "gray")
             self.positions_loaded = True
         except Exception as e:
             self.positions = []
@@ -420,15 +422,37 @@ def _fmt_yi(v):
 # UI Components
 # ============================================================
 
-def stat_card(title: str, value: str, color: str = "blue"):
+def stat_card(title: str, value: str, color: str = "blue", icon_tag: str = "",
+              subtitle: str = ""):
+    """Enhanced stat card with optional icon, value, subtitle, and semantic color."""
     return rx.card(
-        rx.vstack(
-            rx.text(title, size="1",
-                    color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
-            rx.text(value, size="5", weight="bold", color=color),
-            align="center", spacing="0",
+        rx.hstack(
+            rx.cond(
+                icon_tag != "",
+                rx.icon(tag=icon_tag, size=20,
+                        color=rx.color_mode_cond(rx.color(color, 9), rx.color(color, 8))),
+            ),
+            rx.vstack(
+                rx.text(title, size="1", weight="medium",
+                        color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+                rx.text(value, size="4", weight="bold",
+                        color=rx.color_mode_cond(rx.color(color, 9), rx.color(color, 8))),
+                rx.cond(
+                    subtitle != "",
+                    rx.text(subtitle, size="1",
+                            color=rx.color_mode_cond(rx.color(color, 8), rx.color(color, 9))),
+                ),
+                spacing="0", align="start",
+            ),
+            spacing="3", align="center",
         ),
-        padding="0.8em", min_width="120px",
+        padding="0.8em 1em",
+        width="auto",
+        min_width="140px",
+        box_shadow=rx.color_mode_cond("0 1px 3px rgba(0,0,0,0.06)", "0 1px 3px rgba(0,0,0,0.3)"),
+        _hover={"box_shadow": rx.color_mode_cond(
+            "0 2px 8px rgba(0,0,0,0.1)", "0 2px 8px rgba(0,0,0,0.4)")},
+        transition="box-shadow 200ms ease",
     )
 
 
@@ -437,40 +461,27 @@ def stat_card(title: str, value: str, color: str = "blue"):
 # ============================================================
 
 def _nav_item(page_key: str, label: str, icon_tag: str) -> rx.Component:
-    """Sidebar navigation item with active-state highlighting."""
-    return rx.cond(
-        DashboardState.selected_page == page_key,
-        rx.button(
-            rx.hstack(
-                rx.icon(tag=icon_tag, size=16),
-                rx.text(label, size="2", weight="bold"),
-                spacing="2", align="center",
-            ),
-            variant="solid", color_scheme="blue",
-            on_click=DashboardState.set_page(page_key),
-            width="100%", justify="start",
-            border_radius="8px", cursor="pointer",
+    """Sidebar navigation item with active left-border accent + background highlight."""
+    is_active = DashboardState.selected_page == page_key
+    return rx.button(
+        rx.hstack(
+            rx.icon(tag=icon_tag, size=17),
+            rx.text(label, size="2", weight="medium"),
+            spacing="3", align="center",
         ),
-        rx.button(
-            rx.hstack(
-                rx.icon(tag=icon_tag, size=16),
-                rx.text(label, size="2"),
-                spacing="2", align="center",
-            ),
-            variant="ghost", color_scheme="gray",
-            on_click=DashboardState.set_page(page_key),
-            width="100%", justify="start",
-            border_radius="8px", cursor="pointer",
+        variant="ghost",
+        color_scheme=rx.cond(is_active, "blue", "gray"),
+        on_click=DashboardState.set_page(page_key),
+        width="100%", justify="start",
+        border_radius="8px",
+        padding_x="0.8em", padding_y="0.5em",
+        cursor="pointer",
+        transition="all 150ms ease",
+        bg=rx.cond(
+            is_active,
+            rx.color_mode_cond(rx.color("blue", 2), rx.color("blue", 3)),
+            "transparent",
         ),
-    )
-
-
-def _section_label(title: str):
-    return rx.text(
-        title, size="1", weight="bold",
-        color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11)),
-        letter_spacing="0.05em",
-        padding_x="0.5em", padding_y="0.75em 0.5em 0.25em",
     )
 
 
@@ -481,20 +492,35 @@ def _header():
             variant="ghost", color_scheme="gray",
             on_click=DashboardState.toggle_sidebar,
         ),
-        rx.heading("📊 A股量化系统", size="5", weight="bold"),
+        rx.icon(tag="bar-chart-3", size=22, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+        rx.heading("A股量化系统", size="5", weight="bold"),
         rx.spacer(),
-        rx.text("日期:", size="2"),
-        rx.input(value=DashboardState.selected_date,
-                 on_change=DashboardState.set_date, width="120px", size="2"),
-        rx.button("今天", on_click=DashboardState.set_date(today_str()), size="2"),
+        rx.hstack(
+            rx.icon(tag="calendar", size=14, color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+            rx.input(value=DashboardState.selected_date,
+                     on_change=DashboardState.set_date, width="110px", size="1"),
+            rx.button("今天", on_click=DashboardState.set_date(today_str()), size="1", variant="soft"),
+            spacing="2", align="center",
+        ),
         rx.color_mode.button(),
-        rx.button("刷新全部", on_click=[
+        rx.button("刷新", on_click=[
             DashboardState.load_diagnosis,
             DashboardState.load_collector_files,
             DashboardState.load_picks,
-        ], size="2"),
-        width="100%", height="56px", padding="0 1.5em", align="center",
+        ], size="1", variant="soft", color_scheme="blue"),
+        width="100%", height="52px", padding="0 1.2em", align="center",
         border_bottom=rx.color_mode_cond("1px solid #e5e7eb", "1px solid #2d2d3f"),
+        bg=rx.color_mode_cond("#fafbfc", "#0c0c14"),
+    )
+
+
+def _sidebar_section(title: str):
+    """Small uppercase section label in sidebar."""
+    return rx.text(
+        title, size="1", weight="bold",
+        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11)),
+        letter_spacing="0.06em",
+        padding_x="0.8em", padding_y="0.6em 0 0.2em",
     )
 
 
@@ -502,31 +528,40 @@ def _sidebar():
     return rx.cond(
         DashboardState.sidebar_open,
         rx.vstack(
-            _section_label("概览"),
+            # Logo area
+            rx.hstack(
+                rx.icon(tag="bar-chart-3", size=22, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+                rx.text("A股量化", size="3", weight="bold",
+                        color=rx.color_mode_cond(rx.color("slate", 12), rx.color("slate", 1))),
+                spacing="2", align="center",
+                padding_x="0.5em", padding_bottom="0.5em",
+            ),
+            rx.separator(size="4"),
+            _sidebar_section("概览"),
             _nav_item("diagnosis", "盘面诊断", "activity"),
             _nav_item("risk", "风险监控", "shield-alert"),
             rx.separator(size="4"),
-            _section_label("交易"),
+            _sidebar_section("交易"),
             _nav_item("portfolio", "持仓管理", "briefcase"),
             _nav_item("trades", "交易历史", "arrow-left-right"),
-            _nav_item("picks", "选股结果", "flame"),
+            _nav_item("picks", "选股结果", "sparkles"),
             rx.separator(size="4"),
-            _section_label("分析"),
+            _sidebar_section("分析"),
             _nav_item("backtest", "回测分析", "trending-up"),
             _nav_item("factor", "因子分析", "microscope"),
             rx.separator(size="4"),
-            _section_label("系统"),
+            _sidebar_section("系统"),
             _nav_item("collector", "数据采集", "folder-open"),
             _nav_item("cron", "定时任务", "clock"),
             rx.spacer(),
             rx.separator(size="4"),
-            rx.text("v0.5.10", size="1",
+            rx.text("v0.6.0", size="1",
                     color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
-            width="260px",
+            width="240px",
             height="100%",
-            padding="1em",
+            padding="0.8em 0.5em",
             border_right=rx.color_mode_cond("1px solid #e5e7eb", "1px solid #2d2d3f"),
-            spacing="1",
+            spacing="0",
             overflow_y="auto",
         ),
         rx.fragment(),
@@ -569,53 +604,90 @@ def _layout():
 
 def diagnosis_page():
     return rx.vstack(
-        rx.button("🔄 加载盘面诊断", on_click=DashboardState.load_diagnosis, size="2"),
+        # Page header
+        rx.hstack(
+            rx.icon(tag="activity", size=20, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("盘面诊断", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("加载数据", on_click=DashboardState.load_diagnosis,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
+        ),
         rx.cond(
             ~DashboardState.diag_loaded,
-            rx.text("点击按钮加载", color="gray"),
+            # Loading placeholder
             rx.vstack(
-                rx.heading(f"📈 {DashboardState.regime}  (置信度 {DashboardState.regime_conf})", size="5"),
+                rx.icon(tag="chart-bar-big", size=40, color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「加载数据」获取今日盘面诊断", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
+            rx.vstack(
+                # KPI Summary Bar — market regime + risk + position
                 rx.hstack(
-                    stat_card("全市场股票", DashboardState.stock_count.to_string(), "purple"),
-                    stat_card("风险等级", DashboardState.risk_level.upper(), "orange"),
-                    stat_card("建议仓位", DashboardState.position_adj, "blue"),
-                    stat_card("仓位建议", DashboardState.position_advice, "gray"),
-                    wrap="wrap",
+                    stat_card("市场体制", DashboardState.regime, "blue", "target",
+                              f"置信度 {DashboardState.regime_conf}"),
+                    stat_card("风险等级", DashboardState.risk_level.upper(), "orange", "shield-alert"),
+                    stat_card("建议仓位", f"{DashboardState.position_adj}%", "blue", "pie-chart",
+                              DashboardState.position_advice),
+                    stat_card("全市场股票", DashboardState.stock_count.to_string(), "purple", "layers"),
+                    wrap="wrap", width="100%",
                 ),
-                rx.heading("市场宽度", size="4"),
+                # Market Breadth section
                 rx.hstack(
-                    stat_card("上涨占比", DashboardState.up_ratio, "green"),
-                    stat_card("下跌占比", DashboardState.down_ratio, "red"),
-                    stat_card("涨停", DashboardState.limit_up_count.to_string(), "red"),
-                    stat_card("跌停", DashboardState.limit_down_count.to_string(), "green"),
-                    stat_card("中位涨跌", DashboardState.median_chg, "blue"),
-                    wrap="wrap",
+                    rx.icon(tag="chart-bar", size=16,
+                            color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+                    rx.text("市场宽度", size="3", weight="bold"),
+                    spacing="2", align="center", width="100%",
                 ),
-                rx.heading("资金全景", size="4"),
                 rx.hstack(
-                    stat_card("主力净流入", DashboardState.total_main_flow, "green"),
-                    stat_card("主力正流占比", DashboardState.pos_flow_ratio, "blue"),
-                    stat_card("超大单主导", DashboardState.super_dom_ratio, "purple"),
-                    stat_card("融资正流占比", DashboardState.margin_pos_ratio, "orange"),
-                    wrap="wrap",
+                    stat_card("上涨占比", DashboardState.up_ratio, "green", "trending-up"),
+                    stat_card("下跌占比", DashboardState.down_ratio, "red", "trending-down"),
+                    stat_card("涨停数", DashboardState.limit_up_count.to_string(), "red", "chevron-up"),
+                    stat_card("跌停数", DashboardState.limit_down_count.to_string(), "green", "chevron-down"),
+                    stat_card("中位涨跌", DashboardState.median_chg, "blue", "minus"),
+                    wrap="wrap", width="100%",
                 ),
+                # Fund Flow section
+                rx.hstack(
+                    rx.icon(tag="banknote", size=16,
+                            color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+                    rx.text("资金全景", size="3", weight="bold"),
+                    spacing="2", align="center", width="100%",
+                ),
+                rx.hstack(
+                    stat_card("主力净流入", DashboardState.total_main_flow, "green", "arrow-down-to-line"),
+                    stat_card("主力正流比", DashboardState.pos_flow_ratio, "blue", "percent"),
+                    stat_card("超大单主导", DashboardState.super_dom_ratio, "purple", "anchor"),
+                    stat_card("融资正流比", DashboardState.margin_pos_ratio, "orange", "scale"),
+                    wrap="wrap", width="100%",
+                ),
+                # Risk alerts
                 rx.cond(
                     DashboardState.risk_alerts.length() > 0,
-                    rx.vstack(
-                        rx.heading("⚠️ 风险提示", size="4", color="red"),
-                        rx.foreach(DashboardState.risk_alerts,
-                                   lambda a: rx.text(f"• {a}", color="red", size="2")),
+                    rx.callout(
+                        rx.vstack(
+                            rx.hstack(
+                                rx.icon(tag="triangle-alert", size=18, color="red"),
+                                rx.text("风险提示", weight="bold", size="2", color="red"),
+                                spacing="2", align="center",
+                            ),
+                            rx.foreach(DashboardState.risk_alerts,
+                                       lambda a: rx.text(f"• {a}", color="red", size="1")),
+                            spacing="2", width="100%",
+                        ),
+                        color_scheme="red", width="100%", variant="soft",
                     ),
                 ),
-                # 涨跌分布环形图
+                # Breadth donut chart
                 rx.card(
-                    PlotlyFromDict(data=DashboardState.breadth_donut_fig, height="350px"),
+                    PlotlyFromDict.create(data=DashboardState.breadth_donut_fig, height="350px"),
                     width="100%",
                 ),
                 spacing="3", width="100%",
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 
@@ -624,29 +696,45 @@ def diagnosis_page():
 def collector_page():
     return rx.vstack(
         rx.hstack(
-            rx.button("🔄 刷新", on_click=DashboardState.load_collector_files, size="2"),
-            rx.button("🚀 执行采集", on_click=DashboardState.run_collector, size="2", color_scheme="green"),
+            rx.icon(tag="folder-open", size=20,
+                    color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("数据采集", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("执行采集", on_click=DashboardState.run_collector,
+                      size="1", variant="soft", color_scheme="green"),
+            rx.button("刷新", on_click=DashboardState.load_collector_files,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
         ),
         rx.cond(
             DashboardState.collector_files.length() > 0,
             rx.table.root(
-                rx.table.header(rx.table.row(
-                    rx.table.column_header_cell("文件名"),
-                    rx.table.column_header_cell("类型"),
-                    rx.table.column_header_cell("大小"),
-                    rx.table.column_header_cell("时间"),
-                )),
+                rx.table.header(
+                    rx.table.row(
+                        rx.table.column_header_cell("文件名"),
+                        rx.table.column_header_cell("类型"),
+                        rx.table.column_header_cell("大小"),
+                        rx.table.column_header_cell("时间"),
+                    ),
+                    bg=rx.color_mode_cond(rx.color("gray", 2), rx.color("gray", 3)),
+                ),
                 rx.table.body(rx.foreach(DashboardState.collector_files, lambda f: rx.table.row(
                     rx.table.cell(f["name"]),
-                    rx.table.cell(rx.badge(f["type"])),
+                    rx.table.cell(rx.badge(f["type"], variant="soft", size="1")),
                     rx.table.cell(f["size"]),
                     rx.table.cell(f["mtime"]),
                 ))),
-                width="100%",
+                width="100%", variant="surface",
             ),
-            rx.text("点击刷新加载文件列表", color="gray"),
+            rx.vstack(
+                rx.icon(tag="folder-open", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「刷新」加载数据文件列表", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 
@@ -655,36 +743,54 @@ def collector_page():
 def picks_page():
     return rx.vstack(
         rx.hstack(
-            rx.button("🔄 加载", on_click=DashboardState.load_picks, size="2"),
-            rx.button("🚀 执行选股", on_click=DashboardState.run_screener, size="2", color_scheme="green"),
+            rx.icon(tag="sparkles", size=20, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("选股结果", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("执行选股", on_click=DashboardState.run_screener,
+                      size="1", variant="soft", color_scheme="green"),
+            rx.button("加载结果", on_click=DashboardState.load_picks,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
         ),
         rx.cond(
             ~DashboardState.picks_loaded,
-            rx.text("点击按钮加载选股结果", color="gray"),
+            rx.vstack(
+                rx.icon(tag="sparkles", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「加载结果」查看选股数据", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
             rx.cond(
                 DashboardState.picks.length() > 0,
                 rx.vstack(
-                    rx.heading(f"🔥 精选候选 ({DashboardState.picks.length()} 只)", size="5"),
+                    rx.text(f"精选候选 — {DashboardState.picks.length()} 只", size="3", weight="bold"),
                     rx.table.root(
-                        rx.table.header(rx.table.row(
-                            rx.table.column_header_cell("排名"), rx.table.column_header_cell("代码"),
-                            rx.table.column_header_cell("名称"), rx.table.column_header_cell("得分"),
-                            rx.table.column_header_cell("涨跌%"), rx.table.column_header_cell("主力流入"),
-                            rx.table.column_header_cell("板块"),
-                        )),
+                        rx.table.header(
+                            rx.table.row(
+                                rx.table.column_header_cell("#"), rx.table.column_header_cell("代码"),
+                                rx.table.column_header_cell("名称"), rx.table.column_header_cell("得分"),
+                                rx.table.column_header_cell("涨跌%"), rx.table.column_header_cell("主力流入"),
+                                rx.table.column_header_cell("板块"),
+                            ),
+                            bg=rx.color_mode_cond(rx.color("gray", 2), rx.color("gray", 3)),
+                        ),
                         rx.table.body(rx.foreach(DashboardState.picks, _pick_row)),
                         width="100%",
                     ),
                     rx.cond(
                         DashboardState.limit_up.length() > 0,
                         rx.vstack(
-                            rx.heading(f"👀 涨停观察池 ({DashboardState.limit_up.length()} 只)", size="5", color="red"),
+                            rx.text(f"涨停观察池 — {DashboardState.limit_up.length()} 只", size="3", weight="bold", color="red"),
                             rx.table.root(
-                                rx.table.header(rx.table.row(
-                                    rx.table.column_header_cell("代码"), rx.table.column_header_cell("名称"),
-                                    rx.table.column_header_cell("涨跌%"), rx.table.column_header_cell("主力流入"),
-                                    rx.table.column_header_cell("板块"),
-                                )),
+                                rx.table.header(
+                                    rx.table.row(
+                                        rx.table.column_header_cell("代码"), rx.table.column_header_cell("名称"),
+                                        rx.table.column_header_cell("涨跌%"), rx.table.column_header_cell("主力流入"),
+                                        rx.table.column_header_cell("板块"),
+                                    ),
+                                    bg=rx.color_mode_cond(rx.color("gray", 2), rx.color("gray", 3)),
+                                ),
                                 rx.table.body(rx.foreach(DashboardState.limit_up, _limit_row)),
                                 width="100%",
                             ),
@@ -692,25 +798,36 @@ def picks_page():
                     ),
                     spacing="3", width="100%",
                 ),
-                rx.text("无选股数据", color="gray"),
+                rx.vstack(
+                    rx.icon(tag="search", size=40,
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                    rx.text("无选股数据，请先执行选股", size="2",
+                            color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                    spacing="3", align="center", padding="3em 0",
+                ),
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 def _pick_row(p: dict):
     return rx.table.row(
-        rx.table.cell(p["rank"]), rx.table.cell(p["code"]),
-        rx.table.cell(p["name"]), rx.table.cell(p["score"]),
-        rx.table.cell(p["chg_pct"]), rx.table.cell(p["main_flow"]),
-        rx.table.cell(p["sector_name"]),
+        rx.table.cell(rx.badge(str(p.get("rank", "")), variant="soft", size="1")),
+        rx.table.cell(rx.code(str(p.get("code", "")), size="1", variant="ghost")),
+        rx.table.cell(p.get("name", "")),
+        rx.table.cell(p.get("score", "")),
+        rx.table.cell(p.get("chg_pct", "")),
+        rx.table.cell(p.get("main_flow", "")),
+        rx.table.cell(p.get("sector_name", "")),
     )
 
 def _limit_row(p: dict):
     return rx.table.row(
-        rx.table.cell(p["code"]), rx.table.cell(p["name"]),
-        rx.table.cell(p["chg_pct"]), rx.table.cell(p["main_flow"]),
-        rx.table.cell(p["sector_name"]),
+        rx.table.cell(rx.code(str(p.get("code", "")), size="1", variant="ghost")),
+        rx.table.cell(p.get("name", "")),
+        rx.table.cell(p.get("chg_pct", "")),
+        rx.table.cell(p.get("main_flow", "")),
+        rx.table.cell(p.get("sector_name", "")),
     )
 
 
@@ -718,19 +835,30 @@ def _limit_row(p: dict):
 
 def cron_page():
     return rx.vstack(
-        rx.heading("📋 daily_run.sh", size="5"),
-        rx.button("📂 加载脚本", on_click=DashboardState.load_cron_script, size="2"),
+        rx.hstack(
+            rx.icon(tag="clock", size=20, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("定时任务", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("加载脚本", on_click=DashboardState.load_cron_script,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
+        ),
         rx.cond(
             DashboardState.cron_content != "",
-            rx.code_block(DashboardState.cron_content, language="bash",
-                          width="100%", border_radius="8px"),
+            rx.vstack(
+                rx.text("daily_run.sh", size="2", weight="bold"),
+                rx.code_block(DashboardState.cron_content, language="bash",
+                              width="100%", border_radius="8px"),
+                width="100%",
+            ),
         ),
-        rx.button("▶ 执行 daily_run.sh", on_click=DashboardState.run_cron,
-                  size="3", color_scheme="red", loading=DashboardState.cron_running),
+        rx.button("执行 daily_run.sh", on_click=DashboardState.run_cron,
+                  size="2", color_scheme="red", loading=DashboardState.cron_running,
+                  width="100%"),
         rx.cond(
             DashboardState.cron_output != "",
             rx.vstack(
-                rx.heading("执行输出", size="5"),
+                rx.text("执行输出", size="2", weight="bold"),
                 rx.box(
                     rx.text(DashboardState.cron_output, white_space="pre-wrap", size="1"),
                     padding="1em", background="#1e1e1e", color="#d4d4d4",
@@ -740,7 +868,7 @@ def cron_page():
                 width="100%",
             ),
         ),
-        spacing="4", width="100%", padding="1em",
+        spacing="4", width="100%", padding="1.2em",
     )
 
 
@@ -749,44 +877,75 @@ def cron_page():
 def portfolio_page():
     return rx.vstack(
         rx.hstack(
-            rx.button("🔄 刷新持仓", on_click=DashboardState.load_portfolio, size="2"),
-            rx.button("🚀 检查卖出信号", on_click=DashboardState.load_risk, size="2", color_scheme="orange"),
+            rx.icon(tag="briefcase", size=20, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("持仓管理", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("检查卖出信号", on_click=DashboardState.load_risk,
+                      size="1", variant="soft", color_scheme="orange"),
+            rx.button("刷新持仓", on_click=DashboardState.load_portfolio,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
         ),
         rx.cond(
             ~DashboardState.positions_loaded,
-            rx.text("点击刷新加载持仓", color="gray"),
+            rx.vstack(
+                rx.icon(tag="briefcase", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「刷新持仓」加载当前持仓数据", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
             rx.cond(
                 DashboardState.positions.length() > 0,
                 rx.vstack(
                     rx.hstack(
-                        rx.heading(f"💼 当前持仓 ({DashboardState.positions.length()} 只)", size="5"),
+                        rx.text(f"共 {DashboardState.positions.length()} 只", size="2",
+                                color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
                         rx.spacer(),
-                        rx.text(DashboardState.total_pnl, size="4", weight="bold"),
+                        rx.text("总盈亏 ", size="2",
+                                color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+                        rx.text(DashboardState.total_pnl, size="4", weight="bold",
+                                color=DashboardState.total_pnl_color),
                     ),
                     rx.table.root(
-                        rx.table.header(rx.table.row(
-                            rx.table.column_header_cell("代码"), rx.table.column_header_cell("名称"),
-                            rx.table.column_header_cell("入场价"), rx.table.column_header_cell("现价"),
-                            rx.table.column_header_cell("盈亏%"), rx.table.column_header_cell("持有天"),
-                            rx.table.column_header_cell("止损/止盈"),
-                        )),
+                        rx.table.header(
+                            rx.table.row(
+                                rx.table.column_header_cell("代码"),
+                                rx.table.column_header_cell("名称"),
+                                rx.table.column_header_cell("入场价"),
+                                rx.table.column_header_cell("现价"),
+                                rx.table.column_header_cell("盈亏%"),
+                                rx.table.column_header_cell("持有天"),
+                                rx.table.column_header_cell("止损/止盈"),
+                            ),
+                            bg=rx.color_mode_cond(rx.color("gray", 2), rx.color("gray", 3)),
+                        ),
                         rx.table.body(rx.foreach(DashboardState.positions, _pos_row)),
                         width="100%",
                     ),
                     spacing="3", width="100%",
                 ),
-                rx.text("📭 暂无持仓，使用 portfolio.manager 添加", color="gray"),
+                rx.vstack(
+                    rx.icon(tag="inbox", size=40,
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                    rx.text("暂无持仓，使用 portfolio.manager 添加", size="2",
+                            color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                    spacing="3", align="center", padding="3em 0",
+                ),
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 def _pos_row(p: dict):
     return rx.table.row(
-        rx.table.cell(p["code"]), rx.table.cell(p["name"]),
-        rx.table.cell(p["entry_price"]), rx.table.cell(p["current_price"]),
-        rx.table.cell(p["pnl_pct"]), rx.table.cell(p["hold_days"]),
-        rx.table.cell(p["sl_tp"]),
+        rx.table.cell(rx.code(p.get("code", ""), size="1", variant="ghost")),
+        rx.table.cell(p.get("name", "")),
+        rx.table.cell(p.get("entry_price", "")),
+        rx.table.cell(p.get("current_price", "")),
+        rx.table.cell(rx.text(p.get("pnl_pct", ""), weight="medium")),
+        rx.table.cell(p.get("hold_days", "")),
+        rx.table.cell(p.get("sl_tp", "")),
     )
 
 
@@ -794,44 +953,72 @@ def _pos_row(p: dict):
 
 def risk_page():
     return rx.vstack(
-        rx.button("🔄 加载风险数据", on_click=DashboardState.load_risk, size="2"),
+        rx.hstack(
+            rx.icon(tag="shield-alert", size=20,
+                    color=rx.color_mode_cond(rx.color("red", 9), rx.color("red", 8))),
+            rx.heading("风险监控", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("加载风险数据", on_click=DashboardState.load_risk,
+                      size="1", variant="soft", color_scheme="red"),
+            width="100%", align="center",
+        ),
         rx.cond(
             ~DashboardState.bs_loaded,
-            rx.text("点击加载黑天鹅风险数据", color="gray"),
+            rx.vstack(
+                rx.icon(tag="shield-alert", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「加载风险数据」检测黑天鹅风险", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
             rx.vstack(
                 rx.hstack(
-                    rx.heading(f"Level {DashboardState.bs_level} — {DashboardState.bs_level_name}",
-                               size="6"),
+                    rx.heading(f"Level {DashboardState.bs_level} — {DashboardState.bs_level_name}", size="6"),
                     rx.spacer(),
                     rx.card(
                         rx.vstack(
-                            rx.text("风险统计", size="3", weight="bold"),
-                            rx.text(f"CRITICAL: {DashboardState.bs_critical}", color="red"),
-                            rx.text(f"SEVERE: {DashboardState.bs_severe}", color="orange"),
-                            rx.text(f"HIGH: {DashboardState.bs_high}", color="yellow"),
-                            spacing="1",
+                            rx.text("风险统计", size="2", weight="bold"),
+                            rx.hstack(
+                                rx.badge(f"CRITICAL {DashboardState.bs_critical}", color_scheme="red", size="1"),
+                                rx.badge(f"SEVERE {DashboardState.bs_severe}", color_scheme="orange", size="1"),
+                                rx.badge(f"HIGH {DashboardState.bs_high}", color_scheme="yellow", size="1"),
+                                spacing="2",
+                            ),
+                            spacing="2",
                         ),
-                        padding="1em",
+                        padding="0.8em",
                     ),
+                    width="100%",
                 ),
-                # 风险等级仪表盘
+                # Risk gauge chart
                 rx.card(
-                    PlotlyFromDict(data=DashboardState.risk_gauge_fig, height="350px"),
+                    PlotlyFromDict.create(data=DashboardState.risk_gauge_fig, height="350px"),
                     width="100%",
                 ),
                 rx.cond(
                     DashboardState.bs_triggered.length() > 0,
                     rx.vstack(
-                        rx.heading("⚠️ 触发规则", size="4", color="red"),
+                        rx.hstack(
+                            rx.icon(tag="triangle-alert", size=16, color="red"),
+                            rx.text("触发规则", size="3", weight="bold", color="red"),
+                            spacing="2", align="center",
+                        ),
                         rx.foreach(DashboardState.bs_triggered, _trigger_row),
                         width="100%",
                     ),
-                    rx.text("✅ 无规则触发，市场正常", color="green", size="3"),
+                    rx.callout(
+                        rx.text("无规则触发，市场正常", size="2", weight="medium"),
+                        color_scheme="green", width="100%", variant="soft",
+                    ),
                 ),
                 rx.cond(
                     DashboardState.bs_actions.length() > 0,
                     rx.vstack(
-                        rx.heading("📋 建议动作", size="4"),
+                        rx.hstack(
+                            rx.icon(tag="list-checks", size=16, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+                            rx.text("建议动作", size="3", weight="bold"),
+                            spacing="2", align="center",
+                        ),
                         rx.foreach(DashboardState.bs_actions,
                                    lambda a: rx.text(f"→ {a}", size="2")),
                         width="100%",
@@ -840,17 +1027,19 @@ def risk_page():
                 spacing="3", width="100%",
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 def _trigger_row(r: dict):
     return rx.card(
         rx.hstack(
-            rx.badge(r["rule_id"], color_scheme="red"),
-            rx.text(r["name"], weight="bold"),
-            rx.text(r["detail"], size="2", color="gray"),
+            rx.badge(r.get("rule_id", ""), color_scheme="red", variant="solid"),
+            rx.text(r.get("name", ""), weight="bold", size="2"),
+            rx.text(r.get("detail", ""), size="1",
+                    color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+            spacing="3", align="center",
         ),
-        padding="0.5em", width="100%",
+        padding="0.6em 0.8em", width="100%",
     )
 
 
@@ -858,34 +1047,60 @@ def _trigger_row(r: dict):
 
 def trades_page():
     return rx.vstack(
-        rx.button("🔄 刷新", on_click=DashboardState.load_trades, size="2"),
+        rx.hstack(
+            rx.icon(tag="arrow-left-right", size=20,
+                    color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("交易历史", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("刷新", on_click=DashboardState.load_trades,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
+        ),
         rx.cond(
             ~DashboardState.trades_loaded,
-            rx.text("点击刷新加载交易记录", color="gray"),
+            rx.vstack(
+                rx.icon(tag="arrow-left-right", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「刷新」加载交易记录", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
             rx.cond(
                 DashboardState.trades.length() > 0,
                 rx.table.root(
-                    rx.table.header(rx.table.row(
-                        rx.table.column_header_cell("日期"), rx.table.column_header_cell("代码"),
-                        rx.table.column_header_cell("名称"), rx.table.column_header_cell("操作"),
-                        rx.table.column_header_cell("价格"), rx.table.column_header_cell("盈亏%"),
-                        rx.table.column_header_cell("原因"),
-                    )),
+                    rx.table.header(
+                        rx.table.row(
+                            rx.table.column_header_cell("日期"), rx.table.column_header_cell("代码"),
+                            rx.table.column_header_cell("名称"), rx.table.column_header_cell("操作"),
+                            rx.table.column_header_cell("价格"), rx.table.column_header_cell("盈亏%"),
+                            rx.table.column_header_cell("原因"),
+                        ),
+                        bg=rx.color_mode_cond(rx.color("gray", 2), rx.color("gray", 3)),
+                    ),
                     rx.table.body(rx.foreach(DashboardState.trades, _trade_row)),
-                    width="100%",
+                    width="100%", variant="surface",
                 ),
-                rx.text("暂无交易记录", color="gray"),
+                rx.vstack(
+                    rx.icon(tag="inbox", size=40,
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                    rx.text("暂无交易记录", size="2",
+                            color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                    spacing="3", align="center", padding="3em 0",
+                ),
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 def _trade_row(t: dict):
     return rx.table.row(
-        rx.table.cell(t["date"]), rx.table.cell(t["code"]),
-        rx.table.cell(t["name"]), rx.table.cell(t["action"]),
-        rx.table.cell(t["price"]), rx.table.cell(t["pnl_pct"]),
-        rx.table.cell(t["reason"]),
+        rx.table.cell(t.get("date", "")),
+        rx.table.cell(rx.code(t.get("code", ""), size="1", variant="ghost")),
+        rx.table.cell(t.get("name", "")),
+        rx.table.cell(t.get("action", "")),
+        rx.table.cell(t.get("price", "")),
+        rx.table.cell(t.get("pnl_pct", "")),
+        rx.table.cell(t.get("reason", "")),
     )
 
 
@@ -894,25 +1109,36 @@ def _trade_row(t: dict):
 def backtest_page():
     return rx.vstack(
         rx.hstack(
-            rx.button("🔄 加载回测数据", on_click=DashboardState.load_backtest, size="2"),
-            rx.button("📊 加载明细", on_click=DashboardState.load_backtest_daily, size="2",
-                      color_scheme="green"),
+            rx.icon(tag="trending-up", size=20, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("回测分析", size="5", weight="bold"),
+            rx.spacer(),
+            rx.button("加载明细", on_click=DashboardState.load_backtest_daily,
+                      size="1", variant="soft", color_scheme="green"),
+            rx.button("加载回测", on_click=DashboardState.load_backtest,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
         ),
         rx.cond(
             ~DashboardState.bt_loaded,
-            rx.text("点击「加载回测数据」查看回测分析图表", color="gray"),
+            rx.vstack(
+                rx.icon(tag="trending-up", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「加载回测」查看回测分析图表", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
             rx.cond(
                 DashboardState.bt_summary_rows.length() > 0,
                 rx.vstack(
                     # Row 1: 累计收益曲线 + 每日收益分布
                     rx.hstack(
                         rx.card(
-                            PlotlyFromDict(data=DashboardState.bt_equity_fig,
+                            PlotlyFromDict.create(data=DashboardState.bt_equity_fig,
                                       height="400px", width="100%"),
                             width="50%",
                         ),
                         rx.card(
-                            PlotlyFromDict(data=DashboardState.bt_daily_bars_fig,
+                            PlotlyFromDict.create(data=DashboardState.bt_daily_bars_fig,
                                       height="400px", width="100%"),
                             width="50%",
                         ),
@@ -921,12 +1147,12 @@ def backtest_page():
                     # Row 2: 因子区分度 + 分位数单调性
                     rx.hstack(
                         rx.card(
-                            PlotlyFromDict(data=DashboardState.bt_factor_edge_fig,
+                            PlotlyFromDict.create(data=DashboardState.bt_factor_edge_fig,
                                       height="400px", width="100%"),
                             width="50%",
                         ),
                         rx.card(
-                            PlotlyFromDict(data=DashboardState.bt_decile_fig,
+                            PlotlyFromDict.create(data=DashboardState.bt_decile_fig,
                                       height="400px", width="100%"),
                             width="50%",
                         ),
@@ -936,8 +1162,8 @@ def backtest_page():
                     rx.card(
                         rx.vstack(
                             rx.text(f"选股日期: {DashboardState.bt_selected_daily_date}",
-                                    size="2", color="gray"),
-                            PlotlyFromDict(data=DashboardState.bt_score_scatter_fig,
+                                    size="2", color=rx.color_mode_cond(rx.color("gray", 10), rx.color("gray", 11))),
+                            PlotlyFromDict.create(data=DashboardState.bt_score_scatter_fig,
                                       height="400px", width="100%"),
                             width="100%",
                         ),
@@ -945,11 +1171,18 @@ def backtest_page():
                     ),
                     spacing="3", width="100%",
                 ),
-                rx.text("暂无回测数据，请先运行 python -m daily_pipeline.main --mode=backtest",
-                        color="gray"),
+                rx.vstack(
+                    rx.icon(tag="chart-bar-big", size=40,
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                    rx.text("暂无回测数据", size="2",
+                            color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                    rx.text("运行 python -m daily_pipeline.main --mode=backtest", size="1",
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 10))),
+                    spacing="2", align="center", padding="3em 0",
+                ),
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 
@@ -958,28 +1191,39 @@ def backtest_page():
 def factor_page():
     return rx.vstack(
         rx.hstack(
-            rx.button("🔄 加载因子数据", on_click=DashboardState.load_factor_analysis, size="2"),
-            rx.text(f"日期: {DashboardState.selected_date}", size="2", color="gray"),
+            rx.icon(tag="microscope", size=20, color=rx.color_mode_cond(rx.color("blue", 9), rx.color("blue", 8))),
+            rx.heading("因子分析", size="5", weight="bold"),
+            rx.spacer(),
+            rx.badge(DashboardState.selected_date, variant="soft", size="1"),
+            rx.button("加载因子数据", on_click=DashboardState.load_factor_analysis,
+                      size="1", variant="soft", color_scheme="blue"),
+            width="100%", align="center",
         ),
         rx.cond(
             ~DashboardState.factor_loaded,
-            rx.text("点击「加载因子数据」查看因子分析图表", color="gray"),
+            rx.vstack(
+                rx.icon(tag="microscope", size=40,
+                        color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                rx.text("点击「加载因子数据」查看因子分析图表", size="2",
+                        color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                spacing="3", align="center", padding="3em 0",
+            ),
             rx.cond(
                 DashboardState.factor_scores_rows.length() > 0,
                 rx.vstack(
                     rx.card(
-                        PlotlyFromDict(data=DashboardState.factor_contrib_fig,
+                        PlotlyFromDict.create(data=DashboardState.factor_contrib_fig,
                                   height="500px", width="100%"),
                         width="100%",
                     ),
                     rx.hstack(
                         rx.card(
-                            PlotlyFromDict(data=DashboardState.factor_hist_fig,
+                            PlotlyFromDict.create(data=DashboardState.factor_hist_fig,
                                       height="400px", width="100%"),
                             width="50%",
                         ),
                         rx.card(
-                            PlotlyFromDict(data=DashboardState.factor_box_fig,
+                            PlotlyFromDict.create(data=DashboardState.factor_box_fig,
                                       height="500px", width="100%"),
                             width="50%",
                         ),
@@ -987,11 +1231,18 @@ def factor_page():
                     ),
                     spacing="3", width="100%",
                 ),
-                rx.text("暂无当日评分数据，请先运行 python -m daily_pipeline.score 生成评分",
-                        color="gray"),
+                rx.vstack(
+                    rx.icon(tag="chart-bar-big", size=40,
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 11))),
+                    rx.text("暂无评分数据", size="2",
+                            color=rx.color_mode_cond(rx.color("gray", 9), rx.color("gray", 11))),
+                    rx.text("运行 python -m daily_pipeline.score 生成评分", size="1",
+                            color=rx.color_mode_cond(rx.color("gray", 8), rx.color("gray", 10))),
+                    spacing="2", align="center", padding="3em 0",
+                ),
             ),
         ),
-        width="100%", padding="1em",
+        width="100%", padding="1.2em",
     )
 
 

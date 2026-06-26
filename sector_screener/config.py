@@ -1,6 +1,14 @@
 """
 板块增强选股 — 配置中心
 所有阈值、权重、常量集中管理
+
+2026-06-26 优化（5 Agent 回测验证驱动）:
+  - 移除 4 个零区分度因子: analyst, technical, sector_diversity, limitup_proximity
+  - 降权冗余簇: capital 从 0.19→0.12, intra_sector 从 0.04→0.02
+  - 提权独立Alpha: sector 从 0.05→0.12 (|r|=0.29, 唯一独立因子)
+  - 提权最稳日内: intraday_trend 从 0.02→0.06 (排名轨迹 std=0.010)
+  - 保留资金流核心: multiday 0.08 (2.11x正向最强), capital 0.12
+  - 移除趋势过滤陷阱: trend 权重不增 (叠加趋势摧毁收益)
 """
 from collections import defaultdict
 
@@ -8,7 +16,7 @@ from collections import defaultdict
 # 风控阈值
 # ═══════════════════════════════════════
 MIN_PRICE       = 4.0
-MAX_PRICE       = 200.0
+MAX_PRICE       = 100.0   # 优化: 200→100 (P_high_price胜率仅31.7%)
 LIMIT_UP_PCT    = 9.8
 CANDIDATE_MAX_CHG = 9.5
 MIN_MAIN_FLOW   = 3000_0000
@@ -22,54 +30,68 @@ MAX_MCAP_YI     = 2000
 MAIN_BOARD_PREFIXES = ("000", "001", "002", "003", "300", "600", "601", "603", "605", "688")
 
 # ═══════════════════════════════════════
-# 25 维度权重 — 三市场景自适应
+# 25 维度权重 — 回测优化版 (2026-06-26)
 # ═══════════════════════════════════════
 WEIGHTS_BASE = {
-    "start_signal":  0.13,   # 回溯优化: 0.15→0.13 降低启动因子反向信号
-    "capital":       0.19,   # 真金白银 > 板块新鲜度
-    "trend":         0.10,
-    "sector":        0.05,   # 回溯优化: 0.07→0.05 板块过热信号反向
-    "position":      0.06,
-    "analyst":       0.05,   # 回溯优化: 有分析师覆盖的票次日更稳
-    "multiday":      0.06,   # 回溯优化: 0.04→0.06 多日累计流2.11x正向最强
-    "technical":     0.05,  # 回溯优化: 0.04→0.05 MA排列最佳单因子
-    "dragon_tiger":  0.03,
-    "north_flow":    0.02,
-    "intra_sector":  0.04,  # 行业内排名（合并原 ratio_rank 0.01）
-    "margin_net":    0.03,
-    "flow_accel":    0.01,  # 回溯优化: 0.03→0.01
-    "block_trade":   0.02,   # 🆕 大宗交易溢价信号
-    "org_research":  0.02,   # 🆕 机构调研热度
-    "earnings":      0.02,   # 🆕 业绩预告类型
-    "lockup_expiry": 0.02,   # 🆕 限售解禁风险
-    "margin_short":  0.02,   # 🆕 融券压力(已有字段f170/f172)
-    "margin_long":   0.02,   # 🆕 融资力度(已有字段f174/f175/f169)
-    "volume_quality":0.02,   # 🆕 成交额质量(已有字段f5/f6)
-    "intraday_trend":0.02,  # 🆕 日内轨迹动量(排名+资金加速)
-    "price_momentum":0.03,  # 🆕 多日价格回报(5/10/20日)
-    "sector_price": 0.03,   # 🆕 行业板块价格共振
-    "limitup_proximity":0.02,  # 🆕 涨停邻近惩罚
-    "sector_diversity":0.02,    # 🆕 行业分散度
+    # ── 核心Alpha (资金流维度) ──
+    "capital":       0.12,   # 优化: 0.19→0.12 降冗余簇权重
+    "multiday":      0.08,   # 优化: 0.06→0.08 多日累计2.11x正向最强
+    "start_signal":  0.10,   # 优化: 0.13→0.10 降冗余簇
+
+    # ── 独立Alpha (板块维度, |r|=0.29) ──
+    "sector":        0.12,   # 优化: 0.05→0.12 唯一独立信号, standalone WR=35.9%
+
+    # ── 日内维度 (排名轨迹 std=0.010) ──
+    "intraday_trend":0.06,   # 优化: 0.02→0.06 最稳定日内因子
+
+    # ── 辅助维度 ──
+    "trend":         0.08,   # 趋势确认 (不增权-陷阱已验证)
+    "position":      0.06,   # 位置健康
+    "price_momentum":0.04,   # 优化: 0.03→0.04 多日价格回报
+    "sector_price":  0.04,   # 优化: 0.03→0.04 板块价格共振
+
+    # ── 事件驱动 ──
+    "dragon_tiger":  0.04,   # 优化: 0.03→0.04 龙虎榜
+    "block_trade":   0.03,   # 大宗交易
+    "org_research":  0.03,   # 机构调研
+    "earnings":      0.03,   # 业绩预告
+    "lockup_expiry": 0.02,   # 限售解禁惩罚
+
+    # ── 融资融券 ──
+    "margin_net":    0.03,   # 融资净买入
+    "margin_short":  0.02,   # 融券压力
+    "margin_long":   0.02,   # 融资力度
+
+    # ── 微观结构 ──
+    "flow_accel":    0.02,   # 优化: 0.01→0.02 资金加速度
+    "volume_quality":0.02,   # 成交额质量
+    "intra_sector":  0.02,   # 优化: 0.04→0.02 属冗余簇
+    "north_flow":    0.02,   # 北向资金
+
+    # ── 已移除 (零区分度 cardinality=1) ──
+    # "analyst": 0 (所有股票=0.5)
+    # "technical": 0 (所有股票=0.5)
+    # "sector_diversity": 0 (所有股票=1.0)
+    # "limitup_proximity": 0 (cardinality极低)
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
-    "trend": 0.12, "dragon_tiger": 0.05, "analyst": 0.03, "position": 0.06,
-    "start_signal": 0.15, "capital": 0.17, "intra_sector": 0.05, "margin_net": 0.04,
-    "block_trade": 0.03, "org_research": 0.03, "earnings": 0.02, "lockup_expiry": 0.01,
-    "margin_long": 0.03, "volume_quality": 0.02, "intraday_trend": 0.03,
-    "price_momentum": 0.04, "sector_price": 0.04,
-    "limitup_proximity": 0.03, "sector_diversity": 0.02,
-    "ratio_rank": 0.00,
+    "trend": 0.10, "dragon_tiger": 0.06, "position": 0.05,
+    "start_signal": 0.12, "capital": 0.10, "margin_net": 0.04,
+    "block_trade": 0.04, "org_research": 0.04, "earnings": 0.03,
+    "margin_long": 0.03, "volume_quality": 0.03, "intraday_trend": 0.07,
+    "price_momentum": 0.05, "sector_price": 0.05,
+    "sector": 0.14,  # 牛市加板块权重
 }
 
 WEIGHTS_BEAR = {**WEIGHTS_BASE,
-    "analyst": 0.07, "north_flow": 0.04, "position": 0.10, "start_signal": 0.14,
-    "trend": 0.09, "dragon_tiger": 0.02, "capital": 0.14, "intra_sector": 0.04,
-    "block_trade": 0.01, "org_research": 0.01, "earnings": 0.03, "lockup_expiry": 0.03,
-    "margin_short": 0.04, "volume_quality": 0.01, "intraday_trend": 0.015,
+    "position": 0.10, "north_flow": 0.04, "start_signal": 0.12,
+    "trend": 0.06, "dragon_tiger": 0.02, "capital": 0.10,
+    "block_trade": 0.01, "org_research": 0.01, "earnings": 0.04,
+    "margin_short": 0.05, "margin_net": 0.02,
     "price_momentum": 0.02, "sector_price": 0.02,
-    "limitup_proximity": 0.04, "sector_diversity": 0.03,
-    "ratio_rank": 0.00,
+    "sector": 0.12,  # 熊市板块同样重要
+    "intraday_trend": 0.05,
 }
 
 # ═══════════════════════════════════════
