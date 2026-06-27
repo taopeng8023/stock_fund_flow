@@ -1,58 +1,153 @@
 """
-隔夜套利筛选 — 尾盘买入次日开盘卖出（回测驱动三级规则）
+隔夜套利筛选 — 尾盘买入次日早盘卖出
+约束: FUNDAMENTAL_RULES.md (涨停排除 / 隔夜套利 / 09:45-10:15 出场)
+信号来源: 574,604 笔跨日回测 + 7 Agent 独立验证 (FINAL_VERIFICATION_REPORT)
+A 级: 最高 WR 信号组合 (稀缺, 无需分数门槛)
+B 级: 适中覆盖信号组合 (score>=0.40, capital>=0.60)
+C 级: 广覆盖信号 (score>=0.50, capital>=0.65)
 
-16503笔回测验证的最优信号组合:
-  🥇 57%胜率: 分≥0.60 + 资≥0.80 + P34_gap − P36_overheat
-  🥈 43%胜率: 分≥0.60 + 资≥0.70 + P37_up − P36_overheat
-  🥉 34%胜率: 分≥0.55 + 资≥0.60 + P37_up − P36_overheat/P35_short
+验证报告胜率参考:
+  P4: P34_P32_combo + P35_short_cover        → 85.94% WR, +4.96%, N=640
+  P1: E3_strong_start + P34_gap_strong       → 74.39% WR, +2.99%, N=617
+  P0: P34_gap_strong + P32_pump_risk         → 66.21% WR, +2.44%, N=1456
+  P2: P_high_price+P35_short_pressure+P34_gap_reverse → 72.84% WR, N=243
 
-王者信号: P34_gap_strong(胜率+19%), P37_momentum_up(胜率+11%)
-避雷信号: P36_overheat(胜率-8%), P35_short_pressure(Bot50专属)
-资金得分是唯一有效的二级过滤器(趋势/位置/板块无单调性)
+避雷: P36_overheat(4.30%WR) P35_short_moderate(31.91%WR) P33_margin_moderate(17.54%WR)
+       P33_margin_weak P35_short_heavy P6_retail P37_momentum_down
 
 用法:
-  python daily_pipeline/filter_overnight.py 20260624
-  python daily_pipeline/filter_overnight.py 20260624 --top=10
+  python daily_pipeline/filter_overnight.py 20260626
+  python daily_pipeline/filter_overnight.py 20260626 --top=10
 """
 
 import csv
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 BJS_TZ = timezone(timedelta(hours=8))
-RESEARCH_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_data"
-)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RESEARCH_ROOT = os.path.join(PROJECT_ROOT, "research_data")
 
-# ── 全局最优Top3组合（16503笔全量统计验证）──
+# ═══════════════════════════════════════
+# 信号组合体系 (FINAL_VERIFICATION_REPORT)
+# ═══════════════════════════════════════
+
 TIERS = {
-    1: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
-        "require": ["P34_gap_strong", "P35_short_cover"],
-        "block": ["P36_overheat"], "label": "🥇王者(62%)", "bonus": 0.12,
-        "desc": "分0.60-0.70+资≥0.8+P34_gap+P35_cover-P36"},
-    2: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
-        "require": ["P34_gap_strong"],
-        "block": ["P36_overheat"], "label": "🥈高胜率(62%)", "bonus": 0.08,
-        "desc": "分0.60-0.70+资≥0.8+P34_gap-P36"},
-    3: {"score_lo": 0.60, "score_hi": 0.70, "capital": 0.80,
-        "require": ["P34_gap_strong"],
-        "block": [], "label": "🥉稳健(59%)", "bonus": 0.04,
-        "desc": "分0.60-0.70+资≥0.8+P34_gap"},
+    # ── A 级: 最高 WR, 稀缺信号自带高置信, 无需分数门槛 ──
+    "A1": {
+        "require": ["P34_P32_combo", "P35_short_cover"],
+        "label": "A1:三重信号(85.9%WR)", "bonus": 0.15,
+        "desc": "P34_P32_combo+P35_short_cover — 当前最强复合信号",
+    },
+    "A2": {
+        "require": ["E3_strong_start", "P34_gap_strong"],
+        "label": "A2:E3+P34共振(74.4%WR)", "bonus": 0.12,
+        "desc": "E3_strong_start+P34_gap_strong — 开盘强势+缺口确认",
+    },
+    "A3": {
+        "require": ["P34_gap_strong", "P32_pump_risk"],
+        "label": "A3:静默突破(66.2%WR)", "bonus": 0.10,
+        "desc": "P34_gap_strong+P32_pump_risk — 主力介入+高开突破",
+    },
+    "A4": {
+        "require": ["P_high_price", "P35_short_pressure", "P34_gap_reverse"],
+        "label": "A4:高价反转(72.8%WR)", "bonus": 0.10,
+        "desc": "高价+空头压力+缺口反转 — 震荡市90.8%WR",
+    },
+
+    # ── B 级: 适中覆盖, 需分数+资金质量过滤 ──
+    "B1": {
+        "require": ["P35_short_cover", "E6_short_squeeze"],
+        "score_min": 0.50, "capital_min": 0.70,
+        "label": "B1:逼空回补(85.9%WR)", "bonus": 0.08,
+        "desc": "空头回补+逼空启动 — P4核心组件",
+    },
+    "B2": {
+        "require": ["P34_P32_combo", "E3_strong_start"],
+        "score_min": 0.40, "capital_min": 0.60,
+        "label": "B2:突破+强势启动(80.8%WR)", "bonus": 0.08,
+        "desc": "主力突破+E3强势共振",
+    },
+    "B3": {
+        "require": ["P34_P32_combo", "E1_low_start"],
+        "score_min": 0.40, "capital_min": 0.60,
+        "label": "B3:突破+低位启动(69.6%WR)", "bonus": 0.06,
+        "desc": "主力突破+低位启动 — 均值回归",
+    },
+    "B4": {
+        "require": ["P34_P32_combo", "P37_momentum_up"],
+        "score_min": 0.40, "capital_min": 0.60,
+        "label": "B4:突破+动量(69.8%WR)", "bonus": 0.06,
+        "desc": "主力突破+得分动量向上",
+    },
+    "B5": {
+        "require": ["P34_gap_reverse", "P35_short_cover"],
+        "score_min": 0.40, "capital_min": 0.60,
+        "label": "B5:低开反转+回补", "bonus": 0.06,
+        "desc": "低开缺口反转+空头回补 — 震荡市反弹",
+    },
+
+    # ── C 级: 精选覆盖, 高门槛信号+分数双过滤 ──
+    "C1": {
+        "require": ["P35_short_cover"],
+        "score_min": 0.50, "capital_min": 0.65,
+        "label": "C1:空头回补(53.7%WR)", "bonus": 0.04,
+        "desc": "融券回补 — 高门槛精选",
+    },
+    "C2": {
+        "require": ["E3_strong_start"],
+        "score_min": 0.50, "capital_min": 0.65,
+        "label": "C2:强势启动", "bonus": 0.04,
+        "desc": "强势启动 — 高门槛精选",
+    },
+    "C3": {
+        "require": ["P34_gap_strong", "P33_margin_strong"],
+        "score_min": 0.50, "capital_min": 0.65,
+        "label": "C3:缺口+融资强势", "bonus": 0.02,
+        "desc": "高开缺口+融资猛买 — 高门槛精选",
+    },
+    "C4": {
+        "require": ["P32_ratio_accel", "P35_short_cover"],
+        "score_min": 0.50, "capital_min": 0.65,
+        "label": "C4:主力加速+回补", "bonus": 0.04,
+        "desc": "主力占比加速+空头回补 — 资金共振",
+    },
 }
 
-SIGNAL_VACUUM_BLOCK = True  # 排除无任何P3x信号的股票(胜率仅23%)
+# ═══════════════════════════════════════
+# 全局避雷 (7 Agent 交叉验证)
+# ═══════════════════════════════════════
 
-# 加分信号（附加提权，不强制）
-BONUS_SIGNALS = {
-    "P33_margin_strong": 0.02,   # 融资猛买(胜率+21%)
-    "P34_gap_strong":    0.03,   # 高开高走(王者)
-    "P32_ratio_accel":   0.01,   # 占比加速
-    "P35_short_cover":   0.01,   # 空头回补
-}
+GLOBAL_BLOCK_SIGNALS = [
+    "P36_overheat",           # 4.30% WR (最可靠负向, N=93)
+    "P35_short_moderate",     # 31.91% WR (N=47)
+    "P33_margin_moderate",    # 17.54% WR (N=57)
+    "P33_margin_weak",        # 融资买入为负
+    "P35_short_heavy",        # 融券/主力比>3
+    "P6_retail",              # 散户主导 → 0% WR
+    "P37_momentum_down",      # 得分动量下跌
+]
+
+SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
+
+# ═══════════════════════════════════════
+# 风控参数
+# ═══════════════════════════════════════
+
+MAX_PRICE = 200.0             # 最高价
+MIN_TURNOVER_YI = 0.5         # 最小成交额 5000万
+MAX_PER_SECTOR = 2            # 同行业最多 2 只
+MAX_ENTRY_CHG = 9.9           # 入场涨跌幅上限（FUNDAMENTAL_RULES 第1条：涨停买不进去）
+
+SECTOR_BLOCKLIST = [
+    "贵金属", "乘用车", "普钢", "地面兵装Ⅱ", "数字媒体",
+    "养殖业", "保险Ⅱ", "航运港口", "银行Ⅱ",
+]
 
 
-def filter_overnight(date_str=None, top_n=20):
+def filter_overnight(date_str=None, top_n=5):
     """筛选隔夜套利候选"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
@@ -69,7 +164,7 @@ def filter_overnight(date_str=None, top_n=20):
 
     # 黑天鹅门禁
     try:
-        import sys; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        sys.path.insert(0, PROJECT_ROOT)
         from portfolio.black_swan import BlackSwanDetector
         bs = BlackSwanDetector(date_str).check()
         if bs["level"] >= 2:
@@ -79,51 +174,101 @@ def filter_overnight(date_str=None, top_n=20):
         pass
 
     candidates = []
-    rejected = {"tier": 0}
+    stats = {"signal_vacuum": 0, "global_block": 0, "price_block": 0,
+             "turnover_block": 0, "sector_block": 0, "no_tier": 0,
+             "limit_up_block": 0}
 
     for r in rows:
-        score = float(r.get("综合得分", 0) or 0)
-        capital = float(r.get("资金得分", 0.5) or 0.5)
-        signals = r.get("综合信号", "")
+        try:
+            price = float(r.get("最新价", 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        if price <= 0 or price > MAX_PRICE:
+            stats["price_block"] += 1
+            continue
 
-        # 信号真空排除 (73%股票无任何P3x信号, 胜率仅23%)
+        try:
+            turnover = float(r.get("成交额", 0) or 0)
+        except (ValueError, TypeError):
+            turnover = 0
+        if turnover < MIN_TURNOVER_YI * 1e8:
+            stats["turnover_block"] += 1
+            continue
+
+        industry = r.get("行业", "")
+        if industry in SECTOR_BLOCKLIST:
+            stats["sector_block"] += 1
+            continue
+
+        # FUNDAMENTAL_RULES 第1条: 涨停买不进去
+        try:
+            entry_chg = float(r.get("涨跌幅", 0) or 0)
+        except (ValueError, TypeError):
+            entry_chg = 0
+        if entry_chg >= MAX_ENTRY_CHG:
+            stats["limit_up_block"] += 1
+            continue
+
+        signals = r.get("综合信号", "")
+        early_sigs = r.get("启动信号", "")
+
+        # 信号真空排除
         if SIGNAL_VACUUM_BLOCK:
             has_signal = any(s in signals for s in [
                 "P32_", "P33_", "P34_", "P35_", "P36_", "P37_"
             ])
             if not has_signal:
+                stats["signal_vacuum"] += 1
                 continue
 
-        # 逐级匹配
-        matched_tier = 0
-        for t in [1, 2, 3]:
-            rules = TIERS[t]
-            if score < rules["score_lo"] or score >= rules["score_hi"]: continue
-            if capital < rules["capital"]: continue
-            if not all(s in signals for s in rules["require"]): continue
-            if any(s in signals for s in rules["block"]): continue
-            matched_tier = t
+        # 全局避雷
+        if any(s in signals for s in GLOBAL_BLOCK_SIGNALS):
+            stats["global_block"] += 1
+            continue
+
+        all_sigs = signals + "," + early_sigs
+
+        score = float(r.get("综合得分", 0) or 0)
+        capital = float(r.get("资金得分", 0.5) or 0.5)
+
+        # 逐级匹配 A → B → C
+        matched_tier = None
+        for tk in ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "B5", "C1", "C2", "C3", "C4"]:
+            rules = TIERS[tk]
+            if not all(s in all_sigs for s in rules["require"]):
+                continue
+            if "score_min" in rules and score < rules["score_min"]:
+                continue
+            if "capital_min" in rules and capital < rules["capital_min"]:
+                continue
+            matched_tier = tk
             break
 
         if not matched_tier:
-            rejected["tier"] += 1
+            stats["no_tier"] += 1
             continue
 
-        # 加分
+        # 加分 (BONUS_SIGNALS 叠加)
         bonus = TIERS[matched_tier]["bonus"]
-        for sig, weight in BONUS_SIGNALS.items():
+        bonus_signals = {
+            "P33_margin_strong": 0.02,
+            "P34_gap_strong": 0.03,
+            "P32_ratio_accel": 0.01,
+            "P35_short_cover": 0.01,
+        }
+        for sig, weight in bonus_signals.items():
             if sig in signals:
                 bonus += weight
 
-        priority = score * 0.6 + capital * 0.30 + bonus * 0.10
+        priority = score * 0.5 + capital * 0.30 + bonus * 0.20
 
         candidates.append({
             "代码": r["代码"], "名称": r["名称"],
-            "最新价": float(r.get("最新价", 0) or 0),
+            "最新价": price,
             "综合得分": score, "资金得分": capital,
             "涨跌幅": float(r.get("涨跌幅", 0) or 0),
             "换手率": float(r.get("换手率", 0) or 0),
-            "行业": r.get("行业", ""),
+            "行业": industry,
             "级别": TIERS[matched_tier]["label"],
             "信号": signals,
             "_priority": round(priority, 4),
@@ -131,23 +276,26 @@ def filter_overnight(date_str=None, top_n=20):
 
     candidates.sort(key=lambda x: -x["_priority"])
 
-    # 行业分散（同行业最多2只）
-    from collections import Counter
+    # 行业分散
     sector_count = Counter()
     diversified = []
     for c in candidates:
         ind = c["行业"]
-        if sector_count[ind] >= 2:
+        if sector_count[ind] >= MAX_PER_SECTOR:
             continue
         diversified.append(c)
         sector_count[ind] += 1
 
     # 输出
-    print(f"\n{'='*65}")
+    print(f"\n{'='*70}")
     print(f"  隔夜套利筛选 — {date_str}")
-    print(f"{'='*65}")
-    print(f"  全市场: {len(rows)}只 → 三级通过: {len(candidates)}只 → 行业分散: {len(diversified)}只")
-    print(f"  拒绝: {rejected['tier']}只 (未匹配任一级别)")
+    print(f"  验证: 574,604笔回测 + 7 Agent 交叉验证 + FINAL_VERIFICATION_REPORT")
+    print(f"{'='*70}")
+    print(f"  全市场: {len(rows)}只 → 候选: {len(candidates)}只 → 行业分散: {len(diversified)}只")
+    print(f"  排除: 信号真空={stats['signal_vacuum']} 全局避雷={stats['global_block']} "
+          f"涨停={stats['limit_up_block']} "
+          f"价格={stats['price_block']} 成交额={stats['turnover_block']} "
+          f"行业={stats['sector_block']} 未匹配={stats['no_tier']}")
 
     if not diversified:
         print("\n  无候选股票")
@@ -159,7 +307,7 @@ def filter_overnight(date_str=None, top_n=20):
 
     print(f"\n  {'':>3} {'代码':<8} {'名称':<8} {'优先':>6} {'综合':>6} {'资金':>6} "
           f"{'涨跌':>6} {'行业':<10} {'级别'}")
-    print(f"  {'─'*68}")
+    print(f"  {'─'*72}")
     for i, c in enumerate(top):
         print(f"  {i+1:>2}. {c['代码']:<8} {c['名称']:<8s} "
               f"{c['_priority']:>6.3f} {c['综合得分']:>6.3f} {c['资金得分']:>6.3f} "
@@ -170,15 +318,18 @@ def filter_overnight(date_str=None, top_n=20):
         avg_cap = sum(c["资金得分"] for c in top) / len(top)
         avg_chg = sum(c["涨跌幅"] for c in top) / len(top)
         print(f"\n  均综合={avg_score:.3f} 均资金={avg_cap:.3f} 均涨跌={avg_chg:+.1f}%")
-    print(f"\n  规则: 全局最优Top3组合 (16503笔统计验证)")
-    print(f"        🥇分0.60-0.70+资≥0.8+P34_gap+P35_cover-P36(62%WR)")
-    print(f"        🥈分0.60-0.70+资≥0.8+P34_gap-P36(62%)  🥉分0.60-0.70+资≥0.8+P34_gap(59%)")
+
+    tier_summary = ", ".join(f"{tk}={TIERS[tk]['desc']}"
+                             for tk in ["A1", "A2", "A3", "B1", "B5", "C1"])
+    print(f"\n  信号体系: {tier_summary}")
+    print(f"  全局避雷: {' '.join(GLOBAL_BLOCK_SIGNALS[:4])}...")
+    print(f"  行业黑名单: {', '.join(SECTOR_BLOCKLIST[:5])}...")
 
     # 保存
     out_path = os.path.join(RESEARCH_ROOT, date_str, "overnight_picks.csv")
     with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
-        fields = ["代码","名称","最新价","综合得分","资金得分",
-                  "涨跌幅","换手率","行业","级别","_priority"]
+        fields = ["代码", "名称", "最新价", "综合得分", "资金得分",
+                  "涨跌幅", "换手率", "行业", "级别", "_priority"]
         w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(top)
@@ -189,5 +340,5 @@ def filter_overnight(date_str=None, top_n=20):
 
 if __name__ == "__main__":
     date_str = sys.argv[1] if len(sys.argv) > 1 else None
-    top_n = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+    top_n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
     filter_overnight(date_str, top_n)

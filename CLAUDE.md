@@ -9,6 +9,8 @@ A股量化选股系统 — 23因子盘中评分 + 三级买入引擎 + 黑天鹅
 核心流水线: 数据采集 → 盘中评分(scores.csv) → 买入引擎 → 回测验证。
 完整评分逻辑: [SCORING_LOGIC.md](./SCORING_LOGIC.md)
 
+> **CRITICAL**: 所有系统修改必须以 [FUNDAMENTAL_RULES.md](./FUNDAMENTAL_RULES.md) 为前提条件。违反基本事实的任何逻辑都是无效的。
+
 **已实施模块**: 黑天鹅监控 ✅ | 企业微信通知 ✅ | 持仓管理 ✅ | 买入引擎 ✅ | 7Tab Dashboard ✅
 
 ## Common Commands

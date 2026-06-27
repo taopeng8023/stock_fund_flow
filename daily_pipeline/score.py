@@ -179,7 +179,7 @@ SCORE_HEADERS = [
     "日内稳定", "日内加速", "排名轨迹", "VWAP位置", "板块轨迹",
     "价格动量", "涨停邻近", "行业分散", "板块价格",
     "尾盘收益", "尾盘量能", "拥挤度",
-    "涨跌幅", "换手率", "量比", "总市值",
+    "涨跌幅", "换手率", "量比", "总市值", "成交额",
     "结构得分",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
     "短线得分", "中线得分",
@@ -939,6 +939,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         f164_val = _tof(s.get("5日主力净流入"))
         f174_val = _tof(s.get("10日主力净流入"))
         industry = s.get("行业", "")
+        f6_val = _tof(s.get("成交额", s.get("f6", 0)))              # 成交额（过滤阈值用）
 
         sub = {}
         comp_sigs = []   # 综合得分信号
@@ -1175,7 +1176,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if f169_val > 8:
             margin_quality = 0.03; comp_sigs.append("P33_margin_strong")
         elif f169_val > 3:
-            margin_quality = 0.01; comp_sigs.append("P33_margin_moderate")
+            margin_quality = -0.02; comp_sigs.append("P33_margin_moderate")
         elif f169_val < -5:
             margin_quality = -0.03; comp_sigs.append("P33_margin_weak")
         total += margin_quality
@@ -1188,17 +1189,20 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             if gap > 2 and f3 > 2:
                 gap_signal = 0.06; comp_sigs.append("P34_gap_strong")       # 胜率+19%最强信号
             elif gap < -2 and f3 > 1:
-                gap_signal = 0.01; comp_sigs.append("P34_gap_reverse")      # 回测-0.72%降权
+                gap_signal = 0.02; comp_sigs.append("P34_gap_reverse")      # 回测-0.72%降权
             elif gap > 3 and f3 < 0:
                 gap_signal = -0.04; comp_sigs.append("P34_gap_trap")
         total += gap_signal
         early += gap_signal
 
-        # ── P34 独立标记: P34_gap_strong 无协同信号时不可信 ──
+        # ── P34 独立标记 + 降权: P34_gap_strong 无协同信号时不可信 ──
         # BACKTEST_REPORT_20260626: P34_gap_strong 单独使用 47%→33%→30% 持续恶化
+        # SIGNAL_BACKTEST_FINAL_REPORT: N=8053, WR=44.9%≈随机, avg=-0.03%
         # 仅在与 P32_pump_risk 协同时有效 (E3_strong_start 由买入引擎 Tier 层独立校验)
         if "P34_gap_strong" in comp_sigs and "P32_pump_risk" not in comp_sigs:
             comp_sigs.append("P34_gap_standalone")
+            total -= 0.04  # 撤回大部分缺口加分, 独立P34胜率仅44.9%
+            early -= 0.04
 
         # ── P35: 融券压力 (做空检测) ──
         short_signal = 0.0
@@ -1207,7 +1211,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if f170_val > 3_0000_0000:
             short_signal = -0.04; comp_sigs.append("P35_short_pressure")
         elif f170_val > 1_0000_0000:
-            short_signal = -0.02; comp_sigs.append("P35_short_moderate")
+            short_signal = -0.03; comp_sigs.append("P35_short_moderate")
         if f172_val > 0 and f62_val > 0:
             short_ratio = abs(f170_val) / max(abs(f62_val), 1)
             if short_ratio > 3:
@@ -1217,8 +1221,10 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
 
         # ── P34+P32 黄金交叉 (5 Agent信号发现: 66.9% WR, N=293, 牛熊通用) ──
         # P34_gap_strong + P32_pump_risk = 静默期后突发主力+高开=真突破
+        # SIGNAL_BACKTEST_FINAL_REPORT: P0跨日70.4% WR, +2.84%, N=1363 (vs P34单独44.9% WR)
+        # 净效果: gap(+0.06) + pump(-0.05) + combo(+0.12) = +0.13, 正确反映P4>P0
         if "P34_gap_strong" in comp_sigs and "P32_pump_risk" in comp_sigs:
-            combo_bonus = 0.04
+            combo_bonus = 0.12
             total += combo_bonus
             early += combo_bonus
             comp_sigs.append("P34_P32_combo")  # 标记黄金交叉
@@ -1271,8 +1277,8 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
 
         # ── P36: 全维度过热保护 (回测: P32+P36叠加→-1.45%, 互斥处理) ──
         if cap > 0.85 and sub.get("trend", 0.5) > 0.7 and sub.get("multiday", 0.5) > 0.85:
-            total -= 0.10; comp_sigs.append("P36_overheat")
-            early -= 0.06
+            total -= 0.12; comp_sigs.append("P36_overheat")
+            early -= 0.08
             # P32_accel与P36互斥: 过热股不享受占比加速加分
             if ratio_score > 0:
                 total -= ratio_score; early -= ratio_score  # 撤回P32加分
@@ -1316,7 +1322,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "尾盘收益": sub.get("tail_return", 0.5),
             "尾盘量能": sub.get("tail_volume", 0.5),
             "拥挤度": sub.get("crowding", 0.5),
-            "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
+            "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi, "成交额": f6_val,
             "结构得分": sub.get("structure_score", 0.5),
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),

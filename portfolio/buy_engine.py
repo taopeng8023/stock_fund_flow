@@ -1,22 +1,25 @@
 """
-买入引擎 — 信号驱动 + 体制感知（5 Agent 信号发现 + 多快照回测验证）
+买入引擎 — 信号驱动 + 体制感知（6 Agent 回测验证）
 
-信号发现: 88,645笔回测, 6交易日, 20盘中快照, 4 Agent独立分析 + 1 Agent交叉验证
-基线: 全市场胜率 27.4%, 均收益 -1.22%
+信号发现: 574,604+笔跨日回测, 4交易日, 118盘中快照
+基线: 全市场胜率 28.3%, 均收益 -1.13%
 
-核心规则（5 Agent 信号发现验证）:
-  P0 🥇 静默突破:          P34_gap_strong + P32_pump_risk        → 66.9% WR, +2.44%, N=293, 牛熊通用
-  P1 🥈 E3+P34共振:       E3_strong_start + P34_gap_strong       → 61.7% WR, +2.26%, N=162
+优化验证 (2026-06-27): 成交额修复后全量重评分+重新回测, P梯队权重再校准
+
+核心规则（5 Agent 信号发现 + 4日跨日回测 574,604笔验证）:
+  P1 🥇 E3+P34共振:       E3_strong_start + P34_gap_strong       → 74.4% WR, +2.99%, N=617, 全体制有效
+  P0 🥈 静默突破:          P34_gap_strong + P32_pump_risk        → 66.2% WR, +2.44%, N=1456, 牛熊通用
   P2 🥉 高价+空头+Gap反:   P_high_price + P35_short_pressure
-                           + P34_gap_reverse                     → 77.5% WR, +2.24%, N=40
-  P3 🏅 半导体+空头回补:   行业=半导体 + P35_short_cover           → 60.6% WR, +1.28%, N=872
-  观察   中线得分≥0.8:                                          → 57.7% WR, +1.29%, N=78
+                           + P34_gap_reverse                     → 72.8% WR, +2.04%, N=243, 震荡专用
+  P3 🏅 半导体+空头回补:   行业=半导体 + P35_short_cover           → 53.7% WR, +1.18%, N=5101, 牛/震荡有效
+  P4 🔥 三重信号:          P34_P32_combo + P35_short_cover       → 85.9% WR, +4.96%, N=640, 最强复合
 
 避雷: P6_retail(0%WR) | P37_momentum_up(全局-8pp,熊市仅20.7%) | P37_momentum_down
        贵金属(3.9%) | 乘用车(5.6%) | 普钢(9.1%) | 地面兵装(9.4%) | 数字媒体(9.7%)
 门禁: 黑天鹅 Level ≥ 2 → 禁止一切买入
 行业: 同行业 ≤ 2只
-仓位: P0=50% + P1=25% + P2=15% + P3=10%
+仓位: P4=20% + P1=30% + P0=30% + P2=15% + P3=10% | 熊市P3→5%, P2禁用
+P34_alone: 43.9% WR, -0.20%, N=9200 — 独立使用≈随机, 必须组合匹配
 
 用法:
   python -m portfolio.buy_engine --date=20260624
@@ -115,44 +118,55 @@ def _check_crash_gate(code: str, today_chg: float, prior_returns: dict) -> tuple
 TIERS = {
     "P0": {
         "require_signals": ["P34_gap_strong", "P32_pump_risk"],
-        "block_signals": ["P37_momentum_down", "P36_overheat", "P6_retail"],
+        "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P0:静默突破",
-        "wr": "66.9%", "n": 293, "avg_ret": "+2.44%",
+        "wr": "66.2%", "n": 1456, "avg_ret": "+2.44%",
         "desc": "P34_gap_strong+P32_pump_risk — 静默期后突发主力+高开=真突破",
-        "position_pct": 50,
-        "score_min": 0.55,
-        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],  # 体制无关
+        "position_pct": 30,
+        "score_min": 0.40,
+        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
     },
     "P1": {
         "require_signals": ["E3_strong_start", "P34_gap_strong"],
-        "block_signals": ["P37_momentum_down", "P6_retail", "P36_overheat"],
+        "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P1:E3+P34共振",
-        "wr": "61.7%", "n": 162, "avg_ret": "+2.26%",
-        "desc": "E3_strong_start+P34_gap_strong — 开盘强势+缺口确认",
-        "position_pct": 25,
-        "score_min": 0.55,
-        "regime_ok": ["bull", "bull_bias", "range"],  # 偏牛
+        "wr": "74.4%", "n": 617, "avg_ret": "+2.99%",
+        "desc": "E3_strong_start+P34_gap_strong — 开盘强势+缺口确认, 当前最强单层信号",
+        "position_pct": 30,
+        "score_min": 0.38,
+        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
     },
     "P2": {
         "require_signals": ["P_high_price", "P35_short_pressure", "P34_gap_reverse"],
-        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P2:高价+空头+Gap反转",
-        "wr": "77.5%", "n": 40, "avg_ret": "+2.24%",
+        "wr": "72.8%", "n": 243, "avg_ret": "+2.04%",
         "desc": "P_high_price+P35_short_pressure+P34_gap_reverse — 高价优质回调",
         "position_pct": 15,
-        "score_min": 0.50,
-        "regime_ok": ["bull", "bull_bias", "range"],  # 偏牛
-        "note": "高置信度池，N=40偏小",
+        "score_min": 0.30,
+        "regime_ok": ["bull", "bull_bias", "range"],  # 0625熊市0%WR
+        "note": "震荡市90.8%WR但熊市0%WR, 体制极度敏感",
     },
     "P3": {
         "require_signals": ["P35_short_cover"],
-        "block_signals": ["P37_momentum_down", "P6_retail", "P36_overheat"],
+        "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P3:半导体+空头回补",
-        "wr": "60.6%", "n": 872, "avg_ret": "+1.28%",
+        "wr": "53.7%", "n": 5101, "avg_ret": "+1.18%",
         "desc": "行业=半导体+P35_short_cover — 主线行业叠加空头回补",
         "position_pct": 10,
-        "score_min": 0.50,
+        "position_pct_bear": 5,
+        "score_min": 0.38,
         "required_sector": "半导体",
+        "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
+    },
+    "P4": {
+        "require_signals": ["P34_P32_combo", "P35_short_cover"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "P4:三重信号",
+        "wr": "85.9%", "n": 640, "avg_ret": "+4.96%",
+        "desc": "P34_P32_combo+P35_short_cover — 主力突破+空头回补, 当前最强复合信号",
+        "position_pct": 20,
+        "score_min": 0.40,
         "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
     },
     "OBSERVE": {
@@ -161,7 +175,7 @@ TIERS = {
         "label": "观察:中线≥0.8",
         "wr": "57.7%", "n": 78, "avg_ret": "+1.29%",
         "desc": "中线得分≥0.8 — 中长线趋势确认",
-        "position_pct": 0,  # 不占日内仓位
+        "position_pct": 0,
         "score_min": 0,
         "mid_score_min": 0.8,
         "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
@@ -185,11 +199,14 @@ MAX_PER_SECTOR = 2              # 同行业最多 2 只
 GLOBAL_EXCLUDE_TOKENS = [
     "P6_retail",              # 散户主导 → 0% WR (38样本)
     "P35_short_heavy",        # 融券/主力比>3 → -5.6pp
-    "P33_margin_weak",        # 融资买入为负 → -5.8pp
+    "P35_short_moderate",     # 融券中等 → 31.91% WR (vs P34_P32_combo, N=47)
+    "P33_margin_moderate",    # 融资中等 → 17.54% WR (vs P34_P32_combo, N=57)
+    "P36_overheat",           # 过热线 → 4.30% WR (最可靠负向信号, N=93)
     "P_low_liquidity",        # 流动性不足
-    "P_low_vol_ratio",        # 量比不足
     "P_small_cap",            # 小市值<30亿 → -7.2pp
 ]
+# P33_margin_weak 移除全局排除: 在P4(P34_P32_combo)上下文 89.77% WR (N=88)
+# 仅在各Tier级block_signals中排除 (P0/P1/P2/P3), P4不排除
 
 # ── 熊市额外排除（牛市信号在熊市崩溃）──
 BEAR_EXCLUDE_TOKENS = [
@@ -385,7 +402,7 @@ def apply_sector_diversity(candidates: list, max_n: int) -> list:
 
 def generate_recommendations(date_str: str, top_n: int = 10,
                              no_notify: bool = False) -> dict:
-    """生成买入推荐。P0→P1→P2→P3→OBSERVE 优先级。"""
+    """生成买入推荐。P1→P0→P4→P2→P3→OBSERVE 优先级。"""
     scores = load_scores(date_str)
     regime = detect_regime(date_str)
 
@@ -421,8 +438,8 @@ def generate_recommendations(date_str: str, top_n: int = 10,
                         "regime": regime, "candidates": [], "buys": [],
                         "block_reason": f"强熊熔断(全市场中位数{market_median:+.2f}%)"}
 
-    # 按优先级筛选：P0 → P1 → P2 → P3 → OBSERVE
-    tier_priority = ["P0", "P1", "P2", "P3", "OBSERVE"]
+    # 按优先级筛选：P1 → P0 → P4 → P2 → P3 → OBSERVE
+    tier_priority = ["P4", "P1", "P0", "P2", "P3", "OBSERVE"]
     all_candidates = []
     seen = set()
 
@@ -452,9 +469,13 @@ def generate_recommendations(date_str: str, top_n: int = 10,
 
     print(f"  行业≤{MAX_PER_SECTOR}: {len(buys)}只 分布: {dict(sector_dist)}")
 
-    # 仓位分配
+    # 仓位分配 (熊市P3降仓: 回测WR 36.1% 超额仅+0.71%)
     for b in buys:
-        b["suggested_pct"] = TIERS.get(b["tier"], {}).get("position_pct", 0)
+        tier_cfg = TIERS.get(b["tier"], {})
+        base_pct = tier_cfg.get("position_pct", 0)
+        if is_bear and "position_pct_bear" in tier_cfg:
+            base_pct = tier_cfg["position_pct_bear"]
+        b["suggested_pct"] = base_pct
 
     _print_recommendations(date_str, bs_level, regime, buys)
 
@@ -470,7 +491,7 @@ def _print_recommendations(date_str, bs_level, regime, buys):
     print(f"\n{'='*85}")
     print(f"  🎯 买入推荐 [{date_str}]  BS L{bs_level}  体制: {regime}"
           f"{' ⚠️' if is_bear else ''}")
-    print(f"  验证: 5 Agent 信号发现 | 88,645笔回测 | 2026-06-26")
+    print(f"  验证: 6 Agent 信号发现 | 574,604笔跨日回测 | 成交额修复+P4三重信号")
     print(f"{'='*85}")
 
     if not buys:
@@ -495,8 +516,8 @@ def _print_recommendations(date_str, bs_level, regime, buys):
     active_buys = [b for b in buys if b["suggested_pct"] > 0]
     total_position = sum(b["suggested_pct"] for b in active_buys)
     print(f"\n  ── 仓位合计: {total_position}% ({len(active_buys)}只) ──")
-    print(f"  P0=50% | P1=25% | P2=15% | P3=10% | 观察=不占仓位")
-    print(f"  避雷: P6_retail P37_down P_small_cap P_low_liquidity P35_short_heavy P33_margin_weak")
+    print(f"  P1=30% | P0=30% | P2=15% | P3=10% | P4=20% | 观察=不占仓位")
+    print(f"  避雷: P6_retail P37_down P35_short_heavy P35_short_moderate P33_margin_moderate P36_overheat P_small_cap P_low_liquidity")
     if is_bear:
         print(f"  熊市排除: P37_momentum_up P1/P2 限制")
     print(f"  行业黑名单: {', '.join(SECTOR_BLOCKLIST[:5])}...")
