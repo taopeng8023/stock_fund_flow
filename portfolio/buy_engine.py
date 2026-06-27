@@ -26,12 +26,87 @@
 
 import argparse
 import csv
+import os
 import sys
 from collections import Counter
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
+
+
+# ═══════════════════════════════════════
+# 崩溃闸门（structure_score 回测: 603201 案例, 108/108 checks）
+# ═══════════════════════════════════════
+
+def _find_prior_trading_dates(date_str: str, n: int = 3) -> list:
+    """扫描 research_data/ 下小于 date_str 的数字目录，返回有 scores.csv 的最近 n 个日期。"""
+    if not RESEARCH_ROOT.exists():
+        return []
+    date_dirs = sorted([
+        d for d in os.listdir(RESEARCH_ROOT)
+        if os.path.isdir(RESEARCH_ROOT / d) and d.isdigit() and d < date_str
+    ], reverse=True)
+    prior_dates = []
+    for d in date_dirs:
+        if (RESEARCH_ROOT / d / "scores.csv").exists():
+            prior_dates.append(d)
+            if len(prior_dates) >= n:
+                break
+    return prior_dates
+
+
+def _load_prior_day_returns(prior_dates: list) -> dict:
+    """从 prior_dates 的 scores.csv 读取涨跌幅。返回 {code: [chg_d1, chg_d2, ...]}。"""
+    from collections import defaultdict
+    returns_map = defaultdict(list)
+    for d in prior_dates:
+        path = RESEARCH_ROOT / d / "scores.csv"
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    code = r.get("代码", "")
+                    if not code:
+                        continue
+                    try:
+                        chg = float(r.get("涨跌幅", 0) or 0)
+                    except (ValueError, TypeError):
+                        chg = 0.0
+                    returns_map[code].append(chg)
+        except Exception:
+            continue
+    return dict(returns_map)
+
+
+def _check_crash_gate(code: str, today_chg: float, prior_returns: dict) -> tuple:
+    """三道崩溃闸门。回测发现 603201 连续跌停但 structure_score 仍高居 Top 10。
+    Gate 1: 当日跌幅 < -8%
+    Gate 2: 前 3 日内任意日跌幅 <= -9.5%
+    Gate 3: 3 日累计跌幅 <= -12%
+    Returns (pass: bool, reason: str|None).
+    """
+    # Gate 1: 当日跌停前置过滤
+    if today_chg < -8.0:
+        return False, f"Gate1:{code}当日大跌({today_chg:+.1f}%)"
+
+    if not prior_returns or code not in prior_returns:
+        return True, None
+
+    priors = prior_returns[code]
+
+    # Gate 2: 多日崩盘检测
+    for i, ret in enumerate(priors[:3]):
+        if ret <= -9.5:
+            return False, f"Gate2:{code}前{i+1}日跌停({ret:+.1f}%)"
+
+    # Gate 3: 连续下跌检测
+    if len(priors) >= 2:
+        cum_3d = today_chg + priors[0] + priors[1]
+        if cum_3d <= -12.0:
+            return False, f"Gate3:{code}3日累计下跌({cum_3d:+.1f}%)"
+
+    return True, None
+
 
 # ═══════════════════════════════════════
 # 信号驱动买入规则（5 Agent 信号发现验证）
@@ -165,7 +240,8 @@ def _is_bear_regime(regime: str) -> bool:
     return regime in ("bear", "bear_bias")
 
 
-def filter_candidates(scores: list, tier_key: str, regime: str = "range") -> list:
+def filter_candidates(scores: list, tier_key: str, regime: str = "range",
+                      prior_returns: dict = None) -> list:
     """按 tier 规则筛选候选。P0-P3 基于信号，OBSERVE 基于中线得分。"""
     rules = TIERS[tier_key]
     is_bear = _is_bear_regime(regime)
@@ -194,6 +270,17 @@ def filter_candidates(scores: list, tier_key: str, regime: str = "range") -> lis
         industry = r.get("行业", "")
         if industry in SECTOR_BLOCKLIST:
             continue
+
+        # ── 崩溃闸门 (structure_score 回测: 603201 案例, 108/108 checks) ──
+        try:
+            today_chg = float(r.get("涨跌幅", 0) or 0)
+        except (ValueError, TypeError):
+            today_chg = 0.0
+        if prior_returns is not None:
+            passes, gate_reason = _check_crash_gate(r["代码"], today_chg, prior_returns)
+            if not passes:
+                print(f"  崩溃闸门: {gate_reason}")
+                continue
 
         try:
             score = float(r.get("综合得分", 0) or 0)
@@ -253,6 +340,9 @@ def filter_candidates(scores: list, tier_key: str, regime: str = "range") -> lis
         except (ValueError, TypeError):
             continue
 
+        # 建议出场窗口
+        suggest_exit = "14:00-14:30" if (regime == "bull" and score_val > 0.8) else "10:00-10:30"
+
         candidates.append({
             "code": r["代码"],
             "name": r["名称"],
@@ -269,6 +359,7 @@ def filter_candidates(scores: list, tier_key: str, regime: str = "range") -> lis
             "mcap_yi": round(mcap_val, 1),
             "wr_ref": rules["wr"],
             "avg_ret_ref": rules.get("avg_ret", "—"),
+            "suggest_exit": suggest_exit,
         })
 
     candidates.sort(key=lambda x: -x["score"])
@@ -293,6 +384,10 @@ def generate_recommendations(date_str: str, top_n: int = 10,
     scores = load_scores(date_str)
     regime = detect_regime(date_str)
 
+    # 加载前3日涨跌幅用于崩溃闸门 (structure_score 回测优化)
+    prior_dates = _find_prior_trading_dates(date_str, n=3)
+    prior_returns = _load_prior_day_returns(prior_dates) if prior_dates else None
+
     # 黑天鹅门禁
     bs_level, blocked = check_black_swan(date_str)
     if blocked:
@@ -302,13 +397,32 @@ def generate_recommendations(date_str: str, top_n: int = 10,
         return {"date": date_str, "blocked": True, "bs_level": bs_level,
                 "buys": [], "reason": f"黑天鹅 Level {bs_level}"}
 
+    # 强熊熔断: 全市场<-1.5%时禁止一切买入
+    if _is_bear_regime(regime):
+        all_chgs = []
+        for s in scores:
+            try:
+                all_chgs.append(float(s.get("涨跌幅", 0) or 0))
+            except (ValueError, TypeError):
+                pass
+        if all_chgs:
+            market_median = sorted(all_chgs)[len(all_chgs) // 2]
+            if market_median < -1.5:
+                print(f"\n{'='*60}")
+                print(f"  🐻 强熊熔断: 全市场涨跌幅中位数={market_median:+.2f}% < -1.5%")
+                print(f"     因子失效风险极高，禁止一切买入")
+                print(f"{'='*60}")
+                return {"date": date_str, "blocked": True, "bs_level": bs_level,
+                        "regime": regime, "candidates": [], "buys": [],
+                        "block_reason": f"强熊熔断(全市场中位数{market_median:+.2f}%)"}
+
     # 按优先级筛选：P0 → P1 → P2 → P3 → OBSERVE
     tier_priority = ["P0", "P1", "P2", "P3", "OBSERVE"]
     all_candidates = []
     seen = set()
 
     for tk in tier_priority:
-        for c in filter_candidates(scores, tk, regime):
+        for c in filter_candidates(scores, tk, regime, prior_returns=prior_returns):
             if c["code"] not in seen:
                 all_candidates.append(c)
                 seen.add(c["code"])
@@ -321,8 +435,14 @@ def generate_recommendations(date_str: str, top_n: int = 10,
     print(f"  全量: {len(scores)}只 → 候选: {len(all_candidates)}只 | 体制: {regime}"
           f"{' ⚠️熊市限制' if is_bear else ''}")
 
+    # 动态TopN: 基于市场体制调整选股数量
+    _dynamic_cap = {
+        "bull": 10, "bull_bias": 15, "range": 20, "bear_bias": 25, "bear": 30,
+    }
+    effective_n = max(top_n, _dynamic_cap.get(regime, top_n))  # bear多选, bull少选
+
     # 行业分散
-    buys = apply_sector_diversity(all_candidates, MAX_PER_SECTOR)[:top_n]
+    buys = apply_sector_diversity(all_candidates, MAX_PER_SECTOR)[:effective_n]
     sector_dist = Counter(b["industry"] for b in buys)
 
     print(f"  行业≤{MAX_PER_SECTOR}: {len(buys)}只 分布: {dict(sector_dist)}")
@@ -354,16 +474,17 @@ def _print_recommendations(date_str, bs_level, regime, buys):
         return
 
     print(f"\n  {'#':<3} {'代码':<9} {'名称':<8} {'得分':<8} {'涨跌':<7} "
-          f"{'行业':<10} {'级别':<24} {'仓位':<5} {'WR参考'}")
-    print(f"  {'─'*90}")
+          f"{'行业':<10} {'级别':<24} {'仓位':<5} {'WR参考':<10} {'建议出场'}")
+    print(f"  {'─'*100}")
 
     for i, b in enumerate(buys):
         tier_note = TIERS.get(b["tier"], {}).get("note", "")
         note_str = f" [{tier_note}]" if tier_note else ""
+        exit_hint = b.get("suggest_exit", "10:00-10:30")
         print(f"  {i+1:<3} {b['code']:<9} {b['name']:<8} {b['score']:.4f} "
               f"{b['chg_pct']:>+.1f}%  {b['industry']:<10} "
               f"{b['tier_label']:<24} {b['suggested_pct']}%  "
-              f"WR={b['wr_ref']}{note_str}")
+              f"WR={b['wr_ref']:<8} {exit_hint}")
 
     # 仓位汇总
     active_buys = [b for b in buys if b["suggested_pct"] > 0]
@@ -374,6 +495,7 @@ def _print_recommendations(date_str, bs_level, regime, buys):
     if is_bear:
         print(f"  熊市排除: P37_momentum_up P1/P2 限制")
     print(f"  行业黑名单: {', '.join(SECTOR_BLOCKLIST[:5])}...")
+    print(f"  建议出场: 默认10:00-10:30 | 牛市高分(>0.8)→14:00-14:30")
 
 
 def _notify_buys(date_str, bs_level, buys):

@@ -1,16 +1,20 @@
 """
-多快照回测 — 对评分日使用下一交易日 3-6 个均匀随机快照进行回测
+多快照回测 — 评分日收盘价入场 × 下一交易日全量快照出场
+
+入场价: pick_date 前复权收盘价 (kline_data JSON, 降级 scores.csv 昨收)
+出场价: eval_date 全部 intraday 快照 (不再随机采样)
+
 保存: research_data/backtest/multi_snapshot/<pick_date>/
   - snapshots/<time>.csv    每个快照的完整回测结果
   - summary.csv             该日汇总
 用法: python -m daily_pipeline.backtest_multi_snapshot <pick_date> [eval_date]
 """
 import csv
+import json
 import os
 import random
 import statistics
-import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 BJS_TZ = timezone(timedelta(hours=8))
 RESEARCH_ROOT = os.path.join(
@@ -87,44 +91,82 @@ def _load_snapshot_prices(eval_date, time_str):
     return price_map
 
 
-def _uniform_sample_times(all_times, k):
+def _find_prev_close_date(date_str):
+    """在 kline_data 中找到 date_str 当天或最近一个交易日的 bar date。
+    如果当天无 bar（非交易日），向前找最近有 bar 的日期。"""
+    # 抽样一只股票来找该日期的 bar
+    import glob
+    kline_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kline_data"
+    )
+    candidates = [
+        f for f in os.listdir(kline_dir)
+        if f.endswith(".json") and not f.startswith("_")
+    ]
+    if not candidates:
+        # 降级：返回 YYYY-MM-DD 格式
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    sample_path = os.path.join(kline_dir, candidates[0])
+    with open(sample_path) as fh:
+        data = json.load(fh)
+    bars = data.get("bars", [])
+    # kline_data bar dates 是 "YYYY-MM-DD" 格式，需要归一化为 "YYYYMMDD" 再比较
+    dates = sorted(set(b["date"] for b in bars if b.get("date")))
+    dates_normalized = [d.replace("-", "") for d in dates]
+    # 找 <= date_str 的最大日期
+    for i in range(len(dates) - 1, -1, -1):
+        if dates_normalized[i] <= date_str:
+            return dates[i]  # 返回原始格式 "YYYY-MM-DD"
+    # 降级：返回原日期 YYYY-MM-DD 格式
+    return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+
+
+def _load_entry_prices(codes, pick_date, scores_map=None):
+    """从 kline_data 批量加载 pick_date 收盘价作为入场价。
+    返回 {code: close_price}。未找到的 code 降级使用 scores_map 的昨收。
     """
-    从快照时间列表中均匀随机抽取 k 个。
-    将时间范围分成 k 个等宽区间，每区间随机选 1 个快照。
-    如果某区间无快照则跳过。
+    try:
+        from sector_screener.structurer.price_loader import load_multi_bars_local
+    except ImportError:
+        load_multi_bars_local = None
+
+    # 先确定实际可用的 bar date（可能 pick_date 是非交易日）
+    effective_date = _find_prev_close_date(pick_date)
+
+    entry_prices = {}
+    missing_codes = []
+
+    if load_multi_bars_local:
+        bars_map = load_multi_bars_local(list(codes), days=250)
+        for code in codes:
+            bars = bars_map.get(code)
+            if bars:
+                # 查找 effective_date 对应的 bar
+                for b in reversed(bars):
+                    if b.date == effective_date:
+                        entry_prices[code] = b.close
+                        break
+                else:
+                    # 没找到该日期，尝试降级
+                    missing_codes.append(code)
+            else:
+                missing_codes.append(code)
+    else:
+        missing_codes = list(codes)
+
+    # 降级：用 scores_map 的昨收
+    if missing_codes and scores_map:
+        for code in missing_codes:
+            prev_close = scores_map.get(code)
+            if prev_close and prev_close > 0:
+                entry_prices[code] = prev_close
+
+    return entry_prices
+
+
+def run_backtest(pick_date, eval_date=None):
     """
-    if k >= len(all_times):
-        return list(all_times)
-
-    # 将时间转为秒数便于计算
-    def _to_seconds(t):
-        h, m, s = int(t[:2]), int(t[2:4]), int(t[4:6])
-        return h * 3600 + m * 60 + s
-
-    seconds = [_to_seconds(t) for t in all_times]
-    min_s, max_s = min(seconds), max(seconds)
-    total_range = max_s - min_s
-    if total_range == 0:
-        return [all_times[0]]
-
-    bin_width = total_range / k
-    sampled = []
-    for i in range(k):
-        lo = min_s + i * bin_width
-        hi = min_s + (i + 1) * bin_width if i < k - 1 else max_s + 1
-        # 找出该区间内的快照
-        candidates = [t for t, s in zip(all_times, seconds) if lo <= s < hi]
-        # 最后一个区间用 <= 确保包含 max_s
-        if i == k - 1:
-            candidates = [t for t, s in zip(all_times, seconds) if lo <= s <= max_s]
-        if candidates:
-            sampled.append(random.choice(candidates))
-    return sampled
-
-
-def run_backtest(pick_date, eval_date=None, seed=None):
-    """
-    多快照回测主函数。
+    多快照回测主函数 — 收盘价入场 × 全量快照出场。
     返回 dict: {pick_date, eval_date, snapshots: [{time, total, avg_ret, win_rate,
                 top50_ret, top50_wr, factor_edge, deciles, ...}], aggregate: {...}}
     """
@@ -134,11 +176,8 @@ def run_backtest(pick_date, eval_date=None, seed=None):
         print(f"  ✗ {pick_date} 之后无有效交易日")
         return None
 
-    if seed is not None:
-        random.seed(seed)
-
     print(f"\n{'='*60}")
-    print(f"多快照回测: {pick_date} → {eval_date}")
+    print(f"多快照回测 (收盘价入场 × 全量快照): {pick_date} → {eval_date}")
     print(f"{'='*60}")
 
     # 加载评分
@@ -153,14 +192,21 @@ def run_backtest(pick_date, eval_date=None, seed=None):
         print(f"  ✗ {eval_date} 无 intraday 快照")
         return None
 
-    # 随机决定 3-6 个快照
-    k = random.randint(3, min(6, len(all_times)))
-    sampled_times = _uniform_sample_times(all_times, k)
-    print(f"  可用快照: {len(all_times)} → 抽取 {k} 个: {sampled_times}")
+    print(f"  全量快照: {len(all_times)} 个")
+
+    # ── 加载入场价: pick_date 收盘价 (kline_data 前复权) ──
+    all_codes = [s["代码"] for s in scores]
+    scores_prev_close = {}
+    for s in scores:
+        prev = _tof(s.get("昨收"))
+        if prev > 0:
+            scores_prev_close[s["代码"]] = prev
+    entry_prices = _load_entry_prices(all_codes, pick_date, scores_map=scores_prev_close)
+    print(f"  入场价加载: {len(entry_prices)}/{len(all_codes)} 只 (kline_data 收盘价)")
 
     # 对每个快照进行回测
     snapshot_results = []
-    for t in sampled_times:
+    for t in all_times:
         prices = _load_snapshot_prices(eval_date, t)
         if not prices:
             print(f"  ⚠ 快照 {t} 无数据，跳过")
@@ -173,8 +219,9 @@ def run_backtest(pick_date, eval_date=None, seed=None):
             code = s["代码"]
             if code not in prices:
                 continue
-            pick_price = _tof(s.get("最新价"))
-            if pick_price <= 0:
+            # 入场价: pick_date 收盘价 (前复权)
+            pick_price = entry_prices.get(code)
+            if pick_price is None or pick_price <= 0:
                 continue
 
             p = prices[code]
@@ -193,7 +240,7 @@ def run_backtest(pick_date, eval_date=None, seed=None):
                 "名称": s["名称"],
                 "综合得分": float(s.get("综合得分", 0)),
                 "行业": s.get("行业", ""),
-                "选股日价格": pick_price,
+                "入场价(收盘)": pick_price,
                 "快照价格": snap_close,
                 "快照开盘": snap_open,
                 "快照涨跌幅": snap_chg,
@@ -301,7 +348,7 @@ def run_backtest(pick_date, eval_date=None, seed=None):
         t = snap["time"]
         snap_path = os.path.join(snap_dir, f"snapshot_{t}.csv")
         fields = [
-            "代码", "名称", "行业", "综合得分", "选股日价格",
+            "代码", "名称", "行业", "综合得分", "入场价(收盘)",
             "快照价格", "快照开盘", "快照涨跌幅",
             "收益%", "开盘收益%", "胜负",
         ]
@@ -369,9 +416,8 @@ if __name__ == "__main__":
     import sys
     pick = sys.argv[1] if len(sys.argv) > 1 else None
     eval_d = sys.argv[2] if len(sys.argv) > 2 else None
-    seed = int(sys.argv[3]) if len(sys.argv) > 3 else 42
     if pick:
-        result = run_backtest(pick, eval_d, seed=seed)
+        result = run_backtest(pick, eval_d)
         if result:
             agg = result["aggregate"]
             print(f"\n✓ {pick} → {result['eval_date']} 完成")
@@ -381,4 +427,4 @@ if __name__ == "__main__":
             print(f"\n✗ {pick} 回测失败")
             sys.exit(1)
     else:
-        print("用法: python -m daily_pipeline.backtest_multi_snapshot <pick_date> [eval_date] [seed]")
+        print("用法: python -m daily_pipeline.backtest_multi_snapshot <pick_date> [eval_date]")

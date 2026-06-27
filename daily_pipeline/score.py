@@ -10,6 +10,14 @@ import requests
 from collections import defaultdict, Counter
 from datetime import datetime, timezone, timedelta
 
+# ── 结构分析模块 ──
+try:
+    from sector_screener.structurer.scorer import structure_score
+    from sector_screener.structurer.price_loader import load_multi_bars_local as load_structure_bars
+    HAS_STRUCTURER = True
+except ImportError:
+    HAS_STRUCTURER = False
+
 BJS_TZ = timezone(timedelta(hours=8))
 RESEARCH_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_data"
@@ -43,6 +51,9 @@ WEIGHTS_BASE = {
     "flow_accel": 0.02,        # 资金加速度
     "ext_sentiment": 0.02,     # 外部情绪
 
+    # ── 结构分析（待回测校准）──
+    "structure_score": 0.04,   # 趋势结构 overlay, IC验证后启用
+
     # ── 惩罚项 (不纳入主评分，独立扣分) ──
     # "crowding": 0.02,        # 移除: cardinality=1
     # "sector_diversity": 0,   # 移除: cardinality=1
@@ -54,11 +65,26 @@ WEIGHTS_BULL = {**WEIGHTS_BASE,
     "tail_return": 0.08, "sector": 0.18,
     "price_momentum": 0.05, "ext_sentiment": 0.03, "flow_accel": 0.03,
     "sector_price": 0.07, "rank_trajectory": 0.07,
+    "structure_score": 0.04,
 }
-WEIGHTS_BEAR = {**WEIGHTS_BASE,
-    "vwap_position": 0.09,
-    "ext_sentiment": 0.03, "flow_accel": 0.01,
-    "sector": 0.14, "rank_trajectory": 0.05,
+WEIGHTS_BEAR = {
+    "capital": 0.16,
+    "sector": 0.12,         # ↓ 0.14→0.12 板块共振在熊市衰减
+    "position": 0.08,
+    "analyst": 0.05,
+    "multiday": 0.05,
+    "technical": 0.05,
+    "intra_sector": 0.08,   # ↑ 0.04→0.08 行业内排名在熊市更重要
+    "margin_net": 0.03,
+    "flow_accel": 0.01,
+    "ratio_trend": 0.02,
+    "flow_stability": 0.04,
+    "intraday_accel": 0.03,
+    "rank_trajectory": 0.07,
+    "vwap_position": 0.07,  # ↑ 0.09→0.07 略降(过度依赖VWAP在巨震中也不稳定)
+    "sector_trajectory": 0.06,
+    "price_momentum": 0.06, # ↑ 0.04→0.06 动量在熊市更有区分度
+    "limit_proximity": 0.02,
 }
 
 # ── 短线交易权重 (回测优化版) ──
@@ -73,6 +99,7 @@ SHORT_WEIGHTS = {
     "sector_price": 0.04,
     "tail_return": 0.10, "tail_volume": 0.06,          # tail_return短线核心
     "ext_sentiment": 0.02,
+    "structure_score": 0.04,
 }
 
 # ── 中线趋势权重 (回测优化版) ──
@@ -87,6 +114,7 @@ MID_WEIGHTS = {
     "sector_price": 0.06,                              # 0.04→0.06
     "tail_return": 0.06, "tail_volume": 0.04,
     "ext_sentiment": 0.03,
+    "structure_score": 0.04,
 }
 
 # ── 启动检测权重 (回测优化版) ──
@@ -101,6 +129,7 @@ EARLY_WEIGHTS = {
     "sector_price": 0.04,                                    # sector_diversity移除
     "tail_return": 0.06, "tail_volume": 0.04,
     "ext_sentiment": 0.02,
+    "structure_score": 0.04,
 }
 
 # ── scores.csv 输出列 ──
@@ -142,7 +171,7 @@ EARLY_SIGNALS = {
 }
 
 SCORE_HEADERS = [
-    "代码", "名称", "最新价", "行业", "综合得分", "启动得分",
+    "代码", "名称", "最新价", "昨收", "行业", "综合得分", "市场体制", "启动得分",
     "资金得分", "趋势得分", "启动因子", "板块得分", "位置得分",
     "分析师得分", "多日得分", "技术面得分", "行业内得分",
     "融资得分", "加速度得分", "占比趋势得分",
@@ -150,6 +179,7 @@ SCORE_HEADERS = [
     "价格动量", "涨停邻近", "行业分散", "板块价格",
     "尾盘收益", "尾盘量能", "拥挤度",
     "涨跌幅", "换手率", "量比", "总市值",
+    "结构得分",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
     "短线得分", "中线得分",
 ]
@@ -168,6 +198,7 @@ FACTOR_INFO = {
     "融资得分":   "融资动向 — f168融资净买入全市场百分位",
     "加速度得分": "流加速度 — 5日流/10日流比值，衡量资金流入在加速还是减速",
     "占比趋势得分": "三周期主力占比趋势 — 今日/5日/10日占比方向(P32信号)",
+    "结构得分":   "趋势结构分析 — MA层级趋势+中枢位置+背离信号, 0-1综合评分",
 }
 
 # 腾讯K线 API (获取价格历史)
@@ -840,6 +871,17 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     print(f"  价格历史覆盖: {n_with_hist}/{len(stocks)} ({n_with_hist/len(stocks)*100:.0f}%)"
           + (f" K线补充{with_kline}只" if with_kline else ""))
 
+    # ── 结构分析: 批量加载日线 OHLCV (Top-N 候选股) ──
+    structure_bars_map = {}
+    if HAS_STRUCTURER:
+        try:
+            struct_codes = [s.get("代码", "") for s in top_codes[:200]]
+            structure_bars_map = load_structure_bars(struct_codes, days=250)
+            n_struct = len(structure_bars_map)
+            print(f"  结构分析加载: {n_struct}/200 只")
+        except Exception as e:
+            print(f"  结构分析加载失败: {e}")
+
     # ── 体制感知 + 黑天鹅 + 外部情绪 ──
     weights, regime = _detect_regime(date_str)
     bs_level = 0
@@ -1090,6 +1132,17 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["ext_sentiment"] = ext_sentiment
         sub["sector_momentum"] = sector_momentum_map.get(industry, 0.5)
 
+        # ── 结构评分（从日线 OHLCV 计算趋势结构）──
+        struct_bars = structure_bars_map.get(code)
+        if struct_bars and len(struct_bars) >= 60:
+            try:
+                struc = structure_score(code, struct_bars)
+                sub["structure_score"] = struc["score"]
+            except Exception:
+                sub["structure_score"] = 0.5
+        else:
+            sub["structure_score"] = 0.5
+
         # ── 综合得分（体制感知权重）──
         total = sum(sub.get(k, 0.5) * weights.get(k, 0) for k in weights)
         for k in weights:
@@ -1217,24 +1270,28 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             if ratio_score > 0:
                 total -= ratio_score; early -= ratio_score  # 撤回P32加分
 
-        # ── P37: 得分动量 (体制感知: 牛市+0.05, 熊市动量向上是陷阱-0.03) ──
-        # 5 Agent信号发现: P37_momentum_up全局-8pp WR, 牛市57.4%→熊市仅20.7%
+        # ── P37: 得分动量 (回测: bear中动量向上是陷阱,阈值收紧惩罚加重) ──
+        # 回测发现: 熊市中动量股更容易踩踏, score_change>0.03即可疑
         if code in prev_scores:
             score_change = total - prev_scores[code]
-            if score_change > 0.05:
-                if regime in ("bear", "bear_bias"):
-                    total -= 0.03; comp_sigs.append("P37_momentum_up")
-                    early -= 0.03
-                else:
+            if regime in ("bear", "bear_bias"):
+                if score_change > 0.05:        # 大幅跳升最可疑 → 先检查大阈值
+                    total -= 0.08; comp_sigs.append("P37_momentum_up")
+                    early -= 0.08
+                elif score_change > 0.03:      # 阈值从0.05降到0.03
+                    total -= 0.05; comp_sigs.append("P37_momentum_up")
+                    early -= 0.05
+            else:
+                if score_change > 0.05:
                     total += 0.05; comp_sigs.append("P37_momentum_up")
                     early += 0.05
-            elif score_change < -0.05:
+            if score_change < -0.05:
                 total -= 0.05; comp_sigs.append("P37_momentum_down")
                 early -= 0.05
 
         results.append({
-            "代码": code, "名称": name, "最新价": f2, "行业": industry,
-            "综合得分": round(total, 4), "启动得分": round(early, 4),
+            "代码": code, "名称": name, "最新价": f2, "昨收": s.get("昨收", ""), "行业": industry,
+            "综合得分": round(total, 4), "市场体制": regime, "启动得分": round(early, 4),
             "短线得分": round(short, 4), "中线得分": round(mid, 4),
             "资金得分": sub.get("capital", 0.5), "趋势得分": sub.get("trend", 0.5),
             "启动因子": round(sub.get("start_signal", 0.5), 3), "板块得分": sub.get("sector", 0.5),
@@ -1253,6 +1310,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "尾盘量能": sub.get("tail_volume", 0.5),
             "拥挤度": sub.get("crowding", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi,
+            "结构得分": sub.get("structure_score", 0.5),
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
             "启动信号": ",".join(early_sigs),
