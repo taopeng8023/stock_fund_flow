@@ -150,6 +150,7 @@ COMPOSITE_SIGNALS = {
     "P34_gap_strong":     "高开高走(开盘缺口>2%且收涨>2%,回测+0.76%最强)",
     "P34_gap_reverse":    "低开反转(开盘缺口<-2%但收涨>1%,回测-0.72%已降权)",
     "P34_gap_trap":       "高开陷阱(开盘缺口>3%但收跌)",
+    "P34_gap_standalone": "P34独立标记(无P32/E3协同,回测47→33→30%恶化,仅追踪)",
     "P35_short_cover":    "融券空头回补(净卖出<-1亿)",
     "P35_short_pressure": "融券强做空(净卖出>3亿)",
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
@@ -1192,6 +1193,12 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                 gap_signal = -0.04; comp_sigs.append("P34_gap_trap")
         total += gap_signal
         early += gap_signal
+
+        # ── P34 独立标记: P34_gap_strong 无协同信号时不可信 ──
+        # BACKTEST_REPORT_20260626: P34_gap_strong 单独使用 47%→33%→30% 持续恶化
+        # 仅在与 P32_pump_risk 协同时有效 (E3_strong_start 由买入引擎 Tier 层独立校验)
+        if "P34_gap_strong" in comp_sigs and "P32_pump_risk" not in comp_sigs:
+            comp_sigs.append("P34_gap_standalone")
 
         # ── P35: 融券压力 (做空检测) ──
         short_signal = 0.0

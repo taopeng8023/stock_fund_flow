@@ -5,7 +5,7 @@
 基线: 全市场胜率 27.4%, 均收益 -1.22%
 
 核心规则（5 Agent 信号发现验证）:
-  P0 🥇 Gap强+拉高出货:  P34_gap_strong + P32_pump_risk        → 66.9% WR, +2.44%, N=293, 牛熊通用
+  P0 🥇 静默突破:          P34_gap_strong + P32_pump_risk        → 66.9% WR, +2.44%, N=293, 牛熊通用
   P1 🥈 E3+P34共振:       E3_strong_start + P34_gap_strong       → 61.7% WR, +2.26%, N=162
   P2 🥉 高价+空头+Gap反:   P_high_price + P35_short_pressure
                            + P34_gap_reverse                     → 77.5% WR, +2.24%, N=40
@@ -116,7 +116,7 @@ TIERS = {
     "P0": {
         "require_signals": ["P34_gap_strong", "P32_pump_risk"],
         "block_signals": ["P37_momentum_down", "P36_overheat", "P6_retail"],
-        "label": "P0:Gap强+拉高出货",
+        "label": "P0:静默突破",
         "wr": "66.9%", "n": 293, "avg_ret": "+2.44%",
         "desc": "P34_gap_strong+P32_pump_risk — 静默期后突发主力+高开=真突破",
         "position_pct": 50,
@@ -177,6 +177,11 @@ MIN_TURNOVER_YI = 0.5           # 最小成交额 5000万
 MAX_PER_SECTOR = 2              # 同行业最多 2 只
 
 # ── 全局排除令牌（5 Agent 验证为负向信号，任何规则均排除）──
+#
+# ⚠️ P34_gap_strong 矛盾警示 (BACKTEST_REPORT_20260626):
+#   P34_gap_strong 作为独立信号持续恶化 (47%→33%→30%, 3日跨期回测)
+#   仅在搭配 P32_pump_risk (P0静默突破) 或 E3_strong_start (P1共振) 时可信
+#   本引擎通过 TIERS.require_signals 强制组合匹配，禁止 P34_gap_strong 单独入选
 GLOBAL_EXCLUDE_TOKENS = [
     "P6_retail",              # 散户主导 → 0% WR (38样本)
     "P35_short_heavy",        # 融券/主力比>3 → -5.6pp
