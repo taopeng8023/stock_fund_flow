@@ -78,8 +78,8 @@ TIERS = {
     "A2": {
         "require": ["P35_short_pressure", "P37_momentum_up"],
         "score_min": 0.30, "capital_min": 0.50,
-        "label": "A2:空头压力+动量上行(50.7%WR)", "bonus": 0.08,
-        "desc": "空头+动量共振 — n=71 WR=50.7% avg=+0.19%",
+        "label": "A2:空头压力+动量上行(87.5%WR实测)", "bonus": 0.12,
+        "desc": "空头+动量共振 — n=71 WR=50.7% avg=+0.19% (实测34笔87.5%WR)",
     },
     "A3": {
         "require": ["P35_short_pressure", "E1_low_start"],
@@ -90,8 +90,8 @@ TIERS = {
     "A4": {
         "require": ["P34_gap_strong", "E4_gap_start"],
         "score_min": 0.30, "capital_min": 0.50,
-        "label": "A4:强势缺口+跳空启动(42.3%WR)", "bonus": 0.05,
-        "desc": "强势缺口+跳空 — n=83 WR=42.3% avg=-0.35%",
+        "label": "A4:强势缺口+跳空(26.7%WR实测⚠️)", "bonus": 0.01,
+        "desc": "强势缺口+跳空 — n=83 WR=42.3% avg=-0.35% (实测15笔26.7%WR, 仅兜底)",
     },
     # ── 熊市专用 ──
     "BEAR": {
@@ -162,7 +162,8 @@ DISASTER_COMBOS = [
 ]
 
 TIER_ORDER = ["S1", "S2", "S3", "S4", "S5", "S6", "A1", "A2", "A3", "A4", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
-AFFORDABLE_TIERS = ["A1", "S6", "A2", "A3", "BEAR", "A4"]  # 无 P_high_price 的优先序列
+# 回测校准 (34笔, 20260622-0626): A2=87.5%WR A1=71.4%WR A4=26.7%WR(拖后腿)
+AFFORDABLE_TIERS = ["A2", "A1", "A3", "S6", "BEAR", "A4"]  # 无 P_high_price 的优先序列
 SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
 
 # ═══════════════════════════════════════
@@ -236,10 +237,13 @@ def filter_overnight(date_str=None, top_n=5, max_price=0):
             if t not in strictness_tiers:
                 strictness_tiers.append(t)
         # 保持门禁的 tier_strictness: 去除非核心 tier
+        # A4(26.7%WR实测) 仅在 strictness=0 时兜底, strictness>=1 排除
         if tier_strictness >= 3:
-            strictness_tiers = [t for t in strictness_tiers if t in ("A1", "S6", "BEAR")]
+            strictness_tiers = [t for t in strictness_tiers if t in ("A2", "A1", "S6", "BEAR")]
         elif tier_strictness >= 2:
-            strictness_tiers = [t for t in strictness_tiers if t in ("A1", "S6", "A2", "A3", "BEAR")]
+            strictness_tiers = [t for t in strictness_tiers if t in ("A2", "A1", "A3", "S6", "BEAR")]
+        elif tier_strictness >= 1:
+            strictness_tiers = [t for t in strictness_tiers if t not in ("A4",)]
         print(f"  💰 股价上限 {effective_max:.0f} 元 — P_high_price tier不可用, 可用: {strictness_tiers[:6]}")
 
     candidates = []
