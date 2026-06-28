@@ -29,20 +29,20 @@ RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 RISK_STATE_PATH = Path(__file__).parent / "risk_state.json"
 
 # ── 门禁阈值 ──
-INTRADAY_MEDIAN_THRESHOLD = -1.0    # 14:01 快照中位数 < -1.0% → 不交易
-MELTDOWN_THRESHOLD = -1.5           # 全市场中位数 < -1.5% → 不交易
-DAILY_LOSS_SKIP1 = -5.0             # 单日亏损 > 5% → 次日跳过
-DAILY_LOSS_SKIP2 = -8.0             # 单日亏损 > 8% → 此后2日跳过
-MAX_DRAWDOWN = -15.0                # 累计回撤 > 15% → 停止交易
-DRAWDOWN_RECOVERY = -10.0           # 回撤恢复到 10% 以内 → 恢复交易
+MELTDOWN_HARD_BLOCK = -1.5         # 全市场中位数 < -1.5% → 硬阻断（极端崩盘）
+INTRADAY_WARNING = -1.0            # 中位数 < -1.0% → 仓位减半警告
+DAILY_LOSS_SKIP1 = -5.0            # 单日亏损 > 5% → 次日跳过
+DAILY_LOSS_SKIP2 = -8.0            # 单日亏损 > 8% → 此后2日跳过
+MAX_DRAWDOWN = -15.0               # 累计回撤 > 15% → 停止交易
+DRAWDOWN_RECOVERY = -10.0          # 回撤恢复到 10% 以内 → 恢复交易
 
 # ── 体制基础仓位（回测校准） ──
 BASE_POSITION = {
     "bull": 0.80,
     "bull_bias": 0.50,
     "range": 0.35,
-    "bear_bias": 0.0,   # 门禁阻断
-    "bear": 0.0,         # 门禁阻断
+    "bear_bias": 0.25,   # 降仓但不阻断 — 精选 S-tier 仍可盈利
+    "bear": 0.15,         # 降仓但不阻断 — BEAR tier 81.8%WR
 }
 
 RISK_DISCOUNT = {
@@ -267,42 +267,52 @@ def can_trade_today(date_str: str) -> tuple:
             "circuit_breaker": cb_level, "resume_date": cb_until,
         }
 
-    # ── Gate 1: 体制门禁 ──
+    # ── Gate 1: 极端崩盘硬阻断 ──
     regime = _load_regime(date_str)
     details["regime"] = regime
 
-    if regime in ("bear", "bear_bias"):
-        reasons.append(f"体制门禁: {regime}")
-
-    # ── Gate 2: 日内中位数门禁 ──
     intraday_med = _load_intraday_median(date_str)
     details["intraday_median"] = round(intraday_med, 2) if intraday_med is not None else None
 
-    if intraday_med is not None and intraday_med < INTRADAY_MEDIAN_THRESHOLD:
-        reasons.append(f"日内中位数门禁: median={intraday_med:+.2f}% < {INTRADAY_MEDIAN_THRESHOLD}%")
+    # 唯一硬阻断: 全市场中位数 < -1.5% (极端崩盘)
+    if intraday_med is not None and intraday_med < MELTDOWN_HARD_BLOCK:
+        reasons.append(f"极端崩盘: median={intraday_med:+.2f}% < {MELTDOWN_HARD_BLOCK}%")
 
-    # ── Gate 3: 黑天鹅门禁 ──
+    # ── Gate 2: 黑天鹅门禁 ──
     bs_level, bs_blocked = _check_black_swan(date_str)
     details["bs_level"] = bs_level
 
     if bs_blocked:
         reasons.append(f"黑天鹅L{bs_level}: 禁止买入")
-    # BS L1: 仓位打7折
-    gate_multiplier = 0.7 if bs_level == 1 else 1.0
-    details["gate_multiplier"] = gate_multiplier
-
-    # ── Gate 4: 强熊熔断（全体制） ──
-    if intraday_med is not None and intraday_med < MELTDOWN_THRESHOLD:
-        reasons.append(f"强熊熔断: median={intraday_med:+.2f}% < {MELTDOWN_THRESHOLD}%")
 
     # ── 汇总 ──
     if reasons:
         return False, " | ".join(reasons), details
 
+    # ── 仓位乘数计算 ──
+    position_multiplier = 1.0
+
+    # BS L1: 仓位打7折
+    if bs_level == 1:
+        position_multiplier *= 0.7
+
+    # 日内中位数警告: -1.0%~-1.5% 仓位减半（允许交易但降仓）
+    if intraday_med is not None and intraday_med < INTRADAY_WARNING:
+        position_multiplier *= 0.5
+        details["warning"] = f"日内偏弱(median={intraday_med:+.2f}%), 仓位减半"
+
+    # 熊市/偏熊: 仓位再打折 + 精选模式
+    if regime in ("bear", "bear_bias"):
+        position_multiplier *= 0.7
+        details["restricted_mode"] = True  # 仅 S1/S2/BEAR tier
+        if "warning" not in details:
+            details["warning"] = f"{regime}体制, 精选模式"
+
+    details["position_multiplier"] = round(position_multiplier, 2)
+
     # ── 计算建议仓位 ──
     base_pct = BASE_POSITION.get(regime, 0.35)
-    if bs_level == 1:
-        base_pct *= 0.7
+    base_pct *= position_multiplier
     details["suggested_position"] = round(base_pct * 100)
 
     return True, "PASS", details

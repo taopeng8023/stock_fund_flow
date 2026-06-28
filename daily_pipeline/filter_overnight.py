@@ -182,6 +182,9 @@ def filter_overnight(date_str=None, top_n=5):
             print(f"\n  🚫 门禁阻断: {gate_reason}\n")
             return []
         bs_level = gate_details.get("bs_level", 0)
+        restricted_mode = gate_details.get("restricted_mode", False)
+        if restricted_mode:
+            print(f"\n  ⚠️ 精选模式: 仅 S1/S2/BEAR tier (bear/bear_bias 体制)")
     except ImportError:
         # fallback: 仅黑天鹅门禁
         try:
@@ -265,7 +268,8 @@ def filter_overnight(date_str=None, top_n=5):
 
         # 逐级匹配 S → BEAR → BULL
         matched_tier = None
-        for tk in ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"]:
+        tier_order = ["S1", "S2", "BEAR"] if restricted_mode else ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
+        for tk in tier_order:
             rules = TIERS[tk]
             if "regime_only" in rules and regime not in rules["regime_only"]:
                 continue

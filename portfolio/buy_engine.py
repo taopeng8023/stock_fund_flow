@@ -489,6 +489,7 @@ def generate_recommendations(date_str: str, top_n: int = 10,
                     "buys": [], "block_reason": gate_reason}
         bs_level = gate_details.get("bs_level", 0)
         gate_multiplier = gate_details.get("gate_multiplier", 1.0)
+        restricted_mode = gate_details.get("restricted_mode", False)
     except ImportError:
         # fallback: 使用旧门禁
         bs_level, blocked = check_black_swan(date_str)
@@ -518,8 +519,12 @@ def generate_recommendations(date_str: str, top_n: int = 10,
                     "regime": regime, "candidates": [], "buys": [],
                     "block_reason": f"强熊熔断(全市场中位数{market_median:+.2f}%)"}
 
-    # 按优先级筛选：S1→S2→S3→S4→S5→S6→P4→P1→P0→P2→P3→OBSERVE
-    tier_priority = ["S1", "S2", "S3", "S4", "S5", "S6", "P4", "P1", "P0", "P2", "P3", "OBSERVE"]
+    # 按优先级筛选: S1→S2→S3→S4→S5→S6→P4→P1→P0→P2→P3→OBSERVE
+    # 精选模式 (bear/bear_bias): 仅 S1/S2/P4/P1/P0
+    if restricted_mode:
+        tier_priority = ["S1", "S2", "P4", "P1", "P0", "OBSERVE"]
+    else:
+        tier_priority = ["S1", "S2", "S3", "S4", "S5", "S6", "P4", "P1", "P0", "P2", "P3", "OBSERVE"]
     all_candidates = []
     seen = set()
 
