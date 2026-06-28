@@ -1,11 +1,18 @@
 """
-风险控制器 — 多层级门禁系统 + P&L 追踪 + 熔断机制
+风险控制器 — 选股严格度递进 + P&L 追踪 + 熔断机制
 
-四层门禁:
-  Gate 1: 体制门禁 (bear/bear_bias → 不交易)
-  Gate 2: 日内中位数门禁 (14:01 快照 median < -1.0% → 不交易)
-  Gate 3: 黑天鹅门禁 (BS L2+ → 不交易)
-  Gate 4: 强熊熔断 (market_median < -1.5% → 不交易)
+核心理念: 用选股严格度 + 仓位递进替代二值门禁。
+回测验证: S1信号在极端熊市日(中位数-2.87%)盘中均价仍+5.55%, 隔夜WR=77.8%。
+系统性下跌中信号筛选仍能产生正超额, 不应二值阻断。
+
+日内中位数分层 (取消硬阻断):
+  Level 0: median > -1.0%         → 正常交易, 全 tier
+  Level 1: -1.5% < median <= -1.0% → 降仓, S1-S3+BEAR
+  Level 2: -2.0% < median <= -1.5% → 精选, S1/S2/BEAR
+  Level 3: -3.0% < median <= -2.0% → 极致精选, S1/BEAR
+  Level 4: median <= -3.0%        → 仅S1, 最低仓位
+
+唯一硬阻断: 黑天鹅 L2+ / 熔断L3(累计回撤>15%)
 
 熔断机制:
   L1: 单日组合亏损 > -5% → 次日跳过
@@ -28,13 +35,39 @@ PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 RISK_STATE_PATH = Path(__file__).parent / "risk_state.json"
 
-# ── 门禁阈值 ──
-MELTDOWN_HARD_BLOCK = -1.5         # 全市场中位数 < -1.5% → 硬阻断（极端崩盘）
-INTRADAY_WARNING = -1.0            # 中位数 < -1.0% → 仓位减半警告
+# ── 熔断阈值 ──
 DAILY_LOSS_SKIP1 = -5.0            # 单日亏损 > 5% → 次日跳过
 DAILY_LOSS_SKIP2 = -8.0            # 单日亏损 > 8% → 此后2日跳过
 MAX_DRAWDOWN = -15.0               # 累计回撤 > 15% → 停止交易
 DRAWDOWN_RECOVERY = -10.0          # 回撤恢复到 10% 以内 → 恢复交易
+
+# ── 日内中位数分层阈值（从最负到最正, 依次匹配） ──
+INTRADAY_LEVELS = [
+    (float("-inf"), 4),  # < -3.0%: 仅S1
+    (-3.0,  3),          # -3.0% ~ -2.0%: 极致精选
+    (-2.0,  2),          # -2.0% ~ -1.5%: 精选
+    (-1.5,  1),          # -1.5% ~ -1.0%: 降仓
+    (-1.0,  0),          # > -1.0%: 正常
+]
+
+# 各层级的仓位乘数 + tier 限制
+LEVEL_CONFIG = {
+    0: {"position_mult": 1.0,  "tier_strictness": 0, "label": "正常"},
+    1: {"position_mult": 0.50, "tier_strictness": 1, "label": "降仓"},
+    2: {"position_mult": 0.25, "tier_strictness": 2, "label": "精选"},
+    3: {"position_mult": 0.15, "tier_strictness": 3, "label": "极致精选"},
+    4: {"position_mult": 0.10, "tier_strictness": 4, "label": "仅S1"},
+}
+
+# tier_strictness → 可用 tier 列表 (filter_overnight / buy_engine 使用)
+# 0=全tier, 1=S1-S3+BEAR, 2=S1/S2/BEAR, 3=S1/BEAR, 4=S1 only
+STRICTNESS_TIERS = {
+    0: ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"],
+    1: ["S1", "S2", "S3", "BEAR"],
+    2: ["S1", "S2", "BEAR"],
+    3: ["S1", "BEAR"],
+    4: ["S1"],
+}
 
 # ── 体制基础仓位（回测校准） ──
 BASE_POSITION = {
@@ -241,14 +274,17 @@ def _check_black_swan(date_str: str) -> Tuple[int, bool]:
 def can_trade_today(date_str: str) -> tuple:
     """
     判断今天是否可以交易。
+    取消日内中位数硬阻断, 改用选股严格度 + 仓位递进。
+
     Returns:
         (can_trade: bool, reason: str, details: dict)
-        details 包含: regime, bs_level, intraday_median, suggested_position
+        details 包含: regime, bs_level, intraday_median, tier_strictness,
+                      suggested_position, strictness_tiers, warning
     """
     reasons = []
     details = {}
 
-    # ── Gate 0: 熔断检查（前日亏损/累计回撤） ──
+    # ── Hard Gate 0: 熔断检查（前日亏损/累计回撤） ──
     state = _load_risk_state()
     cb_until = state.get("circuit_breaker_until")
     cb_level = state.get("circuit_breaker_level", 0)
@@ -267,55 +303,65 @@ def can_trade_today(date_str: str) -> tuple:
             "circuit_breaker": cb_level, "resume_date": cb_until,
         }
 
-    # ── Gate 1: 极端崩盘硬阻断 ──
-    regime = _load_regime(date_str)
-    details["regime"] = regime
-
-    intraday_med = _load_intraday_median(date_str)
-    details["intraday_median"] = round(intraday_med, 2) if intraday_med is not None else None
-
-    # 唯一硬阻断: 全市场中位数 < -1.5% (极端崩盘)
-    if intraday_med is not None and intraday_med < MELTDOWN_HARD_BLOCK:
-        reasons.append(f"极端崩盘: median={intraday_med:+.2f}% < {MELTDOWN_HARD_BLOCK}%")
-
-    # ── Gate 2: 黑天鹅门禁 ──
+    # ── Hard Gate 1: 黑天鹅 L2+ ──
     bs_level, bs_blocked = _check_black_swan(date_str)
     details["bs_level"] = bs_level
 
     if bs_blocked:
         reasons.append(f"黑天鹅L{bs_level}: 禁止买入")
 
-    # ── 汇总 ──
     if reasons:
         return False, " | ".join(reasons), details
 
-    # ── 仓位乘数计算 ──
-    position_multiplier = 1.0
+    # ── 体制检测 ──
+    regime = _load_regime(date_str)
+    details["regime"] = regime
 
+    # ── 日内中位数检测 ──
+    intraday_med = _load_intraday_median(date_str)
+    details["intraday_median"] = round(intraday_med, 2) if intraday_med is not None else None
+
+    # ── 日内中位数分层（取消硬阻断） ──
+    med_level = 0
+    if intraday_med is not None:
+        for threshold, level in INTRADAY_LEVELS:
+            if intraday_med <= threshold:
+                med_level = level
+                break
+
+    level_cfg = LEVEL_CONFIG[med_level]
+    tier_strictness = level_cfg["tier_strictness"]
+    position_multiplier = level_cfg["position_mult"]
+
+    # ── 仓位乘数计算 ──
     # BS L1: 仓位打7折
     if bs_level == 1:
         position_multiplier *= 0.7
 
-    # 日内中位数警告: -1.0%~-1.5% 仓位减半（允许交易但降仓）
-    if intraday_med is not None and intraday_med < INTRADAY_WARNING:
-        position_multiplier *= 0.5
-        details["warning"] = f"日内偏弱(median={intraday_med:+.2f}%), 仓位减半"
-
-    # 熊市/偏熊: 仓位再打折 + 精选模式
+    # 熊市/偏熊: 仓位再打折 + 选股严格度至少 Level 2
     if regime in ("bear", "bear_bias"):
         position_multiplier *= 0.7
-        details["restricted_mode"] = True  # 仅 S1/S2/BEAR tier
-        if "warning" not in details:
-            details["warning"] = f"{regime}体制, 精选模式"
+        tier_strictness = max(tier_strictness, 2)  # bear日至少精选模式
+        details["regime_restricted"] = True
+        if med_level <= 1:
+            details["warning"] = f"{regime}体制, 精选模式(S1/S2/BEAR)"
 
-    details["position_multiplier"] = round(position_multiplier, 2)
+    details["tier_strictness"] = tier_strictness
+    details["strictness_tiers"] = STRICTNESS_TIERS[tier_strictness]
+    details["position_multiplier"] = round(position_multiplier, 4)
+
+    # ── 生成 warning ──
+    if med_level >= 1 and "warning" not in details:
+        details["warning"] = f"日内{level_cfg['label']}模式(median={intraday_med:+.2f}%), 仅{'/'.join(STRICTNESS_TIERS[tier_strictness])}"
 
     # ── 计算建议仓位 ──
     base_pct = BASE_POSITION.get(regime, 0.35)
     base_pct *= position_multiplier
     details["suggested_position"] = round(base_pct * 100)
 
-    return True, "PASS", details
+    effective_level = tier_strictness
+    effective_label = LEVEL_CONFIG[effective_level]["label"]
+    return True, f"PASS (L{effective_level} {effective_label})", details
 
 
 def suggested_position_pct(date_str: str) -> int:

@@ -489,7 +489,8 @@ def generate_recommendations(date_str: str, top_n: int = 10,
                     "buys": [], "block_reason": gate_reason}
         bs_level = gate_details.get("bs_level", 0)
         gate_multiplier = gate_details.get("gate_multiplier", 1.0)
-        restricted_mode = gate_details.get("restricted_mode", False)
+        tier_strictness = gate_details.get("tier_strictness", 0)
+        strictness_tiers = gate_details.get("strictness_tiers", [])
     except ImportError:
         # fallback: 使用旧门禁
         bs_level, blocked = check_black_swan(date_str)
@@ -501,30 +502,16 @@ def generate_recommendations(date_str: str, top_n: int = 10,
                     "buys": [], "reason": f"黑天鹅 Level {bs_level}"}
         gate_multiplier = 0.7 if bs_level == 1 else 1.0
 
-    # 强熊熔断: 全体制下全市场<-1.5%时禁止一切买入
-    all_chgs = []
-    for s in scores:
-        try:
-            all_chgs.append(float(s.get("涨跌幅", 0) or 0))
-        except (ValueError, TypeError):
-            pass
-    if all_chgs:
-        market_median = sorted(all_chgs)[len(all_chgs) // 2]
-        if market_median < -1.5:
-            print(f"\n{'='*60}")
-            print(f"  🐻 强熊熔断: 全市场涨跌幅中位数={market_median:+.2f}% < -1.5%")
-            print(f"     因子失效风险极高，禁止一切买入（全体制）")
-            print(f"{'='*60}")
-            return {"date": date_str, "blocked": True, "bs_level": bs_level,
-                    "regime": regime, "candidates": [], "buys": [],
-                    "block_reason": f"强熊熔断(全市场中位数{market_median:+.2f}%)"}
-
-    # 按优先级筛选: S1→S2→S3→S4→S5→S6→P4→P1→P0→P2→P3→OBSERVE
-    # 精选模式 (bear/bear_bias): 仅 S1/S2/P4/P1/P0
-    if restricted_mode:
-        tier_priority = ["S1", "S2", "P4", "P1", "P0", "OBSERVE"]
+    # 按优先级筛选: S-tiers(由门禁控制, 仅保留 buy_engine 支持的 tier) → P-tiers(根据严格度缩减)
+    valid_s_tiers = [t for t in (strictness_tiers or ["S1","S2","S3","S4","S5","S6"]) if t in TIERS]
+    # P-tier 缩减: strictness 0-1=全量, 2=P4/P1/P0, 3-4=P4 only
+    if tier_strictness <= 1:
+        p_tiers = ["P4", "P1", "P0", "P2", "P3"]
+    elif tier_strictness == 2:
+        p_tiers = ["P4", "P1", "P0"]
     else:
-        tier_priority = ["S1", "S2", "S3", "S4", "S5", "S6", "P4", "P1", "P0", "P2", "P3", "OBSERVE"]
+        p_tiers = ["P4"]
+    tier_priority = valid_s_tiers + p_tiers + ["OBSERVE"]
     all_candidates = []
     seen = set()
 

@@ -133,6 +133,7 @@ DISASTER_COMBOS = [
     ("E1_low_start", "P_low_vol"),     # E1_low+P_low_vol_ratio: WR=21.5% n=247
 ]
 
+TIER_ORDER = ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
 SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
 
 # ═══════════════════════════════════════
@@ -182,9 +183,10 @@ def filter_overnight(date_str=None, top_n=5):
             print(f"\n  🚫 门禁阻断: {gate_reason}\n")
             return []
         bs_level = gate_details.get("bs_level", 0)
-        restricted_mode = gate_details.get("restricted_mode", False)
-        if restricted_mode:
-            print(f"\n  ⚠️ 精选模式: 仅 S1/S2/BEAR tier (bear/bear_bias 体制)")
+        strictness_tiers = gate_details.get("strictness_tiers", TIER_ORDER)
+        tier_strictness = gate_details.get("tier_strictness", 0)
+        if tier_strictness >= 1:
+            print(f"\n  ⚠️ {gate_details.get('warning', gate_reason)}")
     except ImportError:
         # fallback: 仅黑天鹅门禁
         try:
@@ -268,8 +270,7 @@ def filter_overnight(date_str=None, top_n=5):
 
         # 逐级匹配 S → BEAR → BULL
         matched_tier = None
-        tier_order = ["S1", "S2", "BEAR"] if restricted_mode else ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
-        for tk in tier_order:
+        for tk in strictness_tiers:
             rules = TIERS[tk]
             if "regime_only" in rules and regime not in rules["regime_only"]:
                 continue
