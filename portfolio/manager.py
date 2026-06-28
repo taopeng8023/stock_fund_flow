@@ -63,8 +63,16 @@ def get_position(code: str) -> Optional[dict]:
 
 def add_position(code: str, name: str, price: float, date: str,
                  shares: int = 0, stop_loss_pct: float = -5.0,
-                 take_profit_pct: float = 15.0, notes: str = ""):
-    """新增持仓。"""
+                 take_profit_pct: float = 15.0, notes: str = "",
+                 overnight: bool = False):
+    """新增持仓。
+
+    Args:
+        overnight: 隔夜模式 — 止损收紧至 -3%, 快锁利 +5%, 10:15 超时卖出
+    """
+    if overnight:
+        stop_loss_pct = -3.0
+        take_profit_pct = 15.0  # TP-1 不变, TP-2 降为 +5%
     data = _load()
 
     # 检查重复
@@ -78,6 +86,7 @@ def add_position(code: str, name: str, price: float, date: str,
         "entry_date": date, "entry_price": round(price, 2),
         "shares": shares,
         "stop_loss_pct": stop_loss_pct,
+        "overnight": overnight,
         "take_profit_pct": take_profit_pct,
         "trailing_stop_peak": round(price, 2),
         "status": "active",
@@ -188,11 +197,21 @@ SELL_RULES = {
     "TP-1": {"name": "目标止盈", "urgency": "MEDIUM",
              "desc": "现价 ≥ 成本价 × (1 + 止盈%)"},
     "TP-2": {"name": "快盈锁仓", "urgency": "MEDIUM",
-             "desc": "持有 ≤ 3 天且涨幅 ≥ 8%"},
+             "desc": "持有 ≤ 3 天且涨幅 ≥ 8%（隔夜模式: ≥5%）"},
     "TE-1": {"name": "死钱退出", "urgency": "MEDIUM",
-             "desc": "持有 ≥ 10 天且涨跌幅 ≤ 2%"},
+             "desc": "持有 ≥ 10 天且涨跌幅 ≤ 2%（隔夜模式禁用）"},
     "TE-2": {"name": "水下过久", "urgency": "HIGH",
-             "desc": "持有 ≥ 5 天且亏损 ≥ 2%"},
+             "desc": "持有 ≥ 5 天且亏损 ≥ 2%（隔夜模式禁用）"},
+    "OT-1": {"name": "隔夜超时", "urgency": "URGENT",
+             "desc": "隔夜模式: 时间 > 10:15 必须卖出"},
+}
+
+# 隔夜模式覆盖
+OVERNIGHT_OVERRIDES = {
+    "SL-1": {"stop_loss_pct": -3.0},      # 紧止损 -3%
+    "TP-2": {"threshold_pct": 5.0},       # 快锁利 +5%
+    "TE-1": {"enabled": False},           # 不适用
+    "TE-2": {"enabled": False},           # 不适用
 }
 
 
@@ -251,20 +270,29 @@ def check_sell_signals(date_str: str, enable_notify: bool = True,
             signals.append({"rule_id": "TP-1", "name": "目标止盈", "urgency": "MEDIUM",
                             "reason": f"盈利{pnl:.1f}% ≥ 止盈{tp:.0f}%"})
 
-        # TP-2 快盈锁仓
-        if hold_days <= 3 and pnl >= 8:
+        # TP-2 快盈锁仓 (隔夜模式阈值降为 +5%)
+        tp2_threshold = 5.0 if p.get("overnight") else 8.0
+        if hold_days <= 3 and pnl >= tp2_threshold:
             signals.append({"rule_id": "TP-2", "name": "快盈锁仓", "urgency": "MEDIUM",
                             "reason": f"持有{hold_days}天涨{pnl:.1f}%，快盈建议锁仓"})
 
-        # TE-1 死钱退出
-        if hold_days >= 10 and abs(pnl) <= 2:
+        # TE-1 死钱退出 (隔夜模式禁用)
+        if not p.get("overnight") and hold_days >= 10 and abs(pnl) <= 2:
             signals.append({"rule_id": "TE-1", "name": "死钱退出", "urgency": "MEDIUM",
                             "reason": f"持有{hold_days}天，涨跌仅{pnl:+.1f}%，资金效率低"})
 
-        # TE-2 水下过久
-        if hold_days >= 5 and pnl <= -2:
+        # TE-2 水下过久 (隔夜模式禁用)
+        if not p.get("overnight") and hold_days >= 5 and pnl <= -2:
             signals.append({"rule_id": "TE-2", "name": "水下过久", "urgency": "HIGH",
                             "reason": f"持有{hold_days}天亏损{pnl:.1f}%，建议止损"})
+
+        # OT-1 隔夜超时 (仅隔夜模式, 时间 > 10:15 必须卖出)
+        if p.get("overnight"):
+            now = datetime.now()
+            cutoff = now.replace(hour=10, minute=15, second=0, microsecond=0)
+            if now > cutoff:
+                signals.append({"rule_id": "OT-1", "name": "隔夜超时", "urgency": "URGENT",
+                                "reason": f"隔夜模式: 已过10:15截止时间, 必须卖出"})
 
         # 黑天鹅强制审查
         if bs_level >= 2 and pnl < 0:
@@ -336,6 +364,56 @@ def _notify_sell_signals(date_str: str, results: list, bs_level: int):
 
     send_markdown("\n".join(lines))
     print("  📤 已推送企业微信")
+
+
+# ---------------------------------------------------------------------------
+# 批量操作 (隔夜套利)
+# ---------------------------------------------------------------------------
+
+def add_batch_positions(date_str: str, picks: list):
+    """批量添加隔夜持仓。
+
+    Args:
+        date_str: 买入日期
+        picks: [{"代码": ..., "名称": ..., "最新价": ..., "级别": ...}, ...]
+    """
+    for p in picks:
+        code = p.get("代码", "")
+        name = p.get("名称", "")
+        price = p.get("最新价", 0)
+        tier = p.get("级别", "")
+        try:
+            price = float(price)
+        except (ValueError, TypeError):
+            continue
+        if price <= 0:
+            continue
+        add_position(
+            code=code, name=name, price=price, date=date_str,
+            overnight=True,
+            notes=f"隔夜套利 {tier}",
+        )
+
+
+def close_all_overnight(date_str: str):
+    """平仓所有隔夜持仓。
+
+    在 T+1 日 10:15 后调用，确保所有隔夜持仓清空。
+    """
+    data = _load()
+    closed = 0
+    for p in data["positions"]:
+        if p.get("status") != "active":
+            continue
+        if not p.get("overnight"):
+            continue
+        price = p.get("current_price") or p["entry_price"]
+        close_position(
+            code=p["code"], price=price, date=date_str,
+            reason="隔夜清仓",
+        )
+        closed += 1
+    print(f"  隔夜清仓: {closed} 只")
 
 
 # ---------------------------------------------------------------------------

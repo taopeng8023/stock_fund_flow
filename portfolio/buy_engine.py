@@ -169,6 +169,67 @@ TIERS = {
         "score_min": 0.40,
         "regime_ok": ["bull", "bull_bias", "range", "bear", "bear_bias"],
     },
+    # ── S 级: 隔夜套利 (全市场16,645笔验证, 09:45-10:15出场) ──
+    "S1": {
+        "require_signals": ["P37_momentum_up", "E6_short_squeeze", "P_high_price"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "S1:动量+逼空+高价(65.6%WR)",
+        "wr": "65.6%", "n": 32, "avg_ret": "+0.87%",
+        "desc": "全市场最强三重信号 — n=32 WR=65.6% avg=+0.87%",
+        "position_pct": 20,
+        "score_min": 0,
+        "regime_ok": ["bull", "bull_bias", "range"],
+    },
+    "S2": {
+        "require_signals": ["P35_short_cover", "P37_momentum_up", "P_high_price"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "S2:回补+动量+高价(62.5%WR)",
+        "wr": "62.5%", "n": 40, "avg_ret": "+0.73%",
+        "desc": "全市场第二三重信号 — n=40 WR=62.5% avg=+0.73%",
+        "position_pct": 20,
+        "score_min": 0,
+        "regime_ok": ["bull", "bull_bias", "range"],
+    },
+    "S3": {
+        "require_signals": ["P_low_vol_ratio", "P_high_price"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "S3:低量比+高价(57.7%WR)",
+        "wr": "57.7%", "n": 71, "avg_ret": "+0.45%",
+        "desc": "全市场最强双信号 — n=71 WR=57.7% avg=+0.45%",
+        "position_pct": 15,
+        "score_min": 0.40,
+        "regime_ok": ["bull", "bull_bias", "range"],
+    },
+    "S4": {
+        "require_signals": ["P37_momentum_up", "P_high_price"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "S4:动量+高价(55.2%WR)",
+        "wr": "55.2%", "n": 116, "avg_ret": "+0.42%",
+        "desc": "动量向上+高价质量过滤 — n=116 WR=55.2% avg=+0.42%",
+        "position_pct": 15,
+        "score_min": 0.40,
+        "regime_ok": ["bull", "bull_bias", "range"],
+    },
+    "S5": {
+        "require_signals": ["E6_short_squeeze", "P_high_price"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "S5:逼空+高价(52.5%WR)",
+        "wr": "52.5%", "n": 80, "avg_ret": "+0.12%",
+        "desc": "逼空启动+高价过滤 — n=80 WR=52.5% avg=+0.12%",
+        "position_pct": 10,
+        "score_min": 0.40,
+        "regime_ok": ["bull", "bull_bias", "range"],
+    },
+    "S6": {
+        "require_signals": ["P34_gap_reverse", "P35_short_cover"],
+        "block_signals": ["P37_momentum_down", "P6_retail"],
+        "label": "S6:低开反转+回补(54.3%WR)",
+        "wr": "54.3%", "n": 35, "avg_ret": "+0.61%",
+        "desc": "全市场最佳验证双信号 — n=35 WR=54.3% avg=+0.61%",
+        "position_pct": 10,
+        "score_min": 0.40,
+        "regime_ok": ["bull", "bull_bias", "range"],
+    },
     "OBSERVE": {
         "require_signals": [],
         "block_signals": ["P37_momentum_down", "P6_retail"],
@@ -415,36 +476,50 @@ def generate_recommendations(date_str: str, top_n: int = 10,
     prior_dates = _find_prior_trading_dates(date_str, n=3)
     prior_returns = _load_prior_day_returns(prior_dates) if prior_dates else None
 
-    # 黑天鹅门禁
-    bs_level, blocked = check_black_swan(date_str)
-    if blocked:
-        print(f"\n{'='*60}")
-        print(f"  🚨 黑天鹅 Level {bs_level} — 禁止一切买入")
-        print(f"{'='*60}")
-        return {"date": date_str, "blocked": True, "bs_level": bs_level,
-                "buys": [], "reason": f"黑天鹅 Level {bs_level}"}
+    # ── 统一门禁系统 (risk_controller) ──
+    try:
+        from portfolio.risk_controller import can_trade_today
+        gate_ok, gate_reason, gate_details = can_trade_today(date_str)
+        if not gate_ok:
+            print(f"\n{'='*60}")
+            print(f"  🚫 门禁阻断: {gate_reason}")
+            print(f"{'='*60}")
+            return {"date": date_str, "blocked": True, "bs_level": gate_details.get("bs_level", 0),
+                    "regime": gate_details.get("regime", regime),
+                    "buys": [], "block_reason": gate_reason}
+        bs_level = gate_details.get("bs_level", 0)
+        gate_multiplier = gate_details.get("gate_multiplier", 1.0)
+    except ImportError:
+        # fallback: 使用旧门禁
+        bs_level, blocked = check_black_swan(date_str)
+        if blocked:
+            print(f"\n{'='*60}")
+            print(f"  🚨 黑天鹅 Level {bs_level} — 禁止一切买入")
+            print(f"{'='*60}")
+            return {"date": date_str, "blocked": True, "bs_level": bs_level,
+                    "buys": [], "reason": f"黑天鹅 Level {bs_level}"}
+        gate_multiplier = 0.7 if bs_level == 1 else 1.0
 
-    # 强熊熔断: 全市场<-1.5%时禁止一切买入
-    if _is_bear_regime(regime):
-        all_chgs = []
-        for s in scores:
-            try:
-                all_chgs.append(float(s.get("涨跌幅", 0) or 0))
-            except (ValueError, TypeError):
-                pass
-        if all_chgs:
-            market_median = sorted(all_chgs)[len(all_chgs) // 2]
-            if market_median < -1.5:
-                print(f"\n{'='*60}")
-                print(f"  🐻 强熊熔断: 全市场涨跌幅中位数={market_median:+.2f}% < -1.5%")
-                print(f"     因子失效风险极高，禁止一切买入")
-                print(f"{'='*60}")
-                return {"date": date_str, "blocked": True, "bs_level": bs_level,
-                        "regime": regime, "candidates": [], "buys": [],
-                        "block_reason": f"强熊熔断(全市场中位数{market_median:+.2f}%)"}
+    # 强熊熔断: 全体制下全市场<-1.5%时禁止一切买入
+    all_chgs = []
+    for s in scores:
+        try:
+            all_chgs.append(float(s.get("涨跌幅", 0) or 0))
+        except (ValueError, TypeError):
+            pass
+    if all_chgs:
+        market_median = sorted(all_chgs)[len(all_chgs) // 2]
+        if market_median < -1.5:
+            print(f"\n{'='*60}")
+            print(f"  🐻 强熊熔断: 全市场涨跌幅中位数={market_median:+.2f}% < -1.5%")
+            print(f"     因子失效风险极高，禁止一切买入（全体制）")
+            print(f"{'='*60}")
+            return {"date": date_str, "blocked": True, "bs_level": bs_level,
+                    "regime": regime, "candidates": [], "buys": [],
+                    "block_reason": f"强熊熔断(全市场中位数{market_median:+.2f}%)"}
 
-    # 按优先级筛选：P1 → P0 → P4 → P2 → P3 → OBSERVE
-    tier_priority = ["P4", "P1", "P0", "P2", "P3", "OBSERVE"]
+    # 按优先级筛选：S1→S2→S3→S4→S5→S6→P4→P1→P0→P2→P3→OBSERVE
+    tier_priority = ["S1", "S2", "S3", "S4", "S5", "S6", "P4", "P1", "P0", "P2", "P3", "OBSERVE"]
     all_candidates = []
     seen = set()
 

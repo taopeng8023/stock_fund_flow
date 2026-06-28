@@ -350,10 +350,11 @@ def position_advice(regime_result, risk_result):
     regime = regime_result.get("regime", "range")
     risk_level = risk_result.get("level", "low")
 
+    # 回测校准: 4日16,645笔显示3/4日为方向性下跌, 非牛市降仓
     base_position = {
-        "bull": 0.80, "bull_bias": 0.65, "range": 0.50,
+        "bull": 0.80, "bull_bias": 0.50, "range": 0.35,
         "bear_bias": 0.35, "bear": 0.20,
-    }.get(regime, 0.50)
+    }.get(regime, 0.35)
 
     risk_discount = {"low": 0.90, "medium": 0.75, "high": 0.50, "critical": 0.25}
     adj_position = base_position * risk_discount.get(risk_level, 1.0)
