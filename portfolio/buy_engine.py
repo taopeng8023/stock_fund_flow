@@ -120,7 +120,7 @@ TIERS = {
         "require_signals": ["P34_gap_strong", "P32_pump_risk"],
         "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P0:静默突破",
-        "wr": "66.2%", "n": 1456, "avg_ret": "+2.44%",
+        "wr": "⚠️ 旧校准(1456笔),待16,645笔重验证", "n": "—", "avg_ret": "+2.44%",
         "desc": "P34_gap_strong+P32_pump_risk — 静默期后突发主力+高开=真突破",
         "position_pct": 30,
         "score_min": 0.40,
@@ -130,7 +130,7 @@ TIERS = {
         "require_signals": ["E3_strong_start", "P34_gap_strong"],
         "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P1:E3+P34共振",
-        "wr": "74.4%", "n": 617, "avg_ret": "+2.99%",
+        "wr": "⚠️ 旧校准(617笔),待16,645笔重验证", "n": "—", "avg_ret": "+2.99%",
         "desc": "E3_strong_start+P34_gap_strong — 开盘强势+缺口确认, 当前最强单层信号",
         "position_pct": 30,
         "score_min": 0.38,
@@ -140,8 +140,8 @@ TIERS = {
         "require_signals": ["P_high_price", "P35_short_pressure", "P34_gap_reverse"],
         "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P2:高价+空头+Gap反转",
-        "wr": "72.8%", "n": 243, "avg_ret": "+2.04%",
-        "desc": "P_high_price+P35_short_pressure+P34_gap_reverse — 高价优质回调",
+        "wr": "80.0% (n=5, ⚠️小样本)", "n": 5, "avg_ret": "+2.04%",
+        "desc": "高价+空头压力+缺口反转 — n=5 全市场 WR=80.0%, 样本太小,保持regime限制",
         "position_pct": 15,
         "score_min": 0.30,
         "regime_ok": ["bull", "bull_bias", "range"],  # 0625熊市0%WR
@@ -151,7 +151,7 @@ TIERS = {
         "require_signals": ["P35_short_cover"],
         "block_signals": ["P37_momentum_down", "P6_retail", "P33_margin_weak"],
         "label": "P3:半导体+空头回补",
-        "wr": "53.7%", "n": 5101, "avg_ret": "+1.18%",
+        "wr": "39.0% (⚠️旧110笔,现1035笔重校)", "n": 1035, "avg_ret": "-0.50%",
         "desc": "行业=半导体+P35_short_cover — 主线行业叠加空头回补",
         "position_pct": 10,
         "position_pct_bear": 5,
@@ -163,7 +163,7 @@ TIERS = {
         "require_signals": ["P34_P32_combo", "P35_short_cover"],
         "block_signals": ["P37_momentum_down", "P6_retail"],
         "label": "P4:三重信号",
-        "wr": "85.9%", "n": 640, "avg_ret": "+4.96%",
+        "wr": "⚠️ 旧校准(640笔),待16,645笔重验证", "n": "—", "avg_ret": "+4.96%",
         "desc": "P34_P32_combo+P35_short_cover — 主力突破+空头回补, 当前最强复合信号",
         "position_pct": 20,
         "score_min": 0.40,
@@ -196,21 +196,24 @@ MAX_PER_SECTOR = 2              # 同行业最多 2 只
 #   P34_gap_strong 作为独立信号持续恶化 (47%→33%→30%, 3日跨期回测)
 #   仅在搭配 P32_pump_risk (P0静默突破) 或 E3_strong_start (P1共振) 时可信
 #   本引擎通过 TIERS.require_signals 强制组合匹配，禁止 P34_gap_strong 单独入选
-GLOBAL_EXCLUDE_TOKENS = [
-    "P6_retail",              # 散户主导 → 0% WR (38样本)
-    "P35_short_heavy",        # 融券/主力比>3 → -5.6pp
-    "P35_short_moderate",     # 融券中等 → 31.91% WR (vs P34_P32_combo, N=47)
-    "P33_margin_moderate",    # 融资中等 → 17.54% WR (vs P34_P32_combo, N=57)
-    "P36_overheat",           # 过热线 → 4.30% WR (最可靠负向信号, N=93)
-    "P_low_liquidity",        # 流动性不足
-    "P_small_cap",            # 小市值<30亿 → -7.2pp
+# 体制感知避雷 (同步 filter_overnight.py)
+GLOBAL_EXCLUDE_ALWAYS = [
+    "P36_overheat",        # 全体制最差 (bull 28.0% / bear 29.8% WR)
+    "P6_retail",           # 散户主导 → 低胜率
+    "P37_momentum_down",   # 保持屏蔽, filter_overnight 中条件解禁仅用于特定组合
+]
+
+GLOBAL_EXCLUDE_NON_BULL = [
+    "P33_margin_weak",     # bull 79.9% → bear 12.2% (delta -67.7pp)
+    "P35_short_heavy",     # bull 66.9% → bear 20.6% (delta -46.3pp)
 ]
 # P33_margin_weak 移除全局排除: 在P4(P34_P32_combo)上下文 89.77% WR (N=88)
 # 仅在各Tier级block_signals中排除 (P0/P1/P2/P3), P4不排除
 
 # ── 熊市额外排除（牛市信号在熊市崩溃）──
 BEAR_EXCLUDE_TOKENS = [
-    "P37_momentum_up",        # 全局-8pp, 熊市仅20.7% WR vs 牛市57.4%
+    # P37_momentum_up 已从排除列表移除 — 16,645笔全市场验证 bear WR=30-63% in combos
+    # 是 filter_overnight A1(62.5%WR)/A2(59.1%WR)/B3(52.2%WR) 核心成分
 ]
 
 # ── 行业黑名单（5 Agent 验证为系统性低胜率板块）──
@@ -328,10 +331,12 @@ def filter_candidates(scores: list, tier_key: str, regime: str = "range",
         signals = r.get("综合信号", "")
         early_sigs = r.get("启动信号", "")
 
-        # ── 全局排除 ──
-        if any(tok in signals for tok in GLOBAL_EXCLUDE_TOKENS):
-            continue
-        if "P37_momentum_down" in signals:
+        # ── 全局排除 (体制感知) ──
+        exclude_tokens = list(GLOBAL_EXCLUDE_ALWAYS)
+        if _is_bear_regime(regime) or regime == "range":
+            exclude_tokens += GLOBAL_EXCLUDE_NON_BULL
+        all_sigs_global = signals + "," + early_sigs
+        if any(tok in all_sigs_global for tok in exclude_tokens):
             continue
 
         # ── 熊市排除 ──
@@ -476,6 +481,22 @@ def generate_recommendations(date_str: str, top_n: int = 10,
         if is_bear and "position_pct_bear" in tier_cfg:
             base_pct = tier_cfg["position_pct_bear"]
         b["suggested_pct"] = base_pct
+
+    # 仓位上限: 按 tier_priority 分配直到满仓
+    max_total_pct = 100
+    total_pct = 0
+    capped_buys = []
+    for b in buys:
+        pct = b.get("suggested_pct", 0)
+        if total_pct + pct > max_total_pct:
+            remaining = max_total_pct - total_pct
+            if remaining >= 5:  # 至少 5% 仓位才保留
+                b["suggested_pct"] = remaining
+                capped_buys.append(b)
+            break
+        total_pct += pct
+        capped_buys.append(b)
+    buys = capped_buys
 
     _print_recommendations(date_str, bs_level, regime, buys)
 
