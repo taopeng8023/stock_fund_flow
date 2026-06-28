@@ -82,18 +82,25 @@ TIERS = {
         "label": "B5:逼空回补(40.3%WR)", "bonus": 0.05,
         "desc": "量级tier — n=558 覆盖面广 avg=-0.54%",
     },
-    "B6": {
-        "require": ["P_low_vol_ratio", "P35_short_cover"],
-        "score_min": 0.45, "capital_min": 0.65,
-        "label": "B6:低量比+回补(37.5%WR)", "bonus": 0.04,
-        "desc": "边缘tier — n=192 avg=-0.30%",
+    # ── N 级: 牛市专用 (P_high_price 牛市不触发时的替代) ──
+    "N2": {
+        "require": ["P33_margin_weak", "E1_low_start"],
+        "regime_only": ["bull"],
+        "label": "N2:融资弱+低启(牛市75.9%WR)", "bonus": 0.10,
+        "desc": "牛市专用 — P_high_price不触发时的替代, 含被非牛市屏蔽的信号",
+    },
+    "N3": {
+        "require": ["P35_short_heavy", "E1_low_start", "P_low_vol_ratio"],
+        "regime_only": ["bull"],
+        "label": "N3:空头重+低启+低量比(牛市61-68%WR)", "bonus": 0.08,
+        "desc": "牛市专用 — 三信号组合, P35_short_heavy 熊市屏蔽但牛市开放",
     },
     # ── C 级: 单信号兜底, 高门槛精选 ──
     "C1": {
         "require": ["P35_short_cover"],
-        "score_min": 0.55, "capital_min": 0.75,
+        "score_min": 0.60, "capital_min": 0.80,
         "label": "C1:空头回补(39.0%WR)", "bonus": 0.02,
-        "desc": "单信号兜底 — n=1035 WR高于基准+6.4pp",
+        "desc": "单信号兜底 — n=1035 WR高于基准+6.4pp, 高门槛精选",
     },
 }
 
@@ -101,12 +108,22 @@ TIERS = {
 # 全局避雷 (全市场 16,645笔验证)
 # ═══════════════════════════════════════
 
-GLOBAL_BLOCK_SIGNALS = [
-    "P36_overheat",           # 29.2% WR — 全市场最差 avg_ret (-1.45%)
-    "P37_momentum_down",      # 26.2% WR — 最大效应量 (n=3273, -6.4pp vs 基准)
-    "P33_margin_weak",        # 28.4% WR — 融资买入为负
-    "P35_short_heavy",        # 31.2% WR — 融券/主力比>3
+# ═══════════════════════════════════════
+# 体制感知避雷 (全市场 16,645笔验证, 分体制分析)
+# ═══════════════════════════════════════
+
+# 全体制屏蔽 (WR < 30% in both bull & bear)
+BLOCK_ALWAYS = [
+    "P36_overheat",           # bull 28.0% / bear 29.8% — 全体制最差
     "P6_retail",              # 散户主导 → 低胜率
+]
+
+# 非牛市屏蔽 (bull开放, bear/range屏蔽)
+# bull WR 极高 → 熊市 WR 极低 (delta -34~68pp)
+BLOCK_NON_BULL = [
+    "P37_momentum_down",      # bull 56.2% → bear 21.9% (delta -34.3pp)
+    "P33_margin_weak",        # bull 79.9% → bear 12.2% (delta -67.7pp)
+    "P35_short_heavy",        # bull 66.9% → bear 20.6% (delta -46.3pp)
 ]
 
 # 已从硬屏蔽降级为扣分 (全市场 WR 高于基准 32.6%):
@@ -114,6 +131,15 @@ GLOBAL_BLOCK_SIGNALS = [
 #   E1_low_start (35.1% WR) — 与 P35_short_pressure 组合达 50% WR
 #   E3_strong_start (34.6% WR) — WR 高于基准, 不应硬屏蔽
 #   P33_margin_moderate (32.7% WR) — WR=基准, avg_ret 略差
+
+# ═══════════════════════════════════════
+# 灾难信号组合 (回测验证 WR < 25%)
+# ═══════════════════════════════════════
+
+DISASTER_COMBOS = [
+    ("P37_momentum_up", "P_low_vol"),  # P37_up+P_low_vol_ratio: WR=21.5% n=209
+    ("E1_low_start", "P_low_vol"),     # E1_low+P_low_vol_ratio: WR=21.5% n=247
+]
 
 SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
 
@@ -147,6 +173,14 @@ def filter_overnight(date_str=None, top_n=5):
         for r in csv.DictReader(f):
             rows.append(r)
 
+    # 体制检测 (从 scores.csv 市场体制列, score.py _detect_regime() 写入)
+    regime = "range"  # default
+    for r in rows:
+        mr = r.get("市场体制", "").strip()
+        if mr in ("bull", "bear", "range"):
+            regime = mr
+            break
+
     # 黑天鹅门禁
     try:
         sys.path.insert(0, PROJECT_ROOT)
@@ -159,9 +193,9 @@ def filter_overnight(date_str=None, top_n=5):
         pass
 
     candidates = []
-    stats = {"signal_vacuum": 0, "global_block": 0, "price_block": 0,
-             "turnover_block": 0, "sector_block": 0, "no_tier": 0,
-             "limit_up_block": 0}
+    stats = {"signal_vacuum": 0, "global_block": 0, "disaster_block": 0,
+             "price_block": 0, "turnover_block": 0, "sector_block": 0,
+             "no_tier": 0, "limit_up_block": 0}
 
     for r in rows:
         try:
@@ -206,20 +240,28 @@ def filter_overnight(date_str=None, top_n=5):
                 stats["signal_vacuum"] += 1
                 continue
 
-        # 全局避雷
-        if any(s in signals for s in GLOBAL_BLOCK_SIGNALS):
+        # 全局避雷 (体制感知)
+        block_list = BLOCK_ALWAYS + (BLOCK_NON_BULL if regime != "bull" else [])
+        if any(s in signals for s in block_list):
             stats["global_block"] += 1
             continue
 
         all_sigs = signals + "," + early_sigs
+
+        # 灾难信号组合排除
+        if any(all(tok in all_sigs for tok in combo) for combo in DISASTER_COMBOS):
+            stats["disaster_block"] += 1
+            continue
 
         score = float(r.get("综合得分", 0) or 0)
         capital = float(r.get("资金得分", 0.5) or 0.5)
 
         # 逐级匹配 A → B → C
         matched_tier = None
-        for tk in ["A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5", "B6", "C1"]:
+        for tk in ["A1", "A2", "A3", "N2", "N3", "B1", "B2", "B3", "B4", "B5", "C1"]:
             rules = TIERS[tk]
+            if "regime_only" in rules and regime not in rules["regime_only"]:
+                continue
             if not all(s in all_sigs for s in rules["require"]):
                 continue
             if "score_min" in rules and score < rules["score_min"]:
@@ -236,10 +278,11 @@ def filter_overnight(date_str=None, top_n=5):
         # 加分 (BONUS_SIGNALS 叠加)
         bonus = TIERS[matched_tier]["bonus"]
         bonus_signals = {
-            "P_high_price": 0.03,        # 最强质量过滤器, 8+ 获胜组合
+            "P_high_price": 0.05,        # 最强跨体制质量过滤器, 8+ 获胜组合
+            "P35_short_pressure": 0.04,  # 熊市反转信号 bear WR=51.9% n=241
             "P33_margin_strong": 0.03,   # 唯一单信号 WR>50%
             "P34_gap_trap": 0.02,        # WR=47.9% avg>0
-            "P35_short_pressure": 0.02,  # WR=48.5% avg>0 n=241
+            "P34_gap_reverse": 0.02,     # 熊市单信号 WR=59.5%
             "P34_gap_strong": 0.01,
             "P35_short_cover": 0.01,
         }
@@ -274,12 +317,14 @@ def filter_overnight(date_str=None, top_n=5):
         sector_count[ind] += 1
 
     # 输出
+    block_desc = f"BLOCK_ALWAYS({len(BLOCK_ALWAYS)})+BLOCK_NON_BULL({len(BLOCK_NON_BULL)})" if regime != "bull" else f"BLOCK_ALWAYS({len(BLOCK_ALWAYS)}) only"
     print(f"\n{'='*70}")
-    print(f"  隔夜套利筛选 — {date_str}")
+    print(f"  隔夜套利筛选 — {date_str}  体制: {regime}  避雷: {block_desc}")
     print(f"  验证: 16,645笔全市场回测 + 独立 Agent 验证 + FULL_MARKET_BACKTEST_FINAL_REPORT")
     print(f"{'='*70}")
     print(f"  全市场: {len(rows)}只 → 候选: {len(candidates)}只 → 行业分散: {len(diversified)}只")
     print(f"  排除: 信号真空={stats['signal_vacuum']} 全局避雷={stats['global_block']} "
+          f"灾难={stats['disaster_block']} "
           f"涨停={stats['limit_up_block']} "
           f"价格={stats['price_block']} 成交额={stats['turnover_block']} "
           f"行业={stats['sector_block']} 未匹配={stats['no_tier']}")
@@ -307,9 +352,10 @@ def filter_overnight(date_str=None, top_n=5):
         print(f"\n  均综合={avg_score:.3f} 均资金={avg_cap:.3f} 均涨跌={avg_chg:+.1f}%")
 
     tier_summary = ", ".join(f"{tk}={TIERS[tk]['desc']}"
-                             for tk in ["A1", "A2", "A3", "B1", "B2", "B5", "C1"])
+                             for tk in ["A1", "A2", "A3", "N2", "N3", "B1", "B2", "B5", "C1"])
     print(f"\n  信号体系: {tier_summary}")
-    print(f"  全局避雷: {' '.join(GLOBAL_BLOCK_SIGNALS[:3])}...")
+    print(f"  体制感知避雷: ALWAYS={BLOCK_ALWAYS} NON_BULL={BLOCK_NON_BULL}")
+    print(f"  灾难组合: {[f'{a}+{b}' for a,b in DISASTER_COMBOS]}")
     print(f"  行业黑名单: {', '.join(SECTOR_BLOCKLIST[:5])}...")
 
     # 保存
