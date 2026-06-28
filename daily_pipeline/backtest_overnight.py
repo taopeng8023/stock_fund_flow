@@ -104,38 +104,31 @@ def backtest_single(pick_date, eval_date, top_n=5):
 
     codes = {p["代码"] for p in picks}
 
-    # --- 除权除息检测: 对比 pick_date 与 eval_date 的昨收 ---
+    # --- 除权除息检测 ---
+    # 原理: eval_date 的 昨收 = pick_date 的收盘价(官方)
+    #       pick_date 14:31快照价(入场价) ≈ pick_date 收盘价
+    #       若 eval_昨收 与 entry_price 偏差 >2%, 很可能发生除权
     ex_dividend_map = {}
     try:
-        scores_csv = os.path.join(RESEARCH_ROOT, pick_date, "scores.csv")
-        pick_zuoshou = {}
-        if os.path.exists(scores_csv):
-            with open(scores_csv, encoding="utf-8-sig") as f:
-                for r in csv.DictReader(f):
-                    c = r.get("代码", "")
-                    if c in codes:
-                        zs = r.get("昨收", "")
-                        if zs and zs not in ("-", "", None):
-                            try:
-                                pick_zuoshou[c] = float(zs)
-                            except ValueError:
-                                pass
+        entry_prices = {p["代码"]: float(p["最新价"]) for p in picks}
 
         eval_snap_dir = os.path.join(RESEARCH_ROOT, eval_date, "intraday")
-        if os.path.exists(eval_snap_dir) and pick_zuoshou:
+        if os.path.exists(eval_snap_dir) and entry_prices:
             eval_fund_files = sorted([f for f in os.listdir(eval_snap_dir) if f.startswith("fund_flow_")])
             if eval_fund_files:
                 first_snap = os.path.join(eval_snap_dir, eval_fund_files[0])
                 with open(first_snap, encoding="utf-8-sig") as f:
                     for r in csv.DictReader(f):
                         c = r.get("代码", "")
-                        if c in pick_zuoshou:
+                        if c in entry_prices:
                             zs = r.get("昨收", "")
                             if zs and zs not in ("-", "", None):
                                 try:
                                     eval_zs = float(zs)
-                                    ex_dividend_map[c] = abs(pick_zuoshou[c] - eval_zs) > 0.001
-                                except ValueError:
+                                    entry = entry_prices[c]
+                                    # 除权日昨收会被交易所下调, 与入场价产生显著偏差
+                                    ex_dividend_map[c] = abs(entry - eval_zs) / entry > 0.02
+                                except (ValueError, ZeroDivisionError):
                                     pass
     except Exception:
         pass
