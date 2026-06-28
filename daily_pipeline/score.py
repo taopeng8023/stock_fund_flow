@@ -150,7 +150,7 @@ COMPOSITE_SIGNALS = {
     "P34_gap_strong":     "高开高走(开盘缺口>2%且收涨>2%,回测+0.76%最强)",
     "P34_gap_reverse":    "低开反转(开盘缺口<-2%但收涨>1%,回测-0.72%已降权)",
     "P34_gap_trap":       "高开陷阱(开盘缺口>3%但收跌)",
-    "P34_gap_standalone": "P34独立标记(无P32/E3协同,回测47→33→30%恶化,仅追踪)",
+    "P34_gap_standalone": "P34独立标记(无P32协同,回测47→33→30%恶化,仅追踪)",
     "P35_short_cover":    "融券空头回补(净卖出<-1亿)",
     "P35_short_pressure": "融券强做空(净卖出>3亿)",
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
@@ -1198,7 +1198,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         # ── P34 独立标记 + 降权: P34_gap_strong 无协同信号时不可信 ──
         # BACKTEST_REPORT_20260626: P34_gap_strong 单独使用 47%→33%→30% 持续恶化
         # SIGNAL_BACKTEST_FINAL_REPORT: N=8053, WR=44.9%≈随机, avg=-0.03%
-        # 仅在与 P32_pump_risk 协同时有效 (E3_strong_start 由买入引擎 Tier 层独立校验)
+        # 仅在与 P32_pump_risk 协同时有效
         if "P34_gap_strong" in comp_sigs and "P32_pump_risk" not in comp_sigs:
             comp_sigs.append("P34_gap_standalone")
             total -= 0.04  # 撤回大部分缺口加分, 独立P34胜率仅44.9%
@@ -1234,7 +1234,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         penalty = 0.0
         if f8_val > 13 and cap < 0.75: penalty -= 0.08; comp_sigs.append("P29_high_turnover")
         if f8_val < 1.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
-        if f10_val < 0.8: penalty -= 0.03; comp_sigs.append("P_low_vol_ratio")
+        if f10_val < 0.8: penalty -= 0.01; comp_sigs.append("P_low_vol_ratio")
         if mcap_yi < 30: penalty -= 0.04; comp_sigs.append("P_small_cap")
         if f87_val > 30 and f3 < 3: penalty -= 0.08; comp_sigs.append("P6_retail")
         if f2 > 200: penalty -= 0.02; comp_sigs.append("P_high_price")
@@ -1262,12 +1262,14 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         # E1: 低位启动 (位置<0.25 + 启动因子>0.5)
         if p_score < 0.55 and sub.get("start_signal", 0.5) > 0.5:
             early_sigs.append("E1_low_start")
+            total -= 0.03; early -= 0.03  # 09:45-10:15真实WR=24%
         # E2: 温和启动 (资金0.4-0.7 + 启动因子>0.6)
         if 0.4 < cap < 0.7 and sub.get("start_signal", 0.5) > 0.6:
             early_sigs.append("E2_moderate_start")
         # E3: 强势启动 (启动因子>0.8 + 资金>0.5)
         if sub.get("start_signal", 0.5) > 0.8 and cap > 0.5:
             early_sigs.append("E3_strong_start")
+            total -= 0.03; early -= 0.03  # 09:45-10:15真实WR=18.2%
         # E4: 缺口启动 (P34 + 位置<0.4)
         if ("P34_gap_strong" in comp_sigs or "P34_gap_reverse" in comp_sigs) and p_score < 0.55:
             early_sigs.append("E4_gap_start")
@@ -1296,8 +1298,8 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                     early -= 0.05
             else:
                 if score_change > 0.05:
-                    total += 0.05; comp_sigs.append("P37_momentum_up")
-                    early += 0.05
+                    total += 0.06; comp_sigs.append("P37_momentum_up")
+                    early += 0.06
             if score_change < -0.05:
                 total -= 0.05; comp_sigs.append("P37_momentum_down")
                 early -= 0.05

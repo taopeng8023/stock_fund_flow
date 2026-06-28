@@ -1,19 +1,19 @@
 """
 隔夜套利筛选 — 尾盘买入次日早盘卖出
 约束: FUNDAMENTAL_RULES.md (涨停排除 / 隔夜套利 / 09:45-10:15 出场)
-信号来源: 574,604 笔跨日回测 + 7 Agent 独立验证 (FINAL_VERIFICATION_REPORT)
+信号来源: 09:45-10:15 真实出场价格校准 (111 trades, 4 days)
 A 级: 最高 WR 信号组合 (稀缺, 无需分数门槛)
-B 级: 适中覆盖信号组合 (score>=0.40, capital>=0.60)
-C 级: 广覆盖信号 (score>=0.50, capital>=0.65)
+B 级: 适中覆盖信号组合 (score>=0.40-0.55, capital>=0.60-0.75)
+C 级: 精选信号 (score>=0.55-0.60, capital>=0.75-0.80)
 
-验证报告胜率参考:
-  P4: P34_P32_combo + P35_short_cover        → 85.94% WR, +4.96%, N=640
-  P1: E3_strong_start + P34_gap_strong       → 74.39% WR, +2.99%, N=617
-  P0: P34_gap_strong + P32_pump_risk         → 66.21% WR, +2.44%, N=1456
-  P2: P_high_price+P35_short_pressure+P34_gap_reverse → 72.84% WR, N=243
+校准数据 (09:45-10:15 出场窗口, 111笔):
+  最佳单信号: P_low_vol_ratio(57.1%WR) P32_pump_risk(37.5%WR)
+  最佳组合: P32_pump_risk+P37_momentum_up(60%WR+1.95%) P34_P32_combo+P37(60%WR+1.95%)
+  可靠负向: E1_low_start(24.0%WR) E3_strong_start(18.2%WR)
 
 避雷: P36_overheat(4.30%WR) P35_short_moderate(31.91%WR) P33_margin_moderate(17.54%WR)
        P33_margin_weak P35_short_heavy P6_retail P37_momentum_down
+       E1_low_start E3_strong_start
 
 用法:
   python daily_pipeline/filter_overnight.py 20260626
@@ -42,76 +42,58 @@ TIERS = {
         "desc": "P34_P32_combo+P35_short_cover — 当前最强复合信号",
     },
     "A2": {
-        "require": ["E3_strong_start", "P34_gap_strong"],
-        "label": "A2:E3+P34共振(74.4%WR)", "bonus": 0.12,
-        "desc": "E3_strong_start+P34_gap_strong — 开盘强势+缺口确认",
-    },
-    "A3": {
         "require": ["P34_gap_strong", "P32_pump_risk"],
-        "label": "A3:静默突破(66.2%WR)", "bonus": 0.10,
+        "label": "A2:静默突破(66.2%WR)", "bonus": 0.10,
         "desc": "P34_gap_strong+P32_pump_risk — 主力介入+高开突破",
     },
-    "A4": {
+    "A3": {
         "require": ["P_high_price", "P35_short_pressure", "P34_gap_reverse"],
-        "label": "A4:高价反转(72.8%WR)", "bonus": 0.10,
+        "label": "A3:高价反转(72.8%WR)", "bonus": 0.10,
         "desc": "高价+空头压力+缺口反转 — 震荡市90.8%WR",
     },
-
     # ── B 级: 适中覆盖, 需分数+资金质量过滤 ──
     "B1": {
         "require": ["P35_short_cover", "E6_short_squeeze"],
-        "score_min": 0.50, "capital_min": 0.70,
+        "score_min": 0.55, "capital_min": 0.75,
         "label": "B1:逼空回补(85.9%WR)", "bonus": 0.08,
         "desc": "空头回补+逼空启动 — P4核心组件",
     },
     "B2": {
-        "require": ["P34_P32_combo", "E3_strong_start"],
-        "score_min": 0.40, "capital_min": 0.60,
-        "label": "B2:突破+强势启动(80.8%WR)", "bonus": 0.08,
-        "desc": "主力突破+E3强势共振",
-    },
-    "B3": {
-        "require": ["P34_P32_combo", "E1_low_start"],
-        "score_min": 0.40, "capital_min": 0.60,
-        "label": "B3:突破+低位启动(69.6%WR)", "bonus": 0.06,
-        "desc": "主力突破+低位启动 — 均值回归",
-    },
-    "B4": {
         "require": ["P34_P32_combo", "P37_momentum_up"],
         "score_min": 0.40, "capital_min": 0.60,
-        "label": "B4:突破+动量(69.8%WR)", "bonus": 0.06,
+        "label": "B2:突破+动量(69.8%WR)", "bonus": 0.06,
         "desc": "主力突破+得分动量向上",
     },
-    "B5": {
+    "B3": {
         "require": ["P34_gap_reverse", "P35_short_cover"],
         "score_min": 0.40, "capital_min": 0.60,
-        "label": "B5:低开反转+回补", "bonus": 0.06,
+        "label": "B3:低开反转+回补", "bonus": 0.06,
         "desc": "低开缺口反转+空头回补 — 震荡市反弹",
+    },
+    "B4": {
+        "require": ["P_low_vol_ratio", "P35_short_cover"],
+        "score_min": 0.45, "capital_min": 0.65,
+        "label": "B4:低量比+回补(50%WR)", "bonus": 0.07,
+        "desc": "低量比+空头回补 — 09:45-10:15真实WR=50%",
     },
 
     # ── C 级: 精选覆盖, 高门槛信号+分数双过滤 ──
     "C1": {
         "require": ["P35_short_cover"],
-        "score_min": 0.50, "capital_min": 0.65,
+        "score_min": 0.60, "capital_min": 0.80,
         "label": "C1:空头回补(53.7%WR)", "bonus": 0.04,
         "desc": "融券回补 — 高门槛精选",
     },
     "C2": {
-        "require": ["E3_strong_start"],
-        "score_min": 0.50, "capital_min": 0.65,
-        "label": "C2:强势启动", "bonus": 0.04,
-        "desc": "强势启动 — 高门槛精选",
-    },
-    "C3": {
         "require": ["P34_gap_strong", "P33_margin_strong"],
-        "score_min": 0.50, "capital_min": 0.65,
-        "label": "C3:缺口+融资强势", "bonus": 0.02,
+        "score_min": 0.55, "capital_min": 0.75,
+        "label": "C2:缺口+融资强势", "bonus": 0.02,
         "desc": "高开缺口+融资猛买 — 高门槛精选",
     },
-    "C4": {
+    "C3": {
         "require": ["P32_ratio_accel", "P35_short_cover"],
-        "score_min": 0.50, "capital_min": 0.65,
-        "label": "C4:主力加速+回补", "bonus": 0.04,
+        "score_min": 0.55, "capital_min": 0.75,
+        "label": "C3:主力加速+回补", "bonus": 0.04,
         "desc": "主力占比加速+空头回补 — 资金共振",
     },
 }
@@ -128,6 +110,8 @@ GLOBAL_BLOCK_SIGNALS = [
     "P35_short_heavy",        # 融券/主力比>3
     "P6_retail",              # 散户主导 → 0% WR
     "P37_momentum_down",      # 得分动量下跌
+    "E1_low_start",           # 24.0% WR — 09:45-10:15校准可靠负向
+    "E3_strong_start",        # 18.2% WR — 09:45-10:15校准可靠负向
 ]
 
 SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
@@ -233,7 +217,7 @@ def filter_overnight(date_str=None, top_n=5):
 
         # 逐级匹配 A → B → C
         matched_tier = None
-        for tk in ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "B5", "C1", "C2", "C3", "C4"]:
+        for tk in ["A1", "A2", "A3", "B1", "B2", "B3", "B4", "C1", "C2", "C3"]:
             rules = TIERS[tk]
             if not all(s in all_sigs for s in rules["require"]):
                 continue
@@ -320,7 +304,7 @@ def filter_overnight(date_str=None, top_n=5):
         print(f"\n  均综合={avg_score:.3f} 均资金={avg_cap:.3f} 均涨跌={avg_chg:+.1f}%")
 
     tier_summary = ", ".join(f"{tk}={TIERS[tk]['desc']}"
-                             for tk in ["A1", "A2", "A3", "B1", "B5", "C1"])
+                             for tk in ["A1", "A2", "A3", "B1", "B4", "C1"])
     print(f"\n  信号体系: {tier_summary}")
     print(f"  全局避雷: {' '.join(GLOBAL_BLOCK_SIGNALS[:4])}...")
     print(f"  行业黑名单: {', '.join(SECTOR_BLOCKLIST[:5])}...")
