@@ -156,7 +156,7 @@ COMPOSITE_SIGNALS = {
     "P35_short_moderate": "融券中度做空(净卖出>1亿)",
     "P35_short_heavy":    "融券/主力比>3(做空压力大)",
     "P36_overheat":       "全维度过热(资金>0.85+趋势>0.7+多日>0.85,反转风险)",
-    "P37_momentum_up":    "得分动量向上(较前日改善>0.05,牛市+熊市-陷阱)",
+    "P37_momentum_up":    "得分动量向上(较前日改善>0.05,牛市+0.06熊市-0.02,最佳组合含此信号)",
     "P37_momentum_down":  "得分动量向下(较前日恶化>0.05,资金撤退)",
     "P34_P32_combo":      "黄金交叉(P34_gap_strong+P32_pump_risk,回测66.9%WR N=293)",
 }
@@ -1209,9 +1209,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         if f170_val < -1_0000_0000:
             short_signal = 0.02; comp_sigs.append("P35_short_cover")
         if f170_val > 3_0000_0000:
-            short_signal = -0.04; comp_sigs.append("P35_short_pressure")
+            short_signal = 0.01; comp_sigs.append("P35_short_pressure")    # 全市场WR=48.5% avg=+0.13% n=241
         elif f170_val > 1_0000_0000:
-            short_signal = -0.03; comp_sigs.append("P35_short_moderate")
+            short_signal = 0.00; comp_sigs.append("P35_short_moderate")    # 全市场WR=36.4%>基准32.6%
         if f172_val > 0 and f62_val > 0:
             short_ratio = abs(f170_val) / max(abs(f62_val), 1)
             if short_ratio > 3:
@@ -1234,10 +1234,10 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         penalty = 0.0
         if f8_val > 13 and cap < 0.75: penalty -= 0.08; comp_sigs.append("P29_high_turnover")
         if f8_val < 1.0: penalty -= 0.04; comp_sigs.append("P_low_liquidity")
-        if f10_val < 0.8: penalty -= 0.01; comp_sigs.append("P_low_vol_ratio")
+        if f10_val < 0.8: comp_sigs.append("P_low_vol_ratio")  # neutral: 与P_high_price组合后WR=57.7%
         if mcap_yi < 30: penalty -= 0.04; comp_sigs.append("P_small_cap")
         if f87_val > 30 and f3 < 3: penalty -= 0.08; comp_sigs.append("P6_retail")
-        if f2 > 200: penalty -= 0.02; comp_sigs.append("P_high_price")
+        if f2 > 200: penalty += 0.02; comp_sigs.append("P_high_price")  # 全市场WR=46.8%, 8+获胜组合核心
         total += penalty
         early += penalty
 
@@ -1262,14 +1262,14 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         # E1: 低位启动 (位置<0.25 + 启动因子>0.5)
         if p_score < 0.55 and sub.get("start_signal", 0.5) > 0.5:
             early_sigs.append("E1_low_start")
-            total -= 0.03; early -= 0.03  # 09:45-10:15真实WR=24%
+            # 全市场回测WR=35.1%>基准32.6%, 已移除惩罚
         # E2: 温和启动 (资金0.4-0.7 + 启动因子>0.6)
         if 0.4 < cap < 0.7 and sub.get("start_signal", 0.5) > 0.6:
             early_sigs.append("E2_moderate_start")
         # E3: 强势启动 (启动因子>0.8 + 资金>0.5)
         if sub.get("start_signal", 0.5) > 0.8 and cap > 0.5:
             early_sigs.append("E3_strong_start")
-            total -= 0.03; early -= 0.03  # 09:45-10:15真实WR=18.2%
+            # 全市场回测WR=34.6%>基准32.6%, 已移除惩罚
         # E4: 缺口启动 (P34 + 位置<0.4)
         if ("P34_gap_strong" in comp_sigs or "P34_gap_reverse" in comp_sigs) and p_score < 0.55:
             early_sigs.append("E4_gap_start")
@@ -1285,17 +1285,16 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             if ratio_score > 0:
                 total -= ratio_score; early -= ratio_score  # 撤回P32加分
 
-        # ── P37: 得分动量 (回测: bear中动量向上是陷阱,阈值收紧惩罚加重) ──
-        # 回测发现: 熊市中动量股更容易踩踏, score_change>0.03即可疑
+        # ── P37: 得分动量 (回测: bear中动量向上需警惕,惩罚减轻,最佳组合含此信号) ──
         if code in prev_scores:
             score_change = total - prev_scores[code]
             if regime in ("bear", "bear_bias"):
-                if score_change > 0.05:        # 大幅跳升最可疑 → 先检查大阈值
-                    total -= 0.08; comp_sigs.append("P37_momentum_up")
-                    early -= 0.08
-                elif score_change > 0.03:      # 阈值从0.05降到0.03
-                    total -= 0.05; comp_sigs.append("P37_momentum_up")
-                    early -= 0.05
+                if score_change > 0.05:
+                    total -= 0.02; comp_sigs.append("P37_momentum_up")
+                    early -= 0.02
+                elif score_change > 0.03:
+                    # 全市场回测最佳组合含此信号, 惩罚降为0
+                    comp_sigs.append("P37_momentum_up")
             else:
                 if score_change > 0.05:
                     total += 0.06; comp_sigs.append("P37_momentum_up")
