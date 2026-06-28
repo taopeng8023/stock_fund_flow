@@ -162,8 +162,8 @@ DISASTER_COMBOS = [
 ]
 
 TIER_ORDER = ["S1", "S2", "S3", "S4", "S5", "S6", "A1", "A2", "A3", "A4", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
-# 回测校准 (34笔, 20260622-0626): A2=87.5%WR A1=71.4%WR A4=26.7%WR(拖后腿)
-AFFORDABLE_TIERS = ["A2", "A1", "A3", "S6", "BEAR", "A4"]  # 无 P_high_price 的优先序列
+# 回测校准 (34笔, 20260622-0626): A2=100%WR(主板) A1=75%WR A4=14.3%WR(已移除)
+AFFORDABLE_TIERS = ["A2", "A1", "A3", "S6", "BEAR"]  # 无 P_high_price 的优先序列
 SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
 
 # ═══════════════════════════════════════
@@ -175,14 +175,20 @@ MIN_TURNOVER_YI = 0.5         # 最小成交额 5000万
 MAX_PER_SECTOR = 2            # 同行业最多 2 只
 MAX_ENTRY_CHG = 9.9           # 入场涨跌幅上限（FUNDAMENTAL_RULES 第1条：涨停买不进去）
 
+# 主板代码前缀 (沪深主板: 600-605, 000-003)
+# 排除: 科创板(688) 创业板(300/301) 北交所(4/8/920)
+_MAIN_BOARD_PREFIXES = tuple(
+    ["600", "601", "603", "605", "000", "001", "002", "003"]
+)
+
 SECTOR_BLOCKLIST = [
     "贵金属", "乘用车", "普钢", "地面兵装Ⅱ", "数字媒体",
     "养殖业", "保险Ⅱ", "航运港口", "银行Ⅱ",
 ]
 
 
-def filter_overnight(date_str=None, top_n=5, max_price=0):
-    """筛选隔夜套利候选。max_price=0 表示不限价, >0 表示股价上限。"""
+def filter_overnight(date_str=None, top_n=5, max_price=0, main_board_only=False):
+    """筛选隔夜套利候选。max_price=0 表示不限价, >0 表示股价上限。main_board_only=True 仅主板。"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
 
@@ -236,22 +242,26 @@ def filter_overnight(date_str=None, top_n=5, max_price=0):
         for t in AFFORDABLE_TIERS:
             if t not in strictness_tiers:
                 strictness_tiers.append(t)
-        # 保持门禁的 tier_strictness: 去除非核心 tier
-        # A4(26.7%WR实测) 仅在 strictness=0 时兜底, strictness>=1 排除
+        # 保持门禁的 tier_strictness: 精选模式下限制可用 tier
         if tier_strictness >= 3:
             strictness_tiers = [t for t in strictness_tiers if t in ("A2", "A1", "S6", "BEAR")]
         elif tier_strictness >= 2:
             strictness_tiers = [t for t in strictness_tiers if t in ("A2", "A1", "A3", "S6", "BEAR")]
-        elif tier_strictness >= 1:
-            strictness_tiers = [t for t in strictness_tiers if t not in ("A4",)]
         print(f"  💰 股价上限 {effective_max:.0f} 元 — P_high_price tier不可用, 可用: {strictness_tiers[:6]}")
 
     candidates = []
     stats = {"signal_vacuum": 0, "global_block": 0, "disaster_block": 0,
              "price_block": 0, "turnover_block": 0, "sector_block": 0,
-             "no_tier": 0, "limit_up_block": 0}
+             "no_tier": 0, "limit_up_block": 0, "board_block": 0}
 
     for r in rows:
+        code = r.get("代码", "")
+
+        # 主板过滤: 排除科创板/创业板/北交所
+        if main_board_only and not code.startswith(_MAIN_BOARD_PREFIXES):
+            stats["board_block"] += 1
+            continue
+
         try:
             price = float(r.get("最新价", 0) or 0)
         except (ValueError, TypeError):
@@ -398,10 +408,12 @@ def filter_overnight(date_str=None, top_n=5, max_price=0):
     print(f"  验证: 16,645笔全市场回测 + 独立 Agent 验证 + FULL_MARKET_BACKTEST_FINAL_REPORT")
     print(f"{'='*70}")
     print(f"  全市场: {len(rows)}只 → 候选: {len(candidates)}只 → 行业分散: {len(diversified)}只")
+    board_note = f"板块={stats['board_block']} " if main_board_only else ""
     print(f"  排除: 信号真空={stats['signal_vacuum']} 全局避雷={stats['global_block']} "
           f"灾难={stats['disaster_block']} "
           f"涨停={stats['limit_up_block']} "
           f"价格={stats['price_block']} 成交额={stats['turnover_block']} "
+          f"{board_note}"
           f"行业={stats['sector_block']} 未匹配={stats['no_tier']}")
 
     # ── 行业分散前的全部候选列表 ──
@@ -458,6 +470,7 @@ if __name__ == "__main__":
     max_price = 0
     account = 0
     positions = 5
+    main_board_only = False
     i = 0
     while i < len(args):
         a = args[i]
@@ -481,6 +494,8 @@ if __name__ == "__main__":
                 account = float(args[i])
         elif a.startswith("--positions="):
             positions = int(a.split("=", 1)[1])
+        elif a == "--main-board":
+            main_board_only = True
         elif not a.startswith("-") and date_str is None:
             date_str = a
         i += 1
@@ -490,4 +505,7 @@ if __name__ == "__main__":
         max_price = account * 0.8 / positions / 100
         print(f"  账户 {account:,.0f} 元, {positions} 只持仓 → 股价上限 {max_price:.0f} 元 (1手={max_price*100:.0f} 元)")
 
-    filter_overnight(date_str, top_n, max_price)
+    if main_board_only:
+        print(f"  📋 仅主板 (沪深60x/00x, 排除科创板/创业板/北交所)")
+
+    filter_overnight(date_str, top_n, max_price, main_board_only)
