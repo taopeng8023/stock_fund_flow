@@ -69,6 +69,30 @@ TIERS = {
         "label": "S6:低开反转+回补(54.3%WR)", "bonus": 0.08,
         "desc": "最佳验证双信号 — n=35 WR=54.3% avg=+0.61%",
     },
+    # ── 可负担 Tier（无 P_high_price，6万+账户 <200元可用）──
+    "A1": {
+        "require": ["P34_gap_trap", "P37_momentum_down"],
+        "label": "A1:缺口陷阱+动量下行(54.5%WR)", "bonus": 0.10,
+        "desc": "缺口+下行反转 — n=44 WR=54.5% avg=+0.16%",
+    },
+    "A2": {
+        "require": ["P35_short_pressure", "P37_momentum_up"],
+        "score_min": 0.30, "capital_min": 0.50,
+        "label": "A2:空头压力+动量上行(50.7%WR)", "bonus": 0.08,
+        "desc": "空头+动量共振 — n=71 WR=50.7% avg=+0.19%",
+    },
+    "A3": {
+        "require": ["P35_short_pressure", "E1_low_start"],
+        "score_min": 0.30, "capital_min": 0.50,
+        "label": "A3:空头压力+低启(50.0%WR)", "bonus": 0.07,
+        "desc": "空头+低开启动 — n=94 WR=50.0% avg=+0.05%",
+    },
+    "A4": {
+        "require": ["P34_gap_strong", "E4_gap_start"],
+        "score_min": 0.30, "capital_min": 0.50,
+        "label": "A4:强势缺口+跳空启动(42.3%WR)", "bonus": 0.05,
+        "desc": "强势缺口+跳空 — n=83 WR=42.3% avg=-0.35%",
+    },
     # ── 熊市专用 ──
     "BEAR": {
         "require": ["E1_low_start", "E4_gap_start", "P35_short_pressure"],
@@ -105,10 +129,9 @@ TIERS = {
 # 体制感知避雷 (全市场 16,645笔验证, 分体制分析)
 # ═══════════════════════════════════════
 
-# 全体制屏蔽 (WR < 30% in both bull & bear)
+# 全体制屏蔽 (WR < 30% in both bull & bear, 唯一真正灾难信号)
 BLOCK_ALWAYS = [
-    "P36_overheat",           # bull 28.0% / bear 29.8% — 全体制最差
-    "P6_retail",              # 散户主导 → 低胜率
+    "P6_retail",              # 散户主导 → 全体制最差
 ]
 
 # 非牛市屏蔽 (bull开放, bear/range屏蔽)
@@ -118,11 +141,16 @@ BLOCK_NON_BULL = [
     "P35_short_heavy",        # bull 66.9% → bear 20.6% (delta -46.3pp)
 ]
 
-# 已从硬屏蔽降级为扣分 (全市场 WR 高于基准 32.6%):
-#   P35_short_moderate (36.4% WR) — 在获胜组合中出现, 不应屏蔽
-#   E1_low_start (35.1% WR) — 与 P35_short_pressure 组合达 50% WR
-#   E3_strong_start (34.6% WR) — WR 高于基准, 不应硬屏蔽
-#   P33_margin_moderate (32.7% WR) — WR=基准, avg_ret 略差
+# 扣分信号 (WR 略低于基线或高波动, 不硬屏蔽)
+# P36_overheat: bull 28%/bear 30% — 低于基线但在熊市高于全市场基线 20-23%
+# P35_short_moderate (36.4% WR) — 高于基线, 在获胜组合中出现
+# E1_low_start (35.1% WR) — 与 P35_short_pressure 组合达 50% WR
+# E3_strong_start (34.6% WR) — 高于基线
+# P33_margin_moderate (32.7% WR) — WR=基线
+PENALTY_SIGNALS = {
+    "P36_overheat": -0.08,
+    "P33_margin_moderate": -0.03,
+}
 
 # ═══════════════════════════════════════
 # 灾难信号组合 (回测验证 WR < 25%)
@@ -133,7 +161,8 @@ DISASTER_COMBOS = [
     ("E1_low_start", "P_low_vol"),     # E1_low+P_low_vol_ratio: WR=21.5% n=247
 ]
 
-TIER_ORDER = ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
+TIER_ORDER = ["S1", "S2", "S3", "S4", "S5", "S6", "A1", "A2", "A3", "A4", "BEAR", "BULL-1", "BULL-2", "BULL-3"]
+AFFORDABLE_TIERS = ["A1", "S6", "A2", "A3", "BEAR", "A4"]  # 无 P_high_price 的优先序列
 SIGNAL_VACUUM_BLOCK = True   # 排除无任何P3x信号的股票
 
 # ═══════════════════════════════════════
@@ -151,8 +180,8 @@ SECTOR_BLOCKLIST = [
 ]
 
 
-def filter_overnight(date_str=None, top_n=5):
-    """筛选隔夜套利候选"""
+def filter_overnight(date_str=None, top_n=5, max_price=0):
+    """筛选隔夜套利候选。max_price=0 表示不限价, >0 表示股价上限。"""
     if date_str is None:
         date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
 
@@ -198,6 +227,21 @@ def filter_overnight(date_str=None, top_n=5):
         except Exception:
             pass
 
+    effective_max = max_price if max_price > 0 else MAX_PRICE
+    if 0 < effective_max < 200:
+        # 低价账户: 用 A-tier 替代 P_high_price tier (S1-S5)
+        strictness_tiers = [t for t in AFFORDABLE_TIERS if t in strictness_tiers or t in AFFORDABLE_TIERS[:3]]
+        # 确保核心 tier 都在
+        for t in AFFORDABLE_TIERS:
+            if t not in strictness_tiers:
+                strictness_tiers.append(t)
+        # 保持门禁的 tier_strictness: 去除非核心 tier
+        if tier_strictness >= 3:
+            strictness_tiers = [t for t in strictness_tiers if t in ("A1", "S6", "BEAR")]
+        elif tier_strictness >= 2:
+            strictness_tiers = [t for t in strictness_tiers if t in ("A1", "S6", "A2", "A3", "BEAR")]
+        print(f"  💰 股价上限 {effective_max:.0f} 元 — P_high_price tier不可用, 可用: {strictness_tiers[:6]}")
+
     candidates = []
     stats = {"signal_vacuum": 0, "global_block": 0, "disaster_block": 0,
              "price_block": 0, "turnover_block": 0, "sector_block": 0,
@@ -208,7 +252,7 @@ def filter_overnight(date_str=None, top_n=5):
             price = float(r.get("最新价", 0) or 0)
         except (ValueError, TypeError):
             continue
-        if price <= 0 or price > MAX_PRICE:
+        if price <= 0 or price > effective_max:
             stats["price_block"] += 1
             continue
 
@@ -300,12 +344,18 @@ def filter_overnight(date_str=None, top_n=5):
             "P33_margin_strong": 0.03,    # 唯一单信号 WR>50%
             "P34_gap_strong": 0.03,       # bear combo WR 60%+
             "E4_gap_start": 0.03,         # bear combo WR 62-75%
+            "E1_low_start": 0.02,         # P35_short_pressure+E1_low 组合达 50% WR
             "P34_gap_standalone": 0.02,   # bear combo WR 60%+ with P_high
             "P35_short_cover": 0.01,
         }
         for sig, weight in bonus_signals.items():
             if sig in signals:
                 bonus += weight
+
+        # 扣分信号 (降级处理, 不硬屏蔽)
+        for sig, penalty in PENALTY_SIGNALS.items():
+            if sig in signals:
+                bonus += penalty
 
         # bull: 信号为主 (score/capital 反向)  bear/range: 综合为主 (正向)
         if regime == "bull":
@@ -350,30 +400,35 @@ def filter_overnight(date_str=None, top_n=5):
           f"价格={stats['price_block']} 成交额={stats['turnover_block']} "
           f"行业={stats['sector_block']} 未匹配={stats['no_tier']}")
 
-    if not diversified:
-        print("\n  无候选股票")
-        return []
-
-    top = diversified[:top_n]
-    tier_dist = Counter(c["级别"] for c in top)
-    print(f"  级别分布: {dict(tier_dist)}")
-
-    print(f"\n  {'':>3} {'代码':<8} {'名称':<8} {'优先':>6} {'综合':>6} {'资金':>6} "
-          f"{'涨跌':>6} {'行业':<10} {'级别'}")
-    print(f"  {'─'*72}")
-    for i, c in enumerate(top):
+    # ── 行业分散前的全部候选列表 ──
+    pre_tier_dist = Counter(c["级别"] for c in candidates)
+    print(f"\n  ── 全部候选({len(candidates)}只, 行业分散前) 级别分布: {dict(pre_tier_dist)} ──")
+    print(f"  {'':>3} {'代码':<8} {'名称':<8} {'优先':>6} {'综合':>6} {'资金':>6} "
+          f"{'涨跌':>6} {'行业':<10} {'级别':<35}")
+    print(f"  {'─'*78}")
+    div_codes = {c["代码"] for c in diversified}
+    for i, c in enumerate(candidates):
+        excluded = "" if c["代码"] in div_codes else " ✗(同行业已满)"
         print(f"  {i+1:>2}. {c['代码']:<8} {c['名称']:<8s} "
               f"{c['_priority']:>6.3f} {c['综合得分']:>6.3f} {c['资金得分']:>6.3f} "
-              f"{c['涨跌幅']:>+5.1f}% {c['行业']:<10s} {c['级别']}")
+              f"{c['涨跌幅']:>+5.1f}% {c['行业']:<10s} {c['级别']:<35s}{excluded}")
+
+    if not diversified:
+        print("\n  无候选股票（行业分散后全部被排除）")
+        return []
+
+    # ── 行业分散后入选 ──
+    top = diversified[:top_n]
+    print(f"\n  ── 行业分散后入选({len(diversified)}只) ──")
 
     if top:
         avg_score = sum(c["综合得分"] for c in top) / len(top)
         avg_cap = sum(c["资金得分"] for c in top) / len(top)
         avg_chg = sum(c["涨跌幅"] for c in top) / len(top)
-        print(f"\n  均综合={avg_score:.3f} 均资金={avg_cap:.3f} 均涨跌={avg_chg:+.1f}%")
+        print(f"  均综合={avg_score:.3f} 均资金={avg_cap:.3f} 均涨跌={avg_chg:+.1f}%")
 
     tier_summary = ", ".join(f"{tk}={TIERS[tk]['desc']}"
-                             for tk in ["S1", "S2", "S3", "S4", "S5", "S6", "BEAR", "BULL-1", "BULL-2", "BULL-3"])
+                             for tk in ["S1", "S2", "S3", "S4", "S5", "S6", "A1", "A2", "A3", "A4", "BEAR", "BULL-1", "BULL-2", "BULL-3"])
     print(f"\n  信号体系: {tier_summary}")
     print(f"  体制感知避雷: ALWAYS={BLOCK_ALWAYS} NON_BULL={BLOCK_NON_BULL}")
     print(f"  灾难组合: {[f'{a}+{b}' for a,b in DISASTER_COMBOS]}")
@@ -393,6 +448,42 @@ def filter_overnight(date_str=None, top_n=5):
 
 
 if __name__ == "__main__":
-    date_str = sys.argv[1] if len(sys.argv) > 1 else None
-    top_n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-    filter_overnight(date_str, top_n)
+    args = sys.argv[1:]
+    date_str = None
+    top_n = 5
+    max_price = 0
+    account = 0
+    positions = 5
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--top="):
+            top_n = int(a.split("=", 1)[1])
+        elif a == "--top":
+            i += 1
+            if i < len(args):
+                top_n = int(args[i])
+        elif a.startswith("--max-price="):
+            max_price = float(a.split("=", 1)[1])
+        elif a == "--max-price":
+            i += 1
+            if i < len(args):
+                max_price = float(args[i])
+        elif a.startswith("--account="):
+            account = float(a.split("=", 1)[1])
+        elif a == "--account":
+            i += 1
+            if i < len(args):
+                account = float(args[i])
+        elif a.startswith("--positions="):
+            positions = int(a.split("=", 1)[1])
+        elif not a.startswith("-") and date_str is None:
+            date_str = a
+        i += 1
+
+    if account > 0 and max_price == 0:
+        # 自动计算: 每只至少买1手, 留20%现金缓冲
+        max_price = account * 0.8 / positions / 100
+        print(f"  账户 {account:,.0f} 元, {positions} 只持仓 → 股价上限 {max_price:.0f} 元 (1手={max_price*100:.0f} 元)")
+
+    filter_overnight(date_str, top_n, max_price)
