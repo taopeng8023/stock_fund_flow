@@ -19,9 +19,8 @@ except ImportError:
     HAS_STRUCTURER = False
 
 BJS_TZ = timezone(timedelta(hours=8))
-RESEARCH_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_data"
-)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RESEARCH_ROOT = os.path.join(PROJECT_ROOT, "research_data")
 
 # ── 评分权重（回测优化版 2026-06-26）──
 # 优化: 移除零区分度因子(technical/sector_diversity/limitup_proximity/crowding)
