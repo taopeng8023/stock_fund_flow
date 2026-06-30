@@ -29,43 +29,47 @@ RESEARCH_ROOT = os.path.join(
 #       降权capital(冗余簇) + tail_volume/tail_return(低区分度)
 WEIGHTS_BASE = {
     # ── 核心Alpha ──
-    "capital": 0.20,           # 优化: 0.26→0.20 冗余簇降权
-    "sector": 0.16,            # 优化: 0.14→0.16 独立信号加权重
-    "intra_sector": 0.06,      # 优化: 0.08→0.06 冗余簇
-    "sector_price": 0.06,      # 优化: 0.05→0.06 板块价格共振
+    "capital": 0.18,           # 0.20→0.18 腾给ma_trend
+    "sector": 0.16,
+    "intra_sector": 0.06,
+    "sector_price": 0.06,
 
     # ── 日内维度 (排名轨迹最稳) ──
-    "rank_trajectory": 0.06,   # 优化: 0.02→0.06 std=0.010最稳
-    "vwap_position": 0.07,     # VWAP位置
-    "flow_stability": 0.04,    # 优化: 0.03→0.04
-    "intraday_accel": 0.04,    # 优化: 0.03→0.04
-    "sector_trajectory": 0.03, # 优化: 0.02→0.03
+    "rank_trajectory": 0.06,
+    "vwap_position": 0.07,
+    "flow_stability": 0.04,
+    "intraday_accel": 0.04,
+    "sector_trajectory": 0.03,
 
     # ── 尾盘信号 ──
-    "tail_return": 0.05,       # 尾盘收益
-    "tail_volume": 0.03,       # 优化: 0.05→0.03
+    "tail_return": 0.05,
+    "tail_volume": 0.03,
 
     # ── 辅助 ──
-    "price_momentum": 0.04,    # 优化: 0.03→0.04
-    "margin_net": 0.02,        # 融资
-    "flow_accel": 0.02,        # 资金加速度
-    "ext_sentiment": 0.02,     # 外部情绪
+    "price_momentum": 0.03,    # 0.04→0.03 腾给ma_trend
+    "margin_net": 0.02,
+    "flow_accel": 0.02,
+    "ext_sentiment": 0.02,
 
-    # ── 结构分析（待回测校准）──
-    "structure_score": 0.04,   # 趋势结构 overlay, IC验证后启用
+    # ── K线趋势 (MA分析优化, 区分度1.44/1.42) ──
+    "ma_trend": 0.05,
+
+    # ── 结构分析 ──
+    "structure_score": 0.02,   # 0.04→0.02 腾给ma_trend
 
     # ── 惩罚项 (不纳入主评分，独立扣分) ──
-    # "crowding": 0.02,        # 移除: cardinality=1
-    # "sector_diversity": 0,   # 移除: cardinality=1
-    # "limitup_proximity": 0,  # 移除: 低区分度
-    # "technical": 0,          # 移除: cardinality=1
+    # "crowding": 0.02,
+    # "sector_diversity": 0,
+    # "limitup_proximity": 0,
+    # "technical": 0,
 }
 
 WEIGHTS_BULL = {**WEIGHTS_BASE,
     "tail_return": 0.08, "sector": 0.18,
-    "price_momentum": 0.05, "ext_sentiment": 0.03, "flow_accel": 0.03,
+    "price_momentum": 0.04, "ext_sentiment": 0.03, "flow_accel": 0.03,
     "sector_price": 0.07, "rank_trajectory": 0.07,
-    "structure_score": 0.04,
+    "structure_score": 0.02,
+    "ma_trend": 0.06,             # 牛市动量趋势加成
 }
 WEIGHTS_BEAR = {
     "capital": 0.16,
@@ -89,32 +93,34 @@ WEIGHTS_BEAR = {
 
 # ── 短线交易权重 (回测优化版) ──
 SHORT_WEIGHTS = {
-    "capital": 0.16, "sector": 0.14,
+    "capital": 0.13, "sector": 0.12,          # 腾给ma_trend
     "intra_sector": 0.06,
     "margin_net": 0.02, "flow_accel": 0.03,
     "flow_stability": 0.08, "intraday_accel": 0.08,
-    "rank_trajectory": 0.08, "vwap_position": 0.06,   # rank_trajectory优化:0.05→0.08
+    "rank_trajectory": 0.08, "vwap_position": 0.05,   # 0.06→0.05
     "sector_trajectory": 0.03,
-    "price_momentum": 0.03,                            # limitup_proximity移除
+    "price_momentum": 0.03,
     "sector_price": 0.04,
-    "tail_return": 0.10, "tail_volume": 0.06,          # tail_return短线核心
+    "tail_return": 0.10, "tail_volume": 0.04,          # 0.06→0.04
     "ext_sentiment": 0.02,
-    "structure_score": 0.04,
+    "structure_score": 0.02,                           # 0.04→0.02
+    "ma_trend": 0.08,                                  # 短线核心因子
 }
 
 # ── 中线趋势权重 (回测优化版) ──
 MID_WEIGHTS = {
-    "capital": 0.24, "sector": 0.18,          # sector优化:0.16→0.18
+    "capital": 0.22, "sector": 0.17,          # 腾给ma_trend
     "intra_sector": 0.08,
     "margin_net": 0.02, "flow_accel": 0.02,
     "flow_stability": 0.01, "intraday_accel": 0.01,
-    "rank_trajectory": 0.03, "vwap_position": 0.08,   # rank_trajectory:0.01→0.03
+    "rank_trajectory": 0.03, "vwap_position": 0.08,
     "sector_trajectory": 0.03,
-    "price_momentum": 0.06,                            # limitup_proximity移除
-    "sector_price": 0.06,                              # 0.04→0.06
+    "price_momentum": 0.05,                            # 0.06→0.05
+    "sector_price": 0.06,
     "tail_return": 0.06, "tail_volume": 0.04,
     "ext_sentiment": 0.03,
-    "structure_score": 0.04,
+    "structure_score": 0.02,                           # 0.04→0.02
+    "ma_trend": 0.04,
 }
 
 # ── 启动检测权重 (回测优化版) ──
@@ -159,6 +165,8 @@ COMPOSITE_SIGNALS = {
     "P37_momentum_up":    "得分动量向上(较前日改善>0.05,牛市+0.06熊市-0.02,最佳组合含此信号)",
     "P37_momentum_down":  "得分动量向下(较前日恶化>0.05,资金撤退)",
     "P34_P32_combo":      "黄金交叉(P34_gap_strong+P32_pump_risk,回测66.9%WR N=293)",
+    "P38_ma_bullish":     "MA完美多头(60日高位≥80%+排列≥3+站上MA5,区分度1.44)",
+    "P39_ma_bearish":     "MA弱势(60日低位<40%或排列≤1且跌破MA5,区分度1.42)",
 }
 
 # ── 启动得分专属信号 ──
@@ -180,7 +188,7 @@ SCORE_HEADERS = [
     "价格动量", "涨停邻近", "行业分散", "板块价格",
     "尾盘收益", "尾盘量能", "拥挤度",
     "涨跌幅", "换手率", "量比", "总市值", "成交额",
-    "结构得分",
+    "结构得分", "MA趋势得分",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
     "短线得分", "中线得分",
 ]
@@ -692,6 +700,116 @@ def _score_tail_factors(code, time_series):
     return round(tail_ret_score, 3), round(tail_vol_score, 3)
 
 
+def _score_ma_trend(code, bars, date_str):
+    """MA趋势因子 — 基于K线数据直接计算。
+
+    4个子维度加权合成, 专为短线动量设计:
+      A: 60日位置 (0.35) — 区分度1.44, #1因子
+      B: MA多头排列 (0.30) — 区分度1.42, #2因子
+      C: MA5斜率   (0.20) — 区分度1.11
+      D: 均线发散度 (0.15) — MA5-MA15 spread
+    """
+    if not bars or len(bars) < 20:
+        return 0.5
+
+    # 找到 date_str 在 bars 中的位置
+    idx = None
+    for i, b in enumerate(bars):
+        if b["date"] == date_str:
+            idx = i
+            break
+    if idx is None:
+        for i, b in enumerate(bars):
+            if b["date"] > date_str:
+                idx = i - 1
+                break
+    if idx is None:
+        idx = len(bars) - 1
+    if idx < 20:
+        return 0.5
+
+    hist = bars[:idx + 1]
+    last = len(hist) - 1
+    close = hist[last]["close"]
+
+    def ma(n):
+        if last < n - 1:
+            return None
+        return sum(hist[i]["close"] for i in range(last - n + 1, last + 1)) / n
+
+    ma5 = ma(5)
+    ma10 = ma(10)
+    ma15 = ma(15)
+    ma20 = ma(20)
+
+    if ma5 is None or ma10 is None:
+        return 0.5
+
+    # ── 维度A: 60日位置 (0.35) ──
+    n60 = min(60, last + 1)
+    high_60 = max(b["high"] for b in hist[-n60:])
+    low_60 = min(b["low"] for b in hist[-n60:])
+    if high_60 > low_60:
+        pos_60 = (close - low_60) / (high_60 - low_60)
+    else:
+        pos_60 = 0.5
+
+    if pos_60 > 0.80:
+        score_pos = 0.90
+    elif pos_60 > 0.60:
+        score_pos = 0.70
+    elif pos_60 > 0.40:
+        score_pos = 0.40
+    else:
+        score_pos = 0.20
+
+    # ── 维度B: MA多头排列 (0.30) ──
+    align = 0.0
+    if ma5 > ma10:
+        align += 0.25
+    if ma10 > ma15 if ma15 else False:
+        align += 0.25
+    if (ma15 > ma20) if (ma15 and ma20) else False:
+        align += 0.25
+    if close > ma5:
+        align += 0.25
+
+    # ── 维度C: MA5斜率 (0.20) ──
+    if last >= 9:
+        ma5_prev = sum(hist[i]["close"] for i in range(last - 9, last - 4)) / 5
+        ma5_slope = (ma5 - ma5_prev) / ma5_prev * 100 if ma5_prev > 0 else 0
+    else:
+        ma5_slope = 0
+
+    if ma5_slope > 5:
+        score_slope = 0.90
+    elif ma5_slope > 2:
+        score_slope = 0.70
+    elif ma5_slope > 0:
+        score_slope = 0.55
+    elif ma5_slope > -2:
+        score_slope = 0.40
+    else:
+        score_slope = 0.20
+
+    # ── 维度D: 均线发散度 (0.15) ──
+    if ma15:
+        spread = abs(ma5 - ma15) / ma15 * 100
+        if 2 <= spread <= 8:
+            score_spread = 0.80
+        elif spread < 2:
+            score_spread = 0.50
+        elif spread <= 15:
+            score_spread = 0.60
+        else:
+            score_spread = 0.30
+    else:
+        score_spread = 0.50
+
+    ma_trend = score_pos * 0.35 + align * 0.30 + score_slope * 0.20 + score_spread * 0.15
+    return round(ma_trend, 3)
+
+
 def _score_crowding(stocks):
     """全市场拥挤度: 成交额集中度 + 涨停占比 → 惩罚分。
 
@@ -883,6 +1001,24 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         except Exception as e:
             print(f"  结构分析加载失败: {e}")
 
+    # ── K线数据: 批量加载日线用于MA趋势因子 ──
+    kline_bars_map = {}
+    kline_dir = os.path.join(PROJECT_ROOT, "kline_data")
+    for s in stocks:
+        code = s.get("代码", "")
+        fp = os.path.join(kline_dir, f"{code}.json")
+        if os.path.exists(fp):
+            try:
+                with open(fp) as f:
+                    data = json.load(f)
+                kline_bars_map[code] = data.get("bars", [])
+            except Exception:
+                kline_bars_map[code] = []
+        else:
+            kline_bars_map[code] = []
+    n_kline = sum(1 for v in kline_bars_map.values() if len(v) >= 60)
+    print(f"  K线数据加载: {n_kline}/{len(stocks)} 只 (≥60根)")
+
     # ── 体制感知 + 黑天鹅 + 外部情绪 ──
     weights, regime = _detect_regime(date_str)
     bs_level = 0
@@ -1073,6 +1209,9 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         else:
             tech = 0.5
         sub["technical"] = round(tech, 3)
+
+        # ── ma_trend (5%) K线趋势因子 (MA分析优化) ──
+        sub["ma_trend"] = _score_ma_trend(code, kline_bars_map.get(code, []), date_str)
 
         # ── intra_sector (4%) ──
         if industry in sector_groups:
@@ -1303,6 +1442,42 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                 total -= 0.05; comp_sigs.append("P37_momentum_down")
                 early -= 0.05
 
+        # ── P38/P39: MA趋势信号 (基于14笔实盘MA相关性分析) ──
+        kline_bars = kline_bars_map.get(code, [])
+        if kline_bars and len(kline_bars) >= 20:
+            # 找 date_str 在 bars 中的位置
+            ki = None
+            for i_k, b in enumerate(kline_bars):
+                if b["date"] == date_str:
+                    ki = i_k; break
+            if ki is None:
+                for i_k, b in enumerate(kline_bars):
+                    if b["date"] > date_str:
+                        ki = i_k - 1; break
+            if ki is None:
+                ki = len(kline_bars) - 1
+            if ki >= 20:
+                hist_k = kline_bars[:ki + 1]
+                last_k = len(hist_k) - 1
+                close_k = hist_k[last_k]["close"]
+                def ma_k(n):
+                    return sum(hist_k[i]["close"] for i in range(last_k - n + 1, last_k + 1)) / n
+                ma5_k = ma_k(5)
+                ma10_k = ma_k(10)
+                ma15_k = ma_k(15) if last_k >= 14 else ma10_k
+                ma20_k = ma_k(20)
+                n60k = min(60, last_k + 1)
+                h60k = max(b["high"] for b in hist_k[-n60k:])
+                l60k = min(b["low"] for b in hist_k[-n60k:])
+                pos60k = (close_k - l60k) / (h60k - l60k) if h60k > l60k else 0.5
+                align_k = sum([ma5_k > ma10_k, ma10_k > ma15_k, ma15_k > ma20_k, close_k > ma5_k])
+                # P38: MA完美多头
+                if pos60k >= 0.80 and align_k >= 3 and close_k > ma5_k:
+                    total += 0.05; comp_sigs.append("P38_ma_bullish")
+                # P39: MA弱势
+                if pos60k < 0.40 or (align_k <= 1 and close_k < ma5_k):
+                    total -= 0.05; comp_sigs.append("P39_ma_bearish")
+
         results.append({
             "代码": code, "名称": name, "最新价": f2, "昨收": s.get("昨收", ""), "行业": industry,
             "综合得分": round(total, 4), "市场体制": regime, "启动得分": round(early, 4),
@@ -1325,6 +1500,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "拥挤度": sub.get("crowding", 0.5),
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi, "成交额": f6_val,
             "结构得分": sub.get("structure_score", 0.5),
+            "MA趋势得分": sub.get("ma_trend", 0.5),
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
             "启动信号": ",".join(early_sigs),
