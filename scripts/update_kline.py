@@ -12,7 +12,7 @@ import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 KLINE_DIR = PROJECT_ROOT / "kline_data"
-TENCENT_URL = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 TIMEOUT = 8  # API超时
 WORKERS = 20  # 并发数

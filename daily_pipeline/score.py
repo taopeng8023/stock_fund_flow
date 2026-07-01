@@ -210,7 +210,7 @@ FACTOR_INFO = {
 }
 
 # 腾讯K线 API (获取价格历史)
-KLINE_URL = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
 
 
 def _tof(val, default=0.0):
@@ -232,23 +232,25 @@ def _pct_rank(values, target):
 
 
 def _load_stock_prices(codes, max_stocks=200):
-    """从腾讯K线获取价格历史（近60日），限制请求数"""
+    """从本地K线文件获取价格历史（近60日收盘价），限制读取数"""
     prices = {}
     count = 0
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+    kline_dir = os.path.join(PROJECT_ROOT, "kline_data")
     for code in codes:
-        if count >= max_stocks: break
-        mkt = "sh" if code.startswith("6") else "sz"
-        url = f"{KLINE_URL}?param={mkt}{code},day,,,65,qfq"
+        if count >= max_stocks:
+            break
+        fp = os.path.join(kline_dir, f"{code}.json")
         try:
-            resp = requests.get(url, headers=headers, timeout=8)
-            data = resp.json()
-            key = f"{mkt}{code}"
-            if data.get("data") and data["data"].get(key) and data["data"][key].get("qfqday"):
-                closes = [float(k[2]) for k in data["data"][key]["qfqday"]]
-                if len(closes) >= 20:
-                    prices[code] = closes
-                    count += 1
+            if not os.path.isfile(fp):
+                continue
+            with open(fp) as f:
+                data = json.load(f)
+            bars = data.get("bars", [])
+            if len(bars) >= 20:
+                # 取最近60根日线收盘价
+                closes = [b["close"] for b in bars[-60:]]
+                prices[code] = closes
+                count += 1
         except Exception:
             continue
     return prices
@@ -711,15 +713,16 @@ def _score_ma_trend(code, bars, date_str):
     if not bars or len(bars) < 20:
         return 0.5
 
-    # 找到 date_str 在 bars 中的位置
+    # 找到 date_str 在 bars 中的位置（兼容两种日期格式）
+    kline_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 and "-" not in date_str else date_str
     idx = None
     for i, b in enumerate(bars):
-        if b["date"] == date_str:
+        if b["date"] in (date_str, kline_date):
             idx = i
             break
     if idx is None:
         for i, b in enumerate(bars):
-            if b["date"] > date_str:
+            if b["date"] > kline_date:
                 idx = i - 1
                 break
     if idx is None:
@@ -1000,23 +1003,23 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         except Exception as e:
             print(f"  结构分析加载失败: {e}")
 
-    # ── K线数据: 批量加载日线用于MA趋势因子 ──
-    kline_bars_map = {}
-    kline_dir = os.path.join(PROJECT_ROOT, "kline_data")
-    for s in stocks:
-        code = s.get("代码", "")
-        fp = os.path.join(kline_dir, f"{code}.json")
+    # ── K线数据: 懒加载缓存用于MA趋势因子 ──
+    _kline_cache = {}
+    _kline_dir = os.path.join(PROJECT_ROOT, "kline_data")
+    def _load_kline(code):
+        if code in _kline_cache:
+            return _kline_cache[code]
+        fp = os.path.join(_kline_dir, f"{code}.json")
         if os.path.exists(fp):
             try:
                 with open(fp) as f:
                     data = json.load(f)
-                kline_bars_map[code] = data.get("bars", [])
+                _kline_cache[code] = data.get("bars", [])
             except Exception:
-                kline_bars_map[code] = []
+                _kline_cache[code] = []
         else:
-            kline_bars_map[code] = []
-    n_kline = sum(1 for v in kline_bars_map.values() if len(v) >= 60)
-    print(f"  K线数据加载: {n_kline}/{len(stocks)} 只 (≥60根)")
+            _kline_cache[code] = []
+        return _kline_cache[code]
 
     # ── 体制感知 + 黑天鹅 + 外部情绪 ──
     weights, regime = _detect_regime(date_str)
@@ -1210,7 +1213,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
         sub["technical"] = round(tech, 3)
 
         # ── ma_trend (5%) K线趋势因子 (MA分析优化) ──
-        sub["ma_trend"] = _score_ma_trend(code, kline_bars_map.get(code, []), date_str)
+        sub["ma_trend"] = _score_ma_trend(code, _load_kline(code), date_str)
 
         # ── intra_sector (4%) ──
         if industry in sector_groups:
@@ -1442,16 +1445,17 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                 early -= 0.05
 
         # ── P38/P39: MA趋势信号 (基于14笔实盘MA相关性分析) ──
-        kline_bars = kline_bars_map.get(code, [])
+        kline_bars = _load_kline(code)
         if kline_bars and len(kline_bars) >= 20:
-            # 找 date_str 在 bars 中的位置
+            # 找 date_str 在 bars 中的位置（兼容两种日期格式）
+            kline_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 and "-" not in date_str else date_str
             ki = None
             for i_k, b in enumerate(kline_bars):
-                if b["date"] == date_str:
+                if b["date"] in (date_str, kline_date):
                     ki = i_k; break
             if ki is None:
                 for i_k, b in enumerate(kline_bars):
-                    if b["date"] > date_str:
+                    if b["date"] > kline_date:
                         ki = i_k - 1; break
             if ki is None:
                 ki = len(kline_bars) - 1
