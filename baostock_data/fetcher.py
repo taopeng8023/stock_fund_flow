@@ -53,7 +53,7 @@ def _format_duration(seconds):
 
 
 def _progress_bar(current, total, elapsed, failed, bar_width=30):
-    """生成进度行字符串"""
+    """生成进度行字符串（无 \r，纯新行输出）"""
     pct = current / total if total > 0 else 0
     filled = int(bar_width * pct)
     bar = "█" * filled + "░" * (bar_width - filled)
@@ -64,7 +64,7 @@ def _progress_bar(current, total, elapsed, failed, bar_width=30):
     else:
         eta_str = "..."
 
-    line = (f"\r  [{bar}] {pct * 100:5.1f}% "
+    line = (f"  [{bar}] {pct * 100:5.1f}% "
             f"{current}/{total} "
             f"| 耗时 {_format_duration(elapsed)} "
             f"| ETA {eta_str} "
@@ -313,6 +313,7 @@ class BaoStockFetcher:
         # 统计用
         batch_elapsed = 0.0
         batch_count = 0
+        last_progress_print = 0  # 上次打印进度的时间戳
 
         for i, stock in enumerate(pending_stocks):
             code = stock["code"]
@@ -353,10 +354,13 @@ class BaoStockFetcher:
                 all_completed = completed_codes | new_completed
                 self._save_progress(progress_path, all_completed, failed_codes, total_rows)
 
-                # 实时进度
-                elapsed = time.time() - t0
-                progress_line = _progress_bar(done_count, total_count, elapsed, len(failed_codes))
-                self._flush_print(progress_line, end="")
+                # 实时进度（每 15 秒输一行，避免刷屏）
+                now_ts = time.time()
+                if now_ts - last_progress_print >= 15:
+                    elapsed = time.time() - t0
+                    progress_line = _progress_bar(done_count, total_count, elapsed, len(failed_codes))
+                    self._flush_print(progress_line)
+                    last_progress_print = now_ts
 
                 buffer = []
                 batch_count = 0
