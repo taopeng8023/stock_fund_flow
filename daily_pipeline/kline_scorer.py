@@ -1,13 +1,18 @@
 """
-K线形态评分器 — 将 v3 高精度形态检测集成到 daily_pipeline 评分体系
+K线形态评分器 v2 — 连续评分模型（非二值模式匹配）
 
-检测8个经过750只股票验证的高胜率形态组合, 返回 0-1 综合评分。
-形态触发 T → 确认日 T+1 (超严格: 收盘>T最高 + 收阳 + 放量) → 信号有效
+6个子维度, 每维度 0-1 连续评分, 加权合成:
+  A: 趋势质量 (0.25) — MA多头排列+斜率+位置
+  B: 反转形态接近度 (0.20) — 启明星/反包/长下影 接近程度
+  C: 量价配合 (0.20) — 放量阳线/缩量阴线 质量
+  D: 突破强度 (0.15) — 突破均线/前高的力度
+  E: 支撑/阻力 (0.10) — 回踩均线/双底形态
+  F: 极端反转 (0.10) — 深跌反弹/恐慌底部
 
-返回:
-    score (0-1): K线形态综合评分
-    active_patterns: 当日活跃的形态列表
-    confirmed: 是否通过确认日验证
+用法:
+  from daily_pipeline.kline_scorer import score_kline_pattern
+  result = score_kline_pattern(code, bars, date_str)
+  result["score"]  # 0-1 continuous
 """
 import os
 import warnings
@@ -19,198 +24,27 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 
-def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Vectorized indicator computation."""
-    c = df["close"]; o = df["open"]; h = df["high"]
-    l = df["low"]; v = df["volume"]
-
-    for w in [5, 10, 20, 60]:
-        df[f"ma{w}"] = c.rolling(w, min_periods=w).mean()
-    for w in [5, 20]:
-        df[f"vol_ma{w}"] = v.rolling(w, min_periods=w).mean()
-
-    df["candle_range"] = h - l
-    df["body_ratio"] = np.where(df["candle_range"] > 0,
-                                np.abs(c - o) / df["candle_range"], 0)
-    df["lower_shadow"] = np.where(df["candle_range"] > 0,
-                                  (np.minimum(o, c) - l) / df["candle_range"], 0)
-    df["upper_shadow"] = np.where(df["candle_range"] > 0,
-                                  (h - np.maximum(o, c)) / df["candle_range"], 0)
-    df["is_yang"] = (c > o).astype(int)
-    df["is_yin"] = (c < o).astype(int)
-    df["amplitude"] = np.where(df["close"].shift(1) > 0,
-                               df["candle_range"] / df["close"].shift(1), 0)
-    df["change_pct"] = np.where(df["close"].shift(1) > 0,
-                                (c - df["close"].shift(1)) / df["close"].shift(1), 0)
-    df["vol_ratio_vs5"] = np.where(df["vol_ma5"] > 0, v / df["vol_ma5"], 1)
-    df["vol_ratio_vs20"] = np.where(df["vol_ma20"] > 0, v / df["vol_ma20"], 1)
-
-    # Streaks
-    df["yang_streak"] = 0; df["yin_streak"] = 0
-    ys = 0; ns = 0
-    for i in range(len(df)):
-        if df["is_yang"].iloc[i]:
-            ys += 1; ns = 0
-        else:
-            ns += 1; ys = 0
-        df.iloc[i, df.columns.get_loc("yang_streak")] = ys
-        df.iloc[i, df.columns.get_loc("yin_streak")] = ns
-
-    for w in [10, 20, 60]:
-        df[f"high_{w}d"] = h.rolling(w, min_periods=w).max()
-        df[f"low_{w}d"] = l.rolling(w, min_periods=w).min()
-        df[f"close_high_{w}d"] = c.rolling(w, min_periods=w).max()
-        df[f"close_low_{w}d"] = c.rolling(w, min_periods=w).min()
-
-    # Rank
-    for j in range(20, len(df)):
-        rng = df["close_high_20d"].values[j] - df["close_low_20d"].values[j]
-        df.loc[df.index[j], "close_rank_20"] = (
-            (c.values[j] - df["close_low_20d"].values[j]) / rng if rng > 0 else 0.5)
-
-    return df
-
-
-def detect_patterns_at_last(df: pd.DataFrame) -> dict:
-    """
-    Check the LAST day (most recent) of the DataFrame for pattern signals.
-    Returns dict with pattern detection results.
-    """
-    n = len(df)
-    if n < 70:
-        return {"score": 0.5, "patterns": [], "confirmed": False}
-
-    df = _compute_indicators(df)
-    i = n - 1  # last day
-
-    c = df["close"].values; o = df["open"].values; h = df["high"].values
-    l = df["low"].values; v = df["volume"].values; pc = c  # proxied
-    is_yang = df["is_yang"].values; is_yin = df["is_yin"].values
-    yang_streak = df["yang_streak"].values; yin_streak = df["yin_streak"].values
-    vol_r5 = df["vol_ratio_vs5"].values; vol_r20 = df["vol_ratio_vs20"].values
-    amp = df["amplitude"].values; body_r = df["body_ratio"].values
-    lower_s = df["lower_shadow"].values
-    ma5 = df["ma5"].values; ma10 = df["ma10"].values
-    ma20 = df["ma20"].values; ma60 = df["ma60"].values
-    change_pct = df["change_pct"].values
-    close_rank_20 = df["close_rank_20"].values
-
-    active = []
-
-    # ── P1: 启明星（三连阴缩量+十字星+放量阳）── 小样本87% WR
-    if (i >= 3 and yin_streak[i-1] >= 3 and v[i-3] > v[i-2] > v[i-1] and
-        body_r[i-1] < 0.2 and is_yang[i] and vol_r5[i] > 1.1 and
-        c[i] > (o[i-3] + c[i-3]) / 2):
-        active.append("morning_star")
-
-    # ── P2: 反包（阴包阳→阳包阴+放量）── 小样本70% WR
-    if (i >= 2 and is_yin[i-1] and is_yang[i-2] and
-        c[i-1] < o[i-2] and o[i-1] > c[i-2] and  # 阴包阳
-        is_yang[i] and c[i] > o[i-1] and o[i] < c[i-1] and  # 阳包阴
-        vol_r5[i] > 1.3):
-        active.append("engulf_reversal")
-
-    # ── P3: 深跌反弹（60日跌25%+放量破高+站上MA10）
-    if (i >= 60 and not pd.isna(df["close_high_60d"].values[i]) and
-        c[i] < df["close_high_60d"].values[i] * 0.75 and
-        is_yang[i] and vol_r5[i] > 2.0 and amp[i] > 0.03 and
-        not pd.isna(ma10[i]) and c[i] > ma10[i] and
-        i >= 1 and c[i] > h[i-1] and change_pct[i] < 0.09):
-        active.append("deep_rebound_25")
-
-    # ── P4: 急跌长下影（5日跌12%+长下影+放量阳+低位）
-    if (i >= 5 and c[i-5] > 0 and (c[i] - c[i-5]) / c[i-5] < -0.12 and
-        lower_s[i] > 0.6 and is_yang[i] and vol_r5[i] > 1.5 and
-        not pd.isna(close_rank_20[i]) and close_rank_20[i] < 0.25):
-        active.append("panic_lower_shadow")
-
-    # ── P5: 缩量横盘后放量突破（缩量3日+放量破前高+多头）
-    if (i >= 3 and np.std(c[i-3:i]) / np.mean(c[i-3:i]) < 0.015 and
-        np.all(vol_r5[i-3:i] < 0.55) and vol_r5[i] > 2.0 and
-        is_yang[i] and c[i] > max(h[i-3:i]) and
-        not pd.isna(ma5[i]) and not pd.isna(ma10[i]) and not pd.isna(ma20[i]) and
-        ma5[i] > ma10[i] > ma20[i]):
-        active.append("squeeze_breakout")
-
-    # ── P6: 强多头回踩MA20（多头+缩量+十字星+启稳）
-    if (not pd.isna(ma5[i]) and not pd.isna(ma10[i]) and not pd.isna(ma20[i]) and
-        ma5[i] > ma10[i] > ma20[i] and ma20[i] > 0 and
-        np.abs((c[i] - ma20[i]) / ma20[i]) < 0.015 and
-        vol_r5[i] < 0.45 and body_r[i] < 0.35 and is_yang[i] and c[i] > ma20[i]):
-        active.append("bull_ma20_pullback")
-
-    # ── P7: 双针探底（双下影+低位+量增收阳）
-    if (i >= 2 and lower_s[i] > 0.55 and lower_s[i-1] > 0.55 and
-        not pd.isna(close_rank_20[i]) and close_rank_20[i] < 0.2 and
-        is_yang[i] and v[i] > v[i-1] and c[i] > c[i-1]):
-        active.append("double_needle_bottom")
-
-    # ── P8: MA金叉（MA5金叉MA20+放量+MA20向上）
-    if (i >= 5 and not pd.isna(ma5[i]) and not pd.isna(ma20[i]) and
-        not pd.isna(ma5[i-1]) and not pd.isna(ma20[i-1]) and
-        ma5[i-1] <= ma20[i-1] and ma5[i] > ma20[i] and
-        vol_r5[i] > 1.3 and is_yang[i] and ma20[i] >= ma20[i-5] and
-        c[i] > c[i-1]):
-        active.append("ma_golden_cross")
-
-    # ── Score calculation ──
-    if not active:
-        return {"score": 0.5, "patterns": active, "confirmed": False}
-
-    # Base score increases with number of active patterns
-    base = 0.5 + len(active) * 0.1
-
-    # Bonus for highest-quality patterns
-    if "morning_star" in active:
-        base += 0.10
-    if "engulf_reversal" in active:
-        base += 0.08
-    if "deep_rebound_25" in active:
-        base += 0.08
-    if "squeeze_breakout" in active:
-        base += 0.07
-
-    # Confirmation proxy: today IS the confirmation day (we're at market close)
-    # Check if today's action confirms the pattern (close > open, volume > avg)
-    confirmed = is_yang[i] and vol_r5[i] > 0.7
-
-    score = min(1.0, base)
-
-    return {
-        "score": round(score, 3),
-        "patterns": active,
-        "confirmed": confirmed,
-        "num_patterns": len(active),
-        "top_pattern": active[0] if active else None,
-    }
-
-
 def score_kline_pattern(code: str, bars: list[dict],
                         date_str: str = None) -> dict:
     """
-    Main entry point — score a single stock based on K-line bars.
+    连续K线质量评分。非二值检测, 而是对K线结构质量做0-1连续评分。
 
-    Args:
-        code: stock code (e.g., "sh.600000")
-        bars: list of dicts with keys: date, open, high, low, close, volume
-        date_str: target date (YYYYMMDD or YYYY-MM-DD). If None, use last bar.
-
-    Returns:
-        dict with score, patterns, confirmed
+    Returns: {score, sub_scores, active_patterns, confirmed}
     """
-    if not bars or len(bars) < 70:
-        return {"score": 0.5, "patterns": [], "confirmed": False}
+    if not bars or len(bars) < 30:
+        return {"score": 0.5, "sub_scores": {}, "active_patterns": [],
+                "confirmed": False}
 
     df = pd.DataFrame(bars)
     df = df.sort_values("date").reset_index(drop=True)
 
     for col in ("open", "high", "low", "close", "volume"):
         if col not in df.columns:
-            return {"score": 0.5, "patterns": [], "confirmed": False}
+            return {"score": 0.5, "sub_scores": {}, "active_patterns": [],
+                    "confirmed": False}
 
-    # If target date specified, truncate to that date (no look-ahead)
+    # Truncate to target date
     if date_str:
-        # Normalize date format
         target = date_str.replace("-", "")
         idx = None
         for j in range(len(df)):
@@ -218,18 +52,256 @@ def score_kline_pattern(code: str, bars: list[dict],
             if bar_date == target:
                 idx = j
                 break
-        if idx is not None and idx >= 70:
+        if idx is not None and idx >= 30:
             df = df.iloc[:idx + 1].copy()
-        elif idx is not None and idx < 70:
-            return {"score": 0.5, "patterns": [], "confirmed": False}
+        elif idx is not None and idx < 30:
+            return {"score": 0.5, "sub_scores": {}, "active_patterns": [],
+                    "confirmed": False}
 
-    return detect_patterns_at_last(df)
+    return _compute_score(df)
+
+
+def _sigmoid(x: float, midpoint: float = 0.5, steepness: float = 6.0) -> float:
+    """Smooth 0-1 scoring function."""
+    return 1.0 / (1.0 + np.exp(-steepness * (x - midpoint)))
+
+
+def _compute_score(df: pd.DataFrame) -> dict:
+    n = len(df)
+    i = n - 1  # last day index
+    c = df["close"].values
+    o = df["open"].values
+    h = df["high"].values
+    l = df["low"].values
+    v = df["volume"].values
+
+    # ── Precompute indicators ──
+    ma5_vals = c.copy()
+    ma10_vals = c.copy()
+    ma20_vals = c.copy()
+    for w, arr in [(5, ma5_vals), (10, ma10_vals), (20, ma20_vals)]:
+        for j in range(w - 1, n):
+            arr[j] = np.mean(c[j - w + 1:j + 1])
+
+    vol_ma5 = v.copy()
+    for j in range(4, n):
+        vol_ma5[j] = np.mean(v[j - 4:j + 1])
+
+    high_20 = np.array([np.max(h[max(0, j - 19):j + 1]) for j in range(n)])
+    low_20 = np.array([np.min(l[max(0, j - 19):j + 1]) for j in range(n)])
+    high_60 = np.array([np.max(h[max(0, j - 59):j + 1]) for j in range(n)])
+    low_60 = np.array([np.min(l[max(0, j - 59):j + 1]) for j in range(n)])
+
+    body = np.abs(c - o)
+    candle_range = h - l
+    body_ratio = np.where(candle_range > 0, body / candle_range, 0)
+    lower_shadow = np.where(candle_range > 0,
+                            (np.minimum(o, c) - l) / candle_range, 0)
+    upper_shadow = np.where(candle_range > 0,
+                            (h - np.maximum(o, c)) / candle_range, 0)
+    amplitude = np.zeros(n)
+    for j in range(1, n):
+        prev_c = c[j - 1]
+        amplitude[j] = candle_range[j] / prev_c if prev_c > 0 else 0
+
+    change_pct = np.zeros(n)
+    for j in range(1, n):
+        change_pct[j] = (c[j] - c[j - 1]) / c[j - 1] if c[j - 1] > 0 else 0
+
+    vol_ratio = np.ones(n)
+    for j in range(5, n):
+        vol_ratio[j] = v[j] / vol_ma5[j] if vol_ma5[j] > 0 else 1.0
+
+    is_yang = (c > o).astype(int)
+    is_yin = (c < o).astype(int)
+
+    # ── A: 趋势质量 (0.25) ──
+    ma5_i = ma5_vals[i]
+    ma10_i = ma10_vals[i]
+    ma20_i = ma20_vals[i]
+
+    # MA alignment
+    align_score = 0.0
+    if not np.isnan(ma5_i) and not np.isnan(ma10_i) and not np.isnan(ma20_i):
+        aligns = 0
+        if ma5_i > ma10_i: aligns += 0.3
+        if ma10_i > ma20_i: aligns += 0.3
+        if ma5_i > ma20_i: aligns += 0.2
+        if c[i] > ma5_i: aligns += 0.2
+        align_score = min(1.0, aligns)
+
+    # MA5 slope
+    slope_score = 0.5
+    if i >= 10:
+        ma5_prev = np.mean(c[i - 9:i - 4])
+        if ma5_prev > 0:
+            slope = (ma5_i - ma5_prev) / ma5_prev * 100
+            slope_score = _sigmoid(slope, midpoint=1.0, steepness=0.4)
+
+    # Position in 60d range
+    pos_score = 0.5
+    rng_60 = high_60[i] - low_60[i]
+    if rng_60 > 0:
+        pos = (c[i] - low_60[i]) / rng_60
+        # Best: 60-80% (strong but not overbought)
+        if 0.6 <= pos <= 0.85:
+            pos_score = 0.85
+        elif 0.4 <= pos < 0.6:
+            pos_score = 0.60
+        elif pos > 0.85:
+            pos_score = 0.40  # extended
+        else:
+            pos_score = 0.30  # weak
+
+    sub_a = align_score * 0.35 + slope_score * 0.30 + pos_score * 0.35
+
+    # ── B: 反转形态接近度 (0.20) ──
+    # Morning star proximity: 3-day decline + small body + today yang
+    morning_score = 0.3
+    if i >= 3:
+        decline_3d = (c[i] - c[i - 3]) / c[i - 3] if c[i - 3] > 0 else 0
+        body_small = 1.0 - body_ratio[i - 1] if body_ratio[i - 1] < 0.3 else 0.2
+        today_yang_bonus = 0.3 if is_yang[i] else 0
+        vol_expand = min(1.0, vol_ratio[i] / 1.5) if vol_ratio[i] > 0.8 else 0.3
+        morning_score = (max(0, -decline_3d / 0.10) * 0.3 +
+                         body_small * 0.25 + today_yang_bonus * 0.25 + vol_expand * 0.2)
+        morning_score = min(1.0, morning_score)
+
+    # Lower shadow quality
+    shadow_score = 0.0
+    if lower_shadow[i] > 0.4 and amplitude[i] > 0.01:
+        shadow_score = min(1.0, lower_shadow[i] * 1.2 + amplitude[i] * 5)
+
+    # Engulfing proximity
+    engulf_score = 0.3
+    if i >= 1 and is_yin[i - 1] and is_yang[i]:
+        engulf_ratio = (c[i] - o[i - 1]) / o[i - 1] if o[i - 1] > 0 else 0
+        engulf_score = _sigmoid(engulf_ratio, midpoint=0.01, steepness=200)
+
+    sub_b = morning_score * 0.35 + shadow_score * 0.30 + engulf_score * 0.20 + 0.15
+
+    # ── C: 量价配合 (0.20) ──
+    # Volume expansion with yang = bullish
+    vol_yang_score = 0.5
+    if is_yang[i]:
+        vol_yang_score = _sigmoid(vol_ratio[i], midpoint=1.0, steepness=3.0)
+    elif is_yin[i] and vol_ratio[i] < 0.6:
+        vol_yang_score = 0.55  # shrinking volume on down day = OK
+
+    # Volume trend (3-day)
+    vol_trend_score = 0.5
+    if i >= 3 and all(v[j] > 0 for j in range(i - 2, i + 1)):
+        if v[i] > v[i - 1] > v[i - 2]:
+            vol_trend_score = 0.75
+        elif v[i] < v[i - 1] < v[i - 2]:
+            vol_trend_score = 0.35
+
+    # Amplitude quality (not too high, not too low)
+    amp_score = 0.5
+    if 0.015 <= amplitude[i] <= 0.06:
+        amp_score = 0.75
+    elif amplitude[i] > 0.10:
+        amp_score = 0.30  # too volatile
+
+    sub_c = vol_yang_score * 0.40 + vol_trend_score * 0.30 + amp_score * 0.30
+
+    # ── D: 突破强度 (0.15) ──
+    # Break above MA20
+    ma20_break = 0.3
+    if i >= 1 and not np.isnan(ma20_i):
+        if c[i] > ma20_i and c[i - 1] <= ma20_i:
+            ma20_break = 0.80
+        elif c[i] > ma20_i * 1.02:
+            ma20_break = 0.55
+        elif c[i] > ma20_i:
+            ma20_break = 0.45
+
+    # Break above 20d high
+    high_break = 0.3
+    if c[i] > high_20[i - 1] * 0.98:
+        high_break = 0.70
+
+    # Breakout volume confirmation
+    break_vol = _sigmoid(vol_ratio[i], midpoint=1.2, steepness=4.0)
+
+    sub_d = ma20_break * 0.35 + high_break * 0.35 + break_vol * 0.30
+
+    # ── E: 支撑/阻力质量 (0.10) ──
+    # Distance from MA5/10/20 (closer = better support)
+    dist_ma5 = abs(c[i] - ma5_i) / ma5_i if ma5_i > 0 else 0.05
+    dist_ma20 = abs(c[i] - ma20_i) / ma20_i if ma20_i > 0 else 0.05
+
+    support_score = 0.5
+    if dist_ma5 < 0.02 and dist_ma20 < 0.05:
+        support_score = 0.75  # near support
+    elif c[i] < ma5_i and c[i] < ma20_i:
+        support_score = 0.25  # broke support
+
+    # Double bottom proximity
+    double_bot_score = 0.3
+    if i >= 5:
+        close_to_20d_low = (c[i] - low_20[i]) / low_20[i] if low_20[i] > 0 else 0.1
+        if close_to_20d_low < 0.03 and is_yang[i]:
+            double_bot_score = 0.70
+
+    sub_e = support_score * 0.55 + double_bot_score * 0.45
+
+    # ── F: 极端反转潜力 (0.10) ──
+    # How far from 60d high (deeper = more reversal potential)
+    drawdown_score = 0.3
+    if high_60[i] > 0:
+        dd = (c[i] - high_60[i]) / high_60[i]
+        if dd < -0.30:
+            drawdown_score = 0.85  # deep oversold
+        elif dd < -0.20:
+            drawdown_score = 0.70
+        elif dd < -0.10:
+            drawdown_score = 0.55
+
+    # Oversold + yang day = bullish reversal
+    oversold_bonus = 0.0
+    if i >= 5 and change_pct[i - 5:i].mean() < -0.02 and is_yang[i] and vol_ratio[i] > 1.2:
+        oversold_bonus = 1.0
+
+    sub_f = drawdown_score * 0.5 + oversold_bonus * 0.5
+
+    # ── Composite ──
+    score = (sub_a * 0.25 + sub_b * 0.20 + sub_c * 0.20 +
+             sub_d * 0.15 + sub_e * 0.10 + sub_f * 0.10)
+
+    # Detect which binary patterns are active (for signal labeling)
+    active_patterns = []
+    if morning_score > 0.65 or (i >= 3 and is_yang[i] and lower_shadow[i] > 0.5):
+        active_patterns.append("reversal_signal")
+    if engulf_score > 0.6:
+        active_patterns.append("engulf_signal")
+    if vol_ratio[i] > 1.5 and is_yang[i] and sub_d > 0.6:
+        active_patterns.append("breakout_signal")
+    if drawdown_score > 0.7 and is_yang[i] and vol_ratio[i] > 1.0:
+        active_patterns.append("oversold_bounce")
+    if sub_a > 0.7 and sub_e > 0.6:
+        active_patterns.append("trend_pullback")
+
+    confirmed = is_yang[i] and vol_ratio[i] > 0.8
+
+    return {
+        "score": round(min(1.0, max(0.15, score)), 3),
+        "sub_scores": {
+            "trend_quality": round(sub_a, 3),
+            "reversal": round(sub_b, 3),
+            "vol_price": round(sub_c, 3),
+            "breakout": round(sub_d, 3),
+            "support": round(sub_e, 3),
+            "extreme": round(sub_f, 3),
+        },
+        "active_patterns": active_patterns,
+        "confirmed": confirmed,
+        "num_patterns": len(active_patterns),
+    }
 
 
 def score_batch(code_bars_map: dict) -> dict:
-    """
-    Score a batch of stocks. {code: [bars]} → {code: score_result}
-    """
+    """Batch score. {code: [bars]} → {code: result}"""
     results = {}
     for code, bars in code_bars_map.items():
         results[code] = score_kline_pattern(code, bars)
