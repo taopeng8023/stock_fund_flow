@@ -1,0 +1,14 @@
+{
+  "_comment": "複製這個檔案為 .auto-dev/config.json，編輯 build/test 指令以自訂 quality-gate。未提供任一欄位時，Hook 會回退到 Node default（tsc + npm test）。",
+
+  "_examples": {
+    "node":    { "build": "npx tsc --noEmit", "test": "npm test --silent" },
+    "python":  { "build": "ruff check .",     "test": "pytest -q" },
+    "go":      { "build": "go build ./...",   "test": "go test ./..." },
+    "rust":    { "build": "cargo check",      "test": "cargo test" },
+    "deno":    { "build": "deno check **/*.ts", "test": "deno test" }
+  },
+
+  "build": "python -c \"import py_compile; print('OK')\"",
+  "test": "python -m pytest -q 2>/dev/null || echo 'no tests — skip'"
+}

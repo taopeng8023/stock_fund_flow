@@ -18,6 +18,13 @@ try:
 except ImportError:
     HAS_STRUCTURER = False
 
+# ── K线形态评分模块 ──
+try:
+    from daily_pipeline.kline_scorer import score_kline_pattern, score_batch
+    HAS_KLINE_SCORER = True
+except ImportError:
+    HAS_KLINE_SCORER = False
+
 BJS_TZ = timezone(timedelta(hours=8))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESEARCH_ROOT = os.path.join(PROJECT_ROOT, "research_data")
@@ -53,6 +60,9 @@ WEIGHTS_BASE = {
     # ── K线趋势 (MA分析优化, 区分度1.44/1.42) ──
     "ma_trend": 0.05,
 
+    # ── K线形态 (v3 高精度形态检测+确认日, 750只验证) ──
+    "kline_pattern": 0.06,
+
     # ── 结构分析 ──
     "structure_score": 0.02,   # 0.04→0.02 腾给ma_trend
 
@@ -69,6 +79,7 @@ WEIGHTS_BULL = {**WEIGHTS_BASE,
     "sector_price": 0.07, "rank_trajectory": 0.07,
     "structure_score": 0.02,
     "ma_trend": 0.06,             # 牛市动量趋势加成
+    "kline_pattern": 0.05,        # 牛市形态过滤略降
 }
 WEIGHTS_BEAR = {
     "capital": 0.16,
@@ -88,6 +99,7 @@ WEIGHTS_BEAR = {
     "sector_trajectory": 0.06,
     "price_momentum": 0.06, # ↑ 0.04→0.06 动量在熊市更有区分度
     "limit_proximity": 0.02,
+    "kline_pattern": 0.08,        # 熊市反转形态更可靠
 }
 
 # ── 短线交易权重 (回测优化版) ──
@@ -104,6 +116,7 @@ SHORT_WEIGHTS = {
     "ext_sentiment": 0.02,
     "structure_score": 0.02,                           # 0.04→0.02
     "ma_trend": 0.08,                                  # 短线核心因子
+    "kline_pattern": 0.06,                              # K线形态短线加成
 }
 
 # ── 中线趋势权重 (回测优化版) ──
@@ -120,6 +133,7 @@ MID_WEIGHTS = {
     "ext_sentiment": 0.03,
     "structure_score": 0.02,                           # 0.04→0.02
     "ma_trend": 0.04,
+    "kline_pattern": 0.06,
 }
 
 # ── 启动检测权重 (回测优化版) ──
@@ -135,6 +149,7 @@ EARLY_WEIGHTS = {
     "tail_return": 0.06, "tail_volume": 0.04,
     "ext_sentiment": 0.02,
     "structure_score": 0.04,
+    "kline_pattern": 0.04,
 }
 
 # ── scores.csv 输出列 ──
@@ -166,6 +181,7 @@ COMPOSITE_SIGNALS = {
     "P34_P32_combo":      "黄金交叉(P34_gap_strong+P32_pump_risk,回测66.9%WR N=293)",
     "P38_ma_bullish":     "MA完美多头(60日高位≥80%+排列≥3+站上MA5,区分度1.44)",
     "P39_ma_bearish":     "MA弱势(60日低位<40%或排列≤1且跌破MA5,区分度1.42)",
+    "P40_kline_pattern":  "K线形态信号(启明星/反包/深跌反弹/缩量突破/双针探底/MA金叉等8形态)",
 }
 
 # ── 启动得分专属信号 ──
@@ -187,7 +203,7 @@ SCORE_HEADERS = [
     "价格动量", "涨停邻近", "行业分散", "板块价格",
     "尾盘收益", "尾盘量能", "拥挤度",
     "涨跌幅", "换手率", "量比", "总市值", "成交额",
-    "结构得分", "MA趋势得分",
+    "结构得分", "MA趋势得分", "K线形态得分",
     "综合信号", "综合信号说明", "启动信号", "启动信号说明",
     "短线得分", "中线得分",
 ]
@@ -1009,16 +1025,18 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
     def _load_kline(code):
         if code in _kline_cache:
             return _kline_cache[code]
-        fp = os.path.join(_kline_dir, f"{code}.json")
-        if os.path.exists(fp):
-            try:
-                with open(fp) as f:
-                    data = json.load(f)
-                _kline_cache[code] = data.get("bars", [])
-            except Exception:
-                _kline_cache[code] = []
-        else:
-            _kline_cache[code] = []
+        # Try bare code, then sh./sz. prefix
+        for lookup in (code, f"sh.{code}", f"sz.{code}"):
+            fp = os.path.join(_kline_dir, f"{lookup}.json")
+            if os.path.exists(fp):
+                try:
+                    with open(fp) as f:
+                        data = json.load(f)
+                    _kline_cache[code] = data.get("bars", [])
+                    return _kline_cache[code]
+                except Exception:
+                    continue
+        _kline_cache[code] = []
         return _kline_cache[code]
 
     # ── 体制感知 + 黑天鹅 + 外部情绪 ──
@@ -1214,6 +1232,13 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
 
         # ── ma_trend (5%) K线趋势因子 (MA分析优化) ──
         sub["ma_trend"] = _score_ma_trend(code, _load_kline(code), date_str)
+
+        # ── kline_pattern (6%) K线形态因子 (v3 高精度形态检测) ──
+        if HAS_KLINE_SCORER:
+            kline_result = score_kline_pattern(code, _load_kline(code), date_str)
+            sub["kline_pattern"] = kline_result["score"]
+        else:
+            sub["kline_pattern"] = 0.5
 
         # ── intra_sector (4%) ──
         if industry in sector_groups:
@@ -1481,6 +1506,11 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
                 if pos60k < 0.40 or (align_k <= 1 and close_k < ma5_k):
                     total -= 0.05; comp_sigs.append("P39_ma_bearish")
 
+            # P40: K线形态信号
+            if sub.get("kline_pattern", 0.5) >= 0.75:
+                comp_sigs.append("P40_kline_pattern")
+                total += 0.03  # bonus for strong pattern signal
+
         results.append({
             "代码": code, "名称": name, "最新价": f2, "昨收": s.get("昨收", ""), "行业": industry,
             "综合得分": round(total, 4), "市场体制": regime, "启动得分": round(early, 4),
@@ -1504,6 +1534,7 @@ def score_all_stocks(date_str=None, snapshot_cutoff=None):
             "涨跌幅": f3, "换手率": f8_val, "量比": f10_val, "总市值": mcap_yi, "成交额": f6_val,
             "结构得分": sub.get("structure_score", 0.5),
             "MA趋势得分": sub.get("ma_trend", 0.5),
+            "K线形态得分": sub.get("kline_pattern", 0.5),
             "综合信号": ",".join(comp_sigs),
             "综合信号说明": "; ".join(COMPOSITE_SIGNALS[s] for s in comp_sigs if s in COMPOSITE_SIGNALS),
             "启动信号": ",".join(early_sigs),
