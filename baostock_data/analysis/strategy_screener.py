@@ -388,15 +388,24 @@ def compute_forward_return(df: pd.DataFrame, entry_idx: int, hold: int) -> Optio
 # 主流程
 # ============================================================
 def verify_and_screen(data_dir: str, target_wr: float = 85.0,
-                       today_only: bool = False, top_n: int = 0):
-    csv_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
+                       today_only: bool = False, top_n: int = 0,
+                       sample: int = 500):
+    import random
+    all_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
                        glob(os.path.join(data_dir, "sz.*.csv")))
-    if not csv_files:
+    if not all_files:
         print("错误: 未找到数据文件")
         sys.exit(1)
 
+    # 随机采样
+    if sample > 0 and sample < len(all_files):
+        random.seed(42)
+        csv_files = random.sample(all_files, sample)
+    else:
+        csv_files = all_files
+
     print(f"数据目录: {data_dir}")
-    print(f"可用股票: {len(csv_files)} 只")
+    print(f"可用股票: {len(all_files)} 只, 采样: {len(csv_files)} 只")
     print(f"策略数量: {len(STRATEGIES)} 个")
     print(f"目标胜率: {target_wr}%")
     print()
@@ -541,6 +550,7 @@ def main():
     parser = argparse.ArgumentParser(description="6 策略 K 线选股器")
     parser.add_argument("--date", default="20260702", help="数据日期 YYYYMMDD")
     parser.add_argument("--target", type=float, default=85.0, help="目标胜率")
+    parser.add_argument("--sample", type=int, default=500, help="随机采样数 (0=全部)")
     parser.add_argument("--today", action="store_true", help="仅显示当日信号")
     parser.add_argument("--verify", action="store_true", help="仅验证胜率")
     parser.add_argument("--top", type=int, default=0, help="Top N 推荐")
@@ -558,6 +568,7 @@ def main():
         data_dir, args.target,
         today_only=args.today,
         top_n=args.top,
+        sample=args.sample,
     )
 
     sys.exit(0 if all_pass else 1)
