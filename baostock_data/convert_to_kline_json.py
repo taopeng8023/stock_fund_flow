@@ -3,9 +3,13 @@
 K线数据格式转换: baostock CSV → kline_data JSON
 使 daily_pipeline/score.py 的 _load_kline() 可用
 
+数据源: baostock_data/data/daily/ (不再使用日期子目录)
+
 用法:
-    python baostock_data/convert_to_kline_json.py --date 20260701
-    python baostock_data/convert_to_kline_json.py --date 20260701 --output-dir kline_data
+    python baostock_data/convert_to_kline_json.py
+    python baostock_data/convert_to_kline_json.py --date 20260701  # 仅转换指定日期之后的K线
+    python baostock_data/convert_to_kline_json.py --output-dir kline_data
+    python baostock_data/convert_to_kline_json.py --limit 500
 """
 import argparse
 import json
@@ -15,7 +19,7 @@ from glob import glob
 
 import pandas as pd
 
-from baostock_data.config import BAOSTOCK_DATA_ROOT, KLINE_DATA_DIR
+from baostock_data.config import BAOSTOCK_DATA_ROOT, DAILY_DIR, KLINE_DATA_DIR
 
 COL_MAP = {
     "日期": "date", "开盘": "open", "最高": "high",
@@ -24,8 +28,8 @@ COL_MAP = {
 }
 
 
-def convert_csv_to_bars(filepath: str) -> list[dict]:
-    """Convert single CSV to list of bar dicts."""
+def convert_csv_to_bars(filepath: str, min_date: str = None) -> list[dict]:
+    """Convert single CSV to list of bar dicts. Optionally filter by min_date."""
     try:
         df = pd.read_csv(filepath)
     except Exception:
@@ -35,7 +39,10 @@ def convert_csv_to_bars(filepath: str) -> list[dict]:
     df = df.rename(columns=COL_MAP)
     bars = []
     for _, row in df.iterrows():
-        bar = {"date": str(row["date"])}
+        date_str = str(row["date"])
+        if min_date and date_str < min_date:
+            continue
+        bar = {"date": date_str}
         for key in ("open", "high", "low", "close", "volume"):
             try:
                 bar[key] = float(row[key])
@@ -50,16 +57,19 @@ def convert_csv_to_bars(filepath: str) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description="转换 baostock K线CSV → kline_data JSON")
-    parser.add_argument("--date", required=True, help="数据日期 YYYYMMDD")
+    parser.add_argument("--date", default=None, help="仅转换此日期之后的K线 (可选, YYYYMMDD)")
     parser.add_argument("--output-dir", default=None, help="输出目录 (默认: 项目根/kline_data)")
     parser.add_argument("--limit", type=int, default=0, help="限制转换数量 (0=全部)")
     args = parser.parse_args()
 
-    data_dir = os.path.join(BAOSTOCK_DATA_ROOT, args.date, "daily")
+    data_dir = DAILY_DIR
 
     if not os.path.isdir(data_dir):
         print(f"错误: 数据目录不存在: {data_dir}")
+        print(f"请先运行 fetch_all_history.py 拉取数据")
         sys.exit(1)
+
+    min_date = args.date if args.date else None
 
     output_dir = args.output_dir or KLINE_DATA_DIR
     os.makedirs(output_dir, exist_ok=True)
@@ -76,7 +86,7 @@ def main():
 
     for fp in csv_files:
         code = os.path.splitext(os.path.basename(fp))[0]
-        bars = convert_csv_to_bars(fp)
+        bars = convert_csv_to_bars(fp, min_date)
 
         if len(bars) < 20:
             skipped += 1

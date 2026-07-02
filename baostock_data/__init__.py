@@ -8,7 +8,7 @@ BaoStock 数据模块 — A股历史行情数据获取与存储
   - 季频财务数据
   - 指数日线数据
 
-数据存储: baostock_data/data/YYYYMMDD/
+数据存储: baostock_data/data/<频率子目录>/  (增量追加模式)
 """
 from .fetcher import BaoStockFetcher
 from .config import (
@@ -18,9 +18,15 @@ from .config import (
     KLINE_FIELDS,
     KLINE_HEADERS,
     FREQUENCY_MAP,
+    FREQ_DIR_MAP,
     FREQUENCIES_MINUTE,
     FREQUENCIES_DAILY_AND_ABOVE,
     MINUTE_START_DATE,
+    DAILY_DIR,
+    WEEKLY_DIR,
+    MONTHLY_DIR,
+    INDEX_DIR,
+    STOCK_LIST_PATH,
 )
 
 __all__ = [
@@ -31,7 +37,13 @@ __all__ = [
     "KLINE_FIELDS",
     "KLINE_HEADERS",
     "FREQUENCY_MAP",
+    "FREQ_DIR_MAP",
     "FREQUENCIES_MINUTE",
     "FREQUENCIES_DAILY_AND_ABOVE",
     "MINUTE_START_DATE",
+    "DAILY_DIR",
+    "WEEKLY_DIR",
+    "MONTHLY_DIR",
+    "INDEX_DIR",
+    "STOCK_LIST_PATH",
 ]

@@ -35,7 +35,9 @@ from .config import (
     KLINE_HEADERS_MINUTE,
     FREQUENCIES_DAILY_AND_ABOVE,
     FREQUENCIES_MINUTE,
-    FREQUENCY_MAP,
+    FREQ_DIR_MAP,
+    INDEX_DIR,
+    STOCK_LIST_PATH,
     MINUTE_START_DATE,
     INDEX_CODES,
 )
@@ -130,13 +132,27 @@ class BaoStockFetcher:
     # ============================================================
     # 路径工具
     # ============================================================
-    def get_date_dir(self, date_str=None):
-        """获取日期子目录，自动创建"""
-        if date_str is None:
-            date_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
-        d = os.path.join(self.data_root, date_str)
-        os.makedirs(d, exist_ok=True)
-        return d
+    @staticmethod
+    def _read_last_date(csv_path):
+        """读取 CSV 最后一行的日期，用于增量更新。无文件或空文件返回 None。"""
+        if not os.path.exists(csv_path):
+            return None
+        try:
+            with open(csv_path, "r", encoding="utf-8-sig") as f:
+                # 跳过 header
+                header = f.readline()
+                if not header:
+                    return None
+                last_line = None
+                for line in f:
+                    if line.strip():
+                        last_line = line
+                if last_line:
+                    # 日期是第一列（格式 YYYY-MM-DD 或 YYYYMMDD）
+                    return last_line.split(",")[0].strip()
+        except Exception:
+            pass
+        return None
 
     # ============================================================
     # 日志刷新（强制实时输出，解决后台运行看不到输出的问题）
@@ -177,12 +193,10 @@ class BaoStockFetcher:
         raise RuntimeError("查询股票列表失败: 近10天无有效数据")
 
     def fetch_stock_list(self, date_str=None):
-        """保存全市场股票列表到本地"""
+        """保存全市场股票列表到固定路径"""
         date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
         stocks = self.get_stock_list(date_str)
-        date_dir = self.get_date_dir(date_str)
-        filepath = os.path.join(date_dir, "stock_list.csv")
-        with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+        with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in stocks:
@@ -280,21 +294,24 @@ class BaoStockFetcher:
             }, f)
 
     def _batch_fetch_with_progress(self, stocks, frequency, start_date, end_date,
-                                    adjustflag, fields, headers, date_str, filename,
-                                    flush_interval=100, minute_mode=False):
+                                    adjustflag, fields, headers, out_dir,
+                                    flush_interval=100, minute_mode=False,
+                                    incremental=True):
         """
-        批量拉取 + 增量写入 + 断点续跑 + 实时进度
+        批量拉取 — 每只股票独立 CSV + 增量追加 + 断点续跑 + 实时进度
 
-        核心改进:
-          1. 每 flush_interval 只股票 flush 一次 CSV（不丢数据）
-          2. 进度文件追踪完成/失败，重启自动跳过
-          3. 实时进度条 + ETA
+        改进:
+          1. 每只股票独立 CSV 文件（便于增量更新）
+          2. incremental=True 时：已有 CSV 的股票只拉取新数据追加
+          3. 进度文件追踪完成/失败，重启自动跳过
+          4. 实时进度条 + ETA
         """
         self.login()
-        date_dir = self.get_date_dir(date_str)
-        csv_path = os.path.join(date_dir, f"{filename}.csv")
-        progress_path = os.path.join(date_dir, f"{filename}_progress.json")
-        meta_path = os.path.join(date_dir, f"{filename}_meta.json")
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 进度文件放在输出目录内
+        progress_path = os.path.join(out_dir, f"_progress_{frequency}.json")
+        meta_path = os.path.join(out_dir, f"_meta_{frequency}.json")
 
         # 代码 → 名称 映射
         code_name_map = {s["code"]: s.get("code_name", "") for s in stocks}
@@ -313,68 +330,73 @@ class BaoStockFetcher:
         total_count = len(stocks)
         done_count = len(completed_codes)
         failed_codes = set()
-
-        # 首个 batch 决定是否重写 CSV
-        is_first_write = (done_count == 0)
-        buffer = []
         total_rows = 0
         t0 = time.time()
-        last_flush = time.time()
-
-        # 统计用
-        batch_elapsed = 0.0
-        batch_count = 0
-        last_progress_print = 0  # 上次打印进度的时间戳
+        last_progress_print = 0
 
         for i, stock in enumerate(pending_stocks):
             code = stock["code"]
+            csv_path = os.path.join(out_dir, f"{code}.csv")
+
+            # 增量模式：已有 CSV 时只拉新数据
+            stock_start = start_date
+            is_append = False
+            if incremental and os.path.exists(csv_path):
+                last_date = self._read_last_date(csv_path)
+                if last_date and last_date >= end_date:
+                    # 数据已是最新，跳过
+                    done_count += 1
+                    new_completed = {s["code"] for s in pending_stocks[:i + 1]}
+                    all_completed = completed_codes | new_completed
+                    self._save_progress(progress_path, all_completed, failed_codes, total_rows)
+                    continue
+                if last_date:
+                    # 从最后日期次日开始拉取
+                    stock_start = self._to_bs_date(
+                        (datetime.strptime(last_date.replace("-", "")[:8], "%Y%m%d")
+                         + timedelta(days=1)).strftime("%Y%m%d")
+                    )
+                    is_append = True
+
             try:
                 rows = self._fetch_kline_single(
-                    code, start_date, end_date, frequency, fields, adjustflag
+                    code, stock_start, end_date, frequency, fields, adjustflag
                 )
                 # 注入股票名称
                 name = code_name_map.get(code, "")
                 for row in rows:
                     row.insert(name_insert_pos, name)
-                buffer.extend(rows)
-                if rows:
-                    batch_count += 1
+
+                # 写 CSV（新建或追加）
+                mode = "a" if is_append else "w"
+                with open(csv_path, mode, encoding="utf-8-sig", newline="") as f:
+                    writer = csv.writer(f)
+                    if not is_append:
+                        writer.writerow(headers)
+                    for row in rows:
+                        writer.writerow(row)
+
+                total_rows += len(rows)
             except Exception as e:
                 failed_codes.add(code)
                 self._flush_print(f"\n  ⚠ {code} {stock.get('code_name', '')} 异常: {e}")
                 continue
 
-            # 分批 flush
-            if len(buffer) >= flush_interval or (i + 1) == len(pending_stocks):
-                mode = "w" if is_first_write else "a"
-                with open(csv_path, mode, encoding="utf-8-sig", newline="") as f:
-                    writer = csv.writer(f)
-                    if is_first_write:
-                        writer.writerow(headers)
-                        is_first_write = False
-                    for row in buffer:
-                        writer.writerow(row)
+            done_count += 1
 
-                total_rows += len(buffer)
-                done_count += batch_count
-                batch_elapsed += (time.time() - last_flush)
-                last_flush = time.time()
-
-                # 更新进度
+            # 更新进度（每 flush_interval 只保存一次）
+            if (i + 1) % flush_interval == 0 or (i + 1) == len(pending_stocks):
                 new_completed = {s["code"] for s in pending_stocks[:i + 1]}
                 all_completed = completed_codes | new_completed
                 self._save_progress(progress_path, all_completed, failed_codes, total_rows)
 
-                # 实时进度（每 15 秒输一行，避免刷屏）
-                now_ts = time.time()
-                if now_ts - last_progress_print >= 15:
-                    elapsed = time.time() - t0
-                    progress_line = _progress_bar(done_count, total_count, elapsed, len(failed_codes))
-                    self._flush_print(progress_line)
-                    last_progress_print = now_ts
-
-                buffer = []
-                batch_count = 0
+            # 实时进度（每 15 秒输一行）
+            now_ts = time.time()
+            if now_ts - last_progress_print >= 15:
+                elapsed = time.time() - t0
+                progress_line = _progress_bar(done_count, total_count, elapsed, len(failed_codes))
+                self._flush_print(progress_line)
+                last_progress_print = now_ts
 
             # 分钟线限速
             if minute_mode:
@@ -383,7 +405,7 @@ class BaoStockFetcher:
         # 完成
         elapsed = time.time() - t0
         self._flush_print()  # 换行
-        self._flush_print(f"  ✅ {filename}.csv — {total_rows} 行, "
+        self._flush_print(f"  ✅ {os.path.basename(out_dir)}/ — {total_rows} 行, "
                           f"耗时 {_format_duration(elapsed)}, "
                           f"失败 {len(failed_codes)} 只")
 
@@ -410,21 +432,20 @@ class BaoStockFetcher:
     # ============================================================
     # K线数据 — 日/周/月（全市场批量）
     # ============================================================
-    def fetch_kline_batch(self, date_str=None, frequency="d",
+    def fetch_kline_batch(self, frequency="d",
                           start_date="1990-12-19", end_date=None,
                           adjustflag="2", stocks=None):
-        """批量拉取全市场 K 线（带增量写入+断点续跑）"""
+        """批量拉取全市场 K 线（每只股票独立 CSV，支持增量追加）"""
         if frequency not in FREQUENCIES_DAILY_AND_ABOVE:
             raise ValueError(f"不支持的频率: {frequency}，可选: {FREQUENCIES_DAILY_AND_ABOVE}")
 
         self.login()
-        date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
         end_date = end_date or datetime.now(BJS_TZ).strftime("%Y-%m-%d")
+        out_dir = FREQ_DIR_MAP[frequency]
 
         if stocks is None:
-            stocks = self.get_active_stocks(date_str)
+            stocks = self.get_active_stocks()
 
-        filename = FREQUENCY_MAP[frequency]
         self._flush_print(f"\n{'=' * 50}")
         self._flush_print(f"  {frequency} K线 — {len(stocks)} 只 | {start_date} → {end_date}")
         self._flush_print(f"{'=' * 50}")
@@ -437,8 +458,7 @@ class BaoStockFetcher:
             adjustflag=adjustflag,
             fields=KLINE_FIELDS,
             headers=KLINE_HEADERS,
-            date_str=date_str,
-            filename=filename,
+            out_dir=out_dir,
             flush_interval=200,
             minute_mode=False,
         )
@@ -446,22 +466,21 @@ class BaoStockFetcher:
     # ============================================================
     # K线数据 — 分钟线（全市场批量）
     # ============================================================
-    def fetch_minute_kline(self, date_str=None, freq="5",
+    def fetch_minute_kline(self, freq="5",
                            start_date=None, end_date=None,
                            adjustflag="2", stocks=None):
-        """批量拉取全市场分钟 K 线（带增量写入+断点续跑）"""
+        """批量拉取全市场分钟 K 线（每只股票独立 CSV，支持增量追加）"""
         if freq not in FREQUENCIES_MINUTE:
             raise ValueError(f"不支持的分钟频率: {freq}，可选: {FREQUENCIES_MINUTE}")
 
         self.login()
-        date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
         start_date = start_date or MINUTE_START_DATE
         end_date = end_date or datetime.now(BJS_TZ).strftime("%Y-%m-%d")
+        out_dir = FREQ_DIR_MAP[freq]
 
         if stocks is None:
-            stocks = self.get_active_stocks(date_str)
+            stocks = self.get_active_stocks()
 
-        filename = FREQUENCY_MAP[freq]
         self._flush_print(f"\n{'=' * 50}")
         self._flush_print(f"  {freq}min K线 — {len(stocks)} 只 | {start_date} → {end_date}")
         self._flush_print(f"{'=' * 50}")
@@ -474,8 +493,7 @@ class BaoStockFetcher:
             adjustflag=adjustflag,
             fields=KLINE_FIELDS_MINUTE,
             headers=KLINE_HEADERS_MINUTE,
-            date_str=date_str,
-            filename=filename,
+            out_dir=out_dir,
             flush_interval=100,
             minute_mode=True,
         )
@@ -483,10 +501,9 @@ class BaoStockFetcher:
     # ============================================================
     # 指数数据
     # ============================================================
-    def fetch_index_kline(self, date_str=None, start_date="2006-01-01", end_date=None):
-        """拉取主要指数日线"""
+    def fetch_index_kline(self, start_date="2006-01-01", end_date=None):
+        """拉取主要指数日线（每只指数独立 CSV，增量追加）"""
         self.login()
-        date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
         end_date = end_date or datetime.now(BJS_TZ).strftime("%Y-%m-%d")
 
         fields = ["date", "code", "open", "high", "low", "close", "preclose",
@@ -498,42 +515,62 @@ class BaoStockFetcher:
         self._flush_print(f"  指数日线 — {len(INDEX_CODES)} 只 | {start_date} → {end_date}")
         self._flush_print(f"{'=' * 50}")
 
-        date_dir = self.get_date_dir(date_str)
-        csv_path = os.path.join(date_dir, "index_kline.csv")
+        os.makedirs(INDEX_DIR, exist_ok=True)
+        total_rows = 0
 
-        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
-            for code, name in INDEX_CODES.items():
-                self._flush_print(f"  {code} ({name}) ...", end=" ")
-                rows = self._fetch_kline_single(
-                    code, start_date, end_date, "d", fields, adjustflag="3"
-                )
+        for code, name in INDEX_CODES.items():
+            csv_path = os.path.join(INDEX_DIR, f"{code}.csv")
+
+            # 增量：检查已有数据
+            idx_start = start_date
+            is_append = False
+            if os.path.exists(csv_path):
+                last_date = self._read_last_date(csv_path)
+                if last_date and last_date >= end_date:
+                    self._flush_print(f"  {code} ({name}) ... 已是最新，跳过")
+                    continue
+                if last_date:
+                    idx_start = self._to_bs_date(
+                        (datetime.strptime(last_date.replace("-", "")[:8], "%Y%m%d")
+                         + timedelta(days=1)).strftime("%Y%m%d")
+                    )
+                    is_append = True
+
+            self._flush_print(f"  {code} ({name}) ...", end=" ")
+            rows = self._fetch_kline_single(
+                code, idx_start, end_date, "d", fields, adjustflag="3"
+            )
+
+            mode = "a" if is_append else "w"
+            with open(csv_path, mode, encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                if not is_append:
+                    writer.writerow(headers)
                 for r in rows:
                     r.insert(1, name)
                     writer.writerow(r)
-                self._flush_print(f"{len(rows)} 行")
+            self._flush_print(f"{len(rows)} 行")
+            total_rows += len(rows)
 
+        self._flush_print(f"  ✅ index/ — {total_rows} 行")
         return True
 
     # ============================================================
     # 一键全量拉取
     # ============================================================
-    def fetch_all(self, date_str=None, include_minute=True):
-        """一键拉取全量数据（带增量写入+断点续跑）"""
+    def fetch_all(self, include_minute=True):
+        """一键拉取全量数据（增量追加模式，已有数据自动跳过）"""
         self.login()
-        date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
+        today_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
         self._flush_print(f"\n{'═' * 60}")
-        self._flush_print(f"  BaoStock 全量拉取 — {date_str}")
+        self._flush_print(f"  BaoStock 全量拉取 — {today_str}")
         self._flush_print(f"{'═' * 60}")
 
         # 0. 股票列表（只查一次，复用给后续所有批次）
         self._flush_print(f"\n[0/4] 股票列表")
-        stocks = self.get_active_stocks(date_str)
-        all_stocks = self.get_stock_list(date_str)  # 全类型保存
-        date_dir = self.get_date_dir(date_str)
-        filepath = os.path.join(date_dir, "stock_list.csv")
-        with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+        stocks = self.get_active_stocks()
+        all_stocks = self.get_stock_list()
+        with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in all_stocks:
@@ -543,45 +580,48 @@ class BaoStockFetcher:
 
         # 1. 日线
         self._flush_print(f"\n[1/4] 日线 K线")
-        self.fetch_kline_batch(date_str, frequency="d", stocks=stocks)
+        self.fetch_kline_batch(frequency="d", stocks=stocks)
 
         # 2. 周线 + 月线
         self._flush_print(f"\n[2/4] 周线/月线 + 指数")
-        self.fetch_kline_batch(date_str, frequency="w", stocks=stocks)
-        self.fetch_kline_batch(date_str, frequency="m", stocks=stocks)
-        self.fetch_index_kline(date_str)
+        self.fetch_kline_batch(frequency="w", stocks=stocks)
+        self.fetch_kline_batch(frequency="m", stocks=stocks)
+        self.fetch_index_kline()
 
         # 3. 分钟线
         if include_minute:
             self._flush_print(f"\n[3/4] 分钟线 (5/15/30/60)")
             for freq in FREQUENCIES_MINUTE:
-                self.fetch_minute_kline(date_str, freq=freq, stocks=stocks)
+                self.fetch_minute_kline(freq=freq, stocks=stocks)
 
         self.logout()
         self._flush_print(f"\n{'═' * 60}")
-        self._flush_print(f"  ✅ 全量拉取完成 — {date_str}")
+        self._flush_print(f"  ✅ 全量拉取完成 — {today_str}")
         self._flush_print(f"{'═' * 60}")
 
     # ============================================================
     # 增量更新（当日数据）
     # ============================================================
-    def fetch_incremental(self, date_str=None, days_back=5):
-        """增量拉取最近 N 个交易日的数据（日常更新用）"""
+    def fetch_incremental(self, days_back=5):
+        """增量拉取最近 N 个交易日的数据（日常更新用）
+
+        自动从已有 CSV 的最后一日起追加，不会从头拉取。
+        首次运行会拉取 days_back*2 日历日范围（首次无 CSV 时会拉较多数据）。
+        后续运行只追加缺失的交易日。
+        """
         self.login()
-        date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
+        today_str = datetime.now(BJS_TZ).strftime("%Y%m%d")
         end_date = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
         start_date = (datetime.now(BJS_TZ) - timedelta(days=days_back * 2)).strftime("%Y-%m-%d")
         minute_start = (datetime.now(BJS_TZ) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
         self._flush_print(f"\n{'═' * 60}")
-        self._flush_print(f"  BaoStock 增量更新 — {date_str} (近{days_back}日)")
+        self._flush_print(f"  BaoStock 增量更新 — {today_str} (近{days_back}日)")
         self._flush_print(f"{'═' * 60}")
 
-        stocks = self.get_active_stocks(date_str)
-        all_stocks = self.get_stock_list(date_str)
-        date_dir = self.get_date_dir(date_str)
-        filepath = os.path.join(date_dir, "stock_list.csv")
-        with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+        stocks = self.get_active_stocks()
+        all_stocks = self.get_stock_list()
+        with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in all_stocks:
@@ -589,21 +629,21 @@ class BaoStockFetcher:
         self._flush_print(f"  A股: {len(stocks)} 只")
 
         self._flush_print(f"\n[日线] {start_date} → {end_date}")
-        self.fetch_kline_batch(date_str, frequency="d",
+        self.fetch_kline_batch(frequency="d",
                                start_date=start_date, end_date=end_date,
                                stocks=stocks)
 
         self._flush_print(f"\n[分钟线] {minute_start} → {end_date}")
         for freq in FREQUENCIES_MINUTE:
-            self.fetch_minute_kline(date_str, freq=freq,
+            self.fetch_minute_kline(freq=freq,
                                     start_date=minute_start, end_date=end_date,
                                     stocks=stocks)
 
-        self.fetch_index_kline(date_str, start_date=start_date, end_date=end_date)
+        self.fetch_index_kline(start_date=start_date, end_date=end_date)
 
         self.logout()
         self._flush_print(f"\n{'═' * 60}")
-        self._flush_print(f"  ✅ 增量更新完成 — {date_str}")
+        self._flush_print(f"  ✅ 增量更新完成 — {today_str}")
         self._flush_print(f"{'═' * 60}")
 
 
@@ -612,7 +652,6 @@ class BaoStockFetcher:
 # ============================================================
 if __name__ == "__main__":
     import sys
-    date_str = sys.argv[1] if len(sys.argv) > 1 else None
     with_minute = "--no-minute" not in sys.argv
     with BaoStockFetcher() as f:
-        f.fetch_all(date_str, include_minute=with_minute)
+        f.fetch_all(include_minute=with_minute)

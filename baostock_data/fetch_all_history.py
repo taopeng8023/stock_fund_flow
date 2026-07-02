@@ -119,9 +119,29 @@ def get_stocks():
 # ============================================================
 # 子进程 worker
 # ============================================================
+def _read_last_date(csv_path):
+    """读取 CSV 最后一行的日期，用于增量更新。"""
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            header = f.readline()
+            if not header:
+                return None
+            last_line = None
+            for line in f:
+                if line.strip():
+                    last_line = line
+            if last_line:
+                return last_line.split(",")[0].strip()
+    except Exception:
+        pass
+    return None
+
+
 def _worker_fetch(args):
     """
-    子进程：独立登录 → 逐只拉取 + 更新共享进度 → 写 CSV。
+    子进程：独立登录 → 逐只拉取（增量追加） + 更新共享进度 → 写 CSV。
     每个子进程拥有独立的 baostock 连接，真正并行。
 
     args: (chunk_id, chunk, frequency, start_date, end_date,
@@ -157,13 +177,29 @@ def _worker_fetch(args):
         name = stock["code_name"]
         outpath = os.path.join(outdir, f"{code}.csv")
 
+        # 增量：检查已有数据，只拉新数据
+        stock_start = start_date
+        is_append = False
+        last_date = _read_last_date(outpath)
+        if last_date and last_date >= end_date:
+            # 已是最新，跳过
+            progress_done.value += 1
+            continue
+        if last_date:
+            try:
+                last_dt = datetime.strptime(last_date.replace("-", "")[:8], "%Y%m%d")
+                stock_start = (last_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+            is_append = True
+
         # API 调用（带重试）
         rows = []
         for attempt in range(3):
             try:
                 rs = bs.query_history_k_data_plus(
                     code=code, fields=fields_str,
-                    start_date=start_date, end_date=end_date,
+                    start_date=stock_start, end_date=end_date,
                     frequency=frequency, adjustflag=adjustflag,
                 )
                 if rs.error_code != "0":
@@ -179,16 +215,18 @@ def _worker_fetch(args):
                 except Exception:
                     pass
 
-        # 写 CSV
-        with open(outpath, "w", encoding="utf-8-sig", newline="") as f:
+        # 写 CSV（新建或追加）
+        mode = "a" if is_append else "w"
+        with open(outpath, mode, encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(headers)
+            if not is_append:
+                writer.writerow(headers)
             for row in rows:
                 row.insert(name_insert_pos, name)
                 writer.writerow(row)
                 row_count += 1
 
-        if not rows:
+        if not rows and not is_append:
             failed += 1
 
         # 实时更新共享进度（每只股票）
@@ -207,11 +245,11 @@ def _worker_fetch(args):
 # 多进程批量拉取
 # ============================================================
 def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
-                 fields, headers, date_str, subdir, num_workers, data_root):
-    """多进程拉取，共享进度计数器，实时刷新"""
+                 fields, headers, subdir, num_workers, data_root):
+    """多进程拉取，共享进度计数器，实时刷新。输出到 data_root/<subdir>/。"""
     from multiprocessing import Manager
 
-    outdir = os.path.join(data_root, date_str, subdir)
+    outdir = os.path.join(data_root, subdir)
     os.makedirs(outdir, exist_ok=True)
 
     total = len(stocks)
@@ -283,7 +321,6 @@ def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
 # 主入口
 # ============================================================
 if __name__ == "__main__":
-    date_str = None
     with_minute = True
     num_workers = min(8, os.cpu_count() or 4)  # 默认 = CPU 核数
 
@@ -292,14 +329,16 @@ if __name__ == "__main__":
             with_minute = False
         elif arg.startswith("--workers="):
             num_workers = int(arg.split("=")[1])
+        # 忽略旧的日期参数（向后兼容）
         elif not arg.startswith("--"):
-            date_str = arg
+            pass  # date_str no longer used
 
-    date_str = date_str or now_str()
     end_date = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
+    today_str = now_str()
 
     print("═" * 60, flush=True)
     print(f"  BaoStock 全量历史 K 线（{num_workers} 进程，本机 {os.cpu_count()} 核）", flush=True)
+    print(f"  增量模式：已有数据自动跳过，仅追加新交易日", flush=True)
     print(f"  日/周/月线: 1990-12-19 → {end_date}", flush=True)
     if with_minute:
         print(f"  分钟线: 2019-01-02 → {end_date} (5/15/30/60)", flush=True)
@@ -312,9 +351,8 @@ if __name__ == "__main__":
     # 0. 股票列表
     print("\n[0/3] 获取股票列表", flush=True)
     stocks = get_stocks()
-    date_dir = os.path.join(DATA_ROOT, date_str)
-    os.makedirs(date_dir, exist_ok=True)
-    with open(os.path.join(date_dir, "stock_list.csv"), "w", encoding="utf-8-sig", newline="") as f:
+    os.makedirs(DATA_ROOT, exist_ok=True)
+    with open(os.path.join(DATA_ROOT, "stock_list.csv"), "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["代码", "名称", "类型"])
         for s in stocks:
@@ -324,16 +362,16 @@ if __name__ == "__main__":
     # 1. 日线
     print("\n[1/3] 日线", flush=True)
     run_parallel(stocks, "d", "1990-12-19", end_date, "2",
-                 KLINE_FIELDS, KLINE_HEADERS, date_str, "daily",
+                 KLINE_FIELDS, KLINE_HEADERS, "daily",
                  num_workers, DATA_ROOT)
 
     # 2. 周线 + 月线
     print("\n[2/3] 周线 + 月线", flush=True)
     run_parallel(stocks, "w", "1990-12-19", end_date, "2",
-                 KLINE_FIELDS, KLINE_HEADERS, date_str, "weekly",
+                 KLINE_FIELDS, KLINE_HEADERS, "weekly",
                  num_workers, DATA_ROOT)
     run_parallel(stocks, "m", "1990-12-19", end_date, "2",
-                 KLINE_FIELDS, KLINE_HEADERS, date_str, "monthly",
+                 KLINE_FIELDS, KLINE_HEADERS, "monthly",
                  num_workers, DATA_ROOT)
 
     # 3. 分钟线
@@ -341,10 +379,10 @@ if __name__ == "__main__":
         print("\n[3/3] 分钟线", flush=True)
         for freq in ["5", "15", "30", "60"]:
             run_parallel(stocks, freq, "2019-01-02", end_date, "2",
-                         KLINE_FIELDS_MINUTE, KLINE_HEADERS_MINUTE, date_str,
+                         KLINE_FIELDS_MINUTE, KLINE_HEADERS_MINUTE,
                          f"minute_{freq}", num_workers, DATA_ROOT)
 
-    # 指数（主进程串行，数据量小）
+    # 指数（主进程串行，数据量小，增量追加）
     print("\n[指数]", flush=True)
     if bs_login():
         import baostock as bs
@@ -352,16 +390,33 @@ if __name__ == "__main__":
                        "volume", "amount", "pctChg"]
         idx_headers = ["日期", "代码", "名称", "开盘", "最高", "最低", "收盘", "前收盘",
                         "成交量", "成交额", "涨跌幅"]
-        idx_outdir = os.path.join(date_dir, "index")
+        idx_outdir = os.path.join(DATA_ROOT, "index")
         os.makedirs(idx_outdir, exist_ok=True)
         for code, name in INDEX_CODES.items():
+            outpath = os.path.join(idx_outdir, f"{code}.csv")
+
+            # 增量：检查已有数据
+            idx_start = "2006-01-01"
+            is_append = False
+            last_date = _read_last_date(outpath)
+            if last_date and last_date >= end_date:
+                print(f"    {code} ({name}) ... 已是最新，跳过", flush=True)
+                continue
+            if last_date:
+                try:
+                    last_dt = datetime.strptime(last_date.replace("-", "")[:8], "%Y%m%d")
+                    idx_start = (last_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+                is_append = True
+
             print(f"    {code} ({name}) ...", end=" ", flush=True)
             rows = []
             for attempt in range(3):
                 try:
                     rs = bs.query_history_k_data_plus(
                         code=code, fields=",".join(idx_fields),
-                        start_date="2006-01-01", end_date=end_date,
+                        start_date=idx_start, end_date=end_date,
                         frequency="d", adjustflag="3",
                     )
                     if rs.error_code == "0":
@@ -371,10 +426,11 @@ if __name__ == "__main__":
                 except Exception:
                     time.sleep(1 + attempt)
             cnt = 0
-            outpath = os.path.join(idx_outdir, f"{code}.csv")
-            with open(outpath, "w", encoding="utf-8-sig", newline="") as f:
+            mode = "a" if is_append else "w"
+            with open(outpath, mode, encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(idx_headers)
+                if not is_append:
+                    w.writerow(idx_headers)
                 for row in rows:
                     row.insert(1, name)
                     w.writerow(row)
@@ -383,7 +439,7 @@ if __name__ == "__main__":
         bs.logout()
 
     print(f"\n{'═' * 60}", flush=True)
-    print(f"  ✅ 全量拉取完成 — {date_str}", flush=True)
+    print(f"  ✅ 全量拉取完成 — {today_str}", flush=True)
     print(f"  总耗时: {fmt_duration(time.time() - t_total)}", flush=True)
-    print(f"  数据目录: {date_dir}", flush=True)
+    print(f"  数据目录: {DATA_ROOT}/", flush=True)
     print(f"{'═' * 60}", flush=True)

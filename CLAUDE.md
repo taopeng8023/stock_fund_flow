@@ -19,11 +19,12 @@ A股量化选股系统 — 23因子盘中评分 + 三级买入引擎 + 黑天鹅
 source .venv/bin/activate
 
 # BaoStock K线数据（独立于东方财富数据源）
-python baostock_data/fetch_all_history.py              # 全量历史K线（日/周/月/分钟，多进程并行）
+python baostock_data/fetch_all_history.py              # 全量历史K线（日/周/月/分钟，多进程并行，增量追加）
 python baostock_data/fetch_all_history.py --no-minute  # 仅日/周/月线
-python baostock_data/fetch_today.py                    # 增量更新（近5日）
-python baostock_data/fetch_today.py 20260701           # 指定日期
-python baostock_data/convert_to_kline_json.py --date 20260701  # CSV → kline JSON
+python baostock_data/fetch_today.py                    # 增量更新（近5日，追加到已有CSV）
+python baostock_data/fetch_today.py 3                  # 近3日
+python baostock_data/convert_to_kline_json.py          # CSV → kline JSON
+python baostock_data/convert_to_kline_json.py --limit 500  # 限制数量
 
 # K线形态分析
 python baostock_data/analysis/kline_pattern.py --date 20260701 --stocks 100
@@ -99,7 +100,7 @@ BaoStock API (独立K线数据源)
   baostock_data/fetch_all_history.py  (多进程全量拉取)
         │
         ▼
-  baostock_data/data/YYYYMMDD/daily/*.csv   ← 每只股票独立CSV
+  baostock_data/data/daily/*.csv   ← 每只股票独立CSV（增量追加，无日期子目录）
         │
         ▼
   baostock_data/convert_to_kline_json.py  → baostock_data/kline_data/*.json
@@ -257,18 +258,18 @@ No `requirements.txt` present. Key absent packages (to be installed per enhancem
 ```
 baostock_data/
 ├── __init__.py              # 模块入口，导出 BaoStockFetcher + 配置常量
-├── config.py                # BAOSTOCK_DATA_ROOT, KLINE_DATA_DIR, 频率/字段定义
-├── fetcher.py               # BaoStockFetcher — 断点续跑+分批增量写入+进度条
+├── config.py                # BAOSTOCK_DATA_ROOT, KLINE_DATA_DIR, 频率子目录/字段定义
+├── fetcher.py               # BaoStockFetcher — 断点续跑+增量追加+进度条
 ├── fetch_all_history.py     # 全量历史K线（多进程并行，每只股票独立CSV）
-├── fetch_today.py           # 增量更新（近N日）
+├── fetch_today.py           # 增量更新（近N日，追加到已有CSV）
 ├── convert_to_kline_json.py # CSV → kline_data JSON (兼容 daily_pipeline)
-├── data/                    # BAOSTOCK_DATA_ROOT — 原始CSV
-│   └── YYYYMMDD/
-│       ├── daily/           # sh.600000.csv, sz.000001.csv ...
-│       ├── weekly/          # 周线
-│       ├── monthly/         # 月线
-│       ├── minute_5/ ...    # 分钟线 (5/15/30/60)
-│       └── index/           # 指数日线
+├── data/                    # BAOSTOCK_DATA_ROOT — 原始CSV（无日期子目录）
+│   ├── stock_list.csv       # 全市场股票列表
+│   ├── daily/               # sh.600000.csv, sz.000001.csv ...
+│   ├── weekly/              # 周线
+│   ├── monthly/             # 月线
+│   ├── minute_5/ ...        # 分钟线 (5/15/30/60)
+│   └── index/               # 指数日线
 ├── kline_data/              # KLINE_DATA_DIR — 转换后的JSON
 └── analysis/
     ├── kline_pattern.py     # K线形态涨跌规律统计
@@ -276,8 +277,10 @@ baostock_data/
 ```
 
 Key config constants:
-- `BAOSTOCK_DATA_ROOT` = `baostock_data/data/` — 原始CSV存储
+- `BAOSTOCK_DATA_ROOT` = `baostock_data/data/` — 原始CSV存储（增量追加模式）
 - `KLINE_DATA_DIR` = `baostock_data/kline_data/` — 转换后JSON输出
+- `DAILY_DIR` / `WEEKLY_DIR` / ... / `INDEX_DIR` — 各频率子目录
+- `STOCK_LIST_PATH` = `baostock_data/data/stock_list.csv` — 股票列表固定路径
 
 ### Still TODO
 

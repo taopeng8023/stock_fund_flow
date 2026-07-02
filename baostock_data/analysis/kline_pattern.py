@@ -217,7 +217,7 @@ def main():
     # resolve data directory relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     baostock_root = os.path.dirname(script_dir)  # baostock_data/
-    data_dir = os.path.join(baostock_root, "data", args.date, "daily")
+    data_dir = os.path.join(baostock_root, "data", "daily")
 
     if not os.path.isdir(data_dir):
         print(f"错误: 数据目录不存在: {data_dir}")

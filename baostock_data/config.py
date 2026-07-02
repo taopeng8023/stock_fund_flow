@@ -1,5 +1,7 @@
 """
 BaoStock 数据模块 — 配置常量
+
+数据存储: baostock_data/data/<频率子目录>/  (不再使用日期子目录)
 """
 import os
 from datetime import timezone, timedelta
@@ -11,6 +13,30 @@ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(MODULE_DIR)
 BAOSTOCK_DATA_ROOT = os.path.join(MODULE_DIR, "data")
 KLINE_DATA_DIR = os.path.join(PROJECT_ROOT, "kline_data")
+
+# 频率子目录（直接存储，不再使用日期子目录）
+DAILY_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "daily")
+WEEKLY_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "weekly")
+MONTHLY_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "monthly")
+MINUTE_5_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_5")
+MINUTE_15_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_15")
+MINUTE_30_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_30")
+MINUTE_60_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_60")
+INDEX_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "index")
+
+# 频率 → 目录 映射
+FREQ_DIR_MAP = {
+    "d": DAILY_DIR,
+    "w": WEEKLY_DIR,
+    "m": MONTHLY_DIR,
+    "5": MINUTE_5_DIR,
+    "15": MINUTE_15_DIR,
+    "30": MINUTE_30_DIR,
+    "60": MINUTE_60_DIR,
+}
+
+# 股票列表固定路径
+STOCK_LIST_PATH = os.path.join(BAOSTOCK_DATA_ROOT, "stock_list.csv")
 
 # ============================================================
 # 时区
