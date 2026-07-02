@@ -2,36 +2,34 @@
 """
 板块资金流趋势分析 + 主力潜伏选股
 
-从 data/<date>/ 目录读取多日板块资金流快照，分析：
+从 research_data/<date>/intraday/ 读取盘中快照数据，分析：
   1. 最近 N 天哪些板块持续获得主力资金净流入
   2. 在主力流入板块中，识别主力开始"潜伏"的个股
 
+数据源:
+  - research_data/<date>/intraday/industry_flow_*.csv  → 行业板块资金流快照
+  - research_data/<date>/intraday/fund_flow_*.csv      → 全市场个股资金流（含"行业"字段）
+
 筛选逻辑：
-  - 板块：多日累计主力净流入 > 0，且排名靠前
-  - 个股：主力净流入 > 0 但非极端热门（中低位积累）
-  - 近期趋势加速：5日流向 > 10日流向
-  - 大单资金正流入（机构行为特征）
-  - 换手率适中（非已追涨阶段）
-  - 量比 > 0.8（有交易活跃度但不过热）
+  板块 — 多日累计主力净流入 > 0 + 趋势评分高
+  个股 — 主力温和流入 + 大单支撑 + 换手率适中 + 量比合理 + 趋势加速
 
 用法:
     python sector_flow_analysis.py                     # 分析最近3天
     python sector_flow_analysis.py 5                   # 分析最近5天
-    python sector_flow_analysis.py --date=20260702      # 指定日期
-    python sector_flow_analysis.py --top=10             # 分析前10个板块
+    python sector_flow_analysis.py --top=10            # 分析前10个板块
 """
 import os
 import sys
 import csv
-import json
 import re
 import glob
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Optional, List, Set, Dict, Tuple
+from typing import Optional, List, Dict, Tuple
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA_ROOT = os.path.join(PROJECT_ROOT, "data")
+RESEARCH_ROOT = os.path.join(PROJECT_ROOT, "research_data")
 REPORT_DIR = os.path.join(PROJECT_ROOT, "baostock_data", "analysis")
 
 
@@ -50,157 +48,132 @@ def _to_float(val) -> float:
 def _fmt_yi(val: float) -> str:
     if abs(val) >= 1e8:
         return f"{val / 1e8:+.2f}亿"
-    return f"{val / 1e4:+.2f}万"
+    if abs(val) >= 1e4:
+        return f"{val / 1e4:+.0f}万"
+    return f"{val:+.0f}"
 
 
-def find_data_dates(data_root: str = DATA_ROOT) -> List[str]:
-    """扫描 data/ 目录，找到所有含数据的日期"""
-    if not os.path.isdir(data_root):
+def _fmt_yi_short(val: float) -> str:
+    if abs(val) >= 1e8:
+        return f"{val / 1e8:+.2f}亿"
+    return f"{val / 1e4:+.0f}万"
+
+
+def find_data_dates() -> List[str]:
+    """扫描 research_data/ 找到含 intraday 数据的日期"""
+    if not os.path.isdir(RESEARCH_ROOT):
         return []
-    dates = set()
-    for entry in os.listdir(data_root):
-        entry_path = os.path.join(data_root, entry)
+    dates = []
+    for entry in os.listdir(RESEARCH_ROOT):
+        entry_path = os.path.join(RESEARCH_ROOT, entry)
         if os.path.isdir(entry_path) and re.match(r"^\d{8}$", entry):
-            # 检查是否有板块数据
-            has_data = (
-                os.path.exists(os.path.join(entry_path, "industry_flow.csv")) or
-                os.path.exists(os.path.join(entry_path, "industry_flow_5d.csv")) or
-                bool(glob.glob(os.path.join(entry_path, "industry_flow_*.csv")))
-            )
-            if has_data:
-                dates.add(entry)
+            intraday = os.path.join(entry_path, "intraday")
+            if os.path.isdir(intraday):
+                dates.append(entry)
     return sorted(dates, reverse=True)
 
 
-def find_sector_csv(date_path: str) -> Optional[str]:
-    """找到板块资金流 CSV（优先今日排行，其次最新快照）"""
-    # 优先 industry_flow.csv（今日排行）
-    paths = [
-        os.path.join(date_path, "industry_flow.csv"),
-        os.path.join(date_path, "industry_flow_5d.csv"),
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            return p
-    # 回退到时间戳命名的快照文件
-    pattern = os.path.join(date_path, "industry_flow_*.csv")
-    files = sorted(glob.glob(pattern), reverse=True)
+def find_latest_snapshot(date_str: str, prefix: str) -> Optional[str]:
+    """找到指定日期的最新盘中快照 CSV"""
+    intraday = os.path.join(RESEARCH_ROOT, date_str, "intraday")
+    if not os.path.isdir(intraday):
+        return None
+    pattern = os.path.join(intraday, f"{prefix}_*.csv")
+    # 排除带 (1) 后缀的重复文件
+    files = [f for f in glob.glob(pattern) if "(1)" not in f]
+    # 按时间戳排序，取最晚的
+    files.sort(reverse=True)
     return files[0] if files else None
 
 
-def read_sector_flow(csv_path: str) -> List[dict]:
-    """读取板块资金流 CSV"""
+def read_csv(path: str) -> List[dict]:
+    """读取 CSV，返回 dict 列表"""
     rows = []
-    with open(csv_path, "r", encoding="utf-8-sig") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
     return rows
 
 
-def find_stock_csvs(date_path: str) -> List[str]:
-    """找到板块成分股 CSV 文件"""
-    sectors_dir = os.path.join(date_path, "sectors")
-    if os.path.isdir(sectors_dir):
-        return sorted(glob.glob(os.path.join(sectors_dir, "sector_stocks_*.csv")))
-    return sorted(glob.glob(os.path.join(date_path, "sector_stocks_*.csv")))
-
-
-def read_sector_stocks(csv_path: str) -> Tuple[str, str, List[dict]]:
-    """
-    读取板块成分股 CSV，返回 (板块代码, 板块名称, 股票列表)
-    CSV 文件名格式: sector_stocks_{code}_{date}_{time}.csv
-    """
-    basename = os.path.basename(csv_path)
-    # 尝试从文件名解析板块代码
-    parts = basename.replace(".csv", "").split("_")
-    # sector_stocks_BK0477_20260702_143001.csv → code = BK0477 after "stocks_"
-    code = ""
-    for i, p in enumerate(parts):
-        if p == "stocks" and i + 1 < len(parts):
-            code = parts[i + 1]
-            break
-    if not code and len(parts) >= 3:
-        code = parts[2]  # 回退
-
-    rows = []
-    sector_name = ""
-    with open(csv_path, "r", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-            if not sector_name and row.get("名称"):
-                sector_name = row.get("名称", "")
-    return code, sector_name, rows
-
-
 # ============================================================
-# 板块分析
+# 板块趋势分析
 # ============================================================
 def analyze_sector_trend(dates: List[str], days: int) -> Dict[str, dict]:
     """
     多日板块资金流趋势分析
-    返回: {sector_code: {name, flow_today, flow_5d, flow_10d, trend_score, ...}}
+    每个日期取当日最后一笔快照（收盘价附近）
+    返回: {sector_code: {name, daily_flows, flow_5d, flow_10d, trend_score, ...}}
     """
-    sector_data: Dict[str, dict] = {}  # code → {name, flows_by_date, ...}
+    sector_data: Dict[str, dict] = {}
 
     for date_str in dates[:days]:
-        date_path = os.path.join(DATA_ROOT, date_str)
-        csv_path = find_sector_csv(date_path)
+        csv_path = find_latest_snapshot(date_str, "industry_flow")
         if not csv_path:
             continue
 
-        sectors = read_sector_flow(csv_path)
+        sectors = read_csv(csv_path)
         for s in sectors:
-            code = s.get("代码", s.get("f12", ""))
-            name = s.get("名称", s.get("f14", ""))
-            flow_today = _to_float(s.get("主力净流入", s.get("f62", 0)))
-            flow_5d = _to_float(s.get("5日主力净流入", s.get("f164", 0)))
-            flow_10d = _to_float(s.get("10日主力净流入", s.get("f174", 0)))
-            ratio = _to_float(s.get("主力占比", s.get("f184", 0)))
+            code = s.get("代码", "").strip()
+            name = s.get("名称", "").strip()
+            if not code:
+                continue
+
+            flow = _to_float(s.get("主力净流入", 0))
+            ratio = _to_float(s.get("主力占比", 0))
+            flow_5d = _to_float(s.get("5日主力净流入", 0))
+            flow_10d = _to_float(s.get("10日主力净流入", 0))
+            super_large = _to_float(s.get("超大单净流入", 0))
+            large = _to_float(s.get("大单净流入", 0))
 
             if code not in sector_data:
                 sector_data[code] = {
                     "name": name,
-                    "flows": [],
-                    "flow_5d": flow_5d,
-                    "flow_10d": flow_10d,
-                    "ratio": ratio,
+                    "daily": [],
+                    "flow_5d": 0.0,
+                    "flow_10d": 0.0,
+                    "ratio": 0.0,
+                    "super_large": 0.0,
+                    "large": 0.0,
                 }
-            sector_data[code]["flows"].append((date_str, flow_today))
-            # 用最新数据更新 5d/10d
-            if flow_5d != 0:
+            sector_data[code]["daily"].append((date_str, flow))
+            if abs(flow_5d) > abs(sector_data[code]["flow_5d"]):
                 sector_data[code]["flow_5d"] = flow_5d
-            if flow_10d != 0:
+            if abs(flow_10d) > abs(sector_data[code]["flow_10d"]):
                 sector_data[code]["flow_10d"] = flow_10d
-            if ratio != 0:
+            if abs(ratio) > abs(sector_data[code]["ratio"]):
                 sector_data[code]["ratio"] = ratio
+                sector_data[code]["super_large"] = super_large
+                sector_data[code]["large"] = large
 
-    # 计算评分
+    # 计算趋势评分
+    all_flows = [sum(f for _, f in d["daily"]) for d in sector_data.values()]
+    max_abs_flow = max(abs(v) for v in all_flows) if all_flows else 1.0
+    all_accels = [d["flow_5d"] - d["flow_10d"] for d in sector_data.values()]
+    max_abs_accel = max(abs(v) for v in all_accels) if all_accels else 1.0
+
     for code, data in sector_data.items():
-        flows = [f for _, f in data["flows"]]
+        flows = [f for _, f in data["daily"]]
         cumulative = sum(flows)
-        avg_daily = cumulative / len(flows) if flows else 0
+        n_days = len(flows)
         consecutive_pos = sum(1 for f in flows if f > 0)
-        trend_accel = data["flow_5d"] - data["flow_10d"]  # 5日 > 10日 = 加速
+        trend_accel = data["flow_5d"] - data["flow_10d"]
 
-        # 趋势评分 (0-100)
+        # 评分 (0-100): 累计40% + 连续性30% + 加速30%
         score = 0.0
-        # 累计流入 (40%)
-        max_flow = max(abs(cumulative) for d in sector_data.values() if abs(cumulative) > 0)
-        score += (cumulative / max_flow) * 40 if max_flow > 0 else 0
-        # 连续流入天数 (30%)
-        if len(flows) > 0:
-            score += (consecutive_pos / len(flows)) * 30
-        # 趋势加速 (30%)
-        max_accel = max(abs(s["flow_5d"] - s["flow_10d"]) for s in sector_data.values())
-        score += (trend_accel / max_accel) * 30 if max_accel > 0 else 0
+        if max_abs_flow > 0:
+            score += (cumulative / max_abs_flow) * 40
+        if n_days > 0:
+            score += (consecutive_pos / n_days) * 30
+        if max_abs_accel > 0:
+            score += (trend_accel / max_abs_accel) * 30
 
-        data["cumulative_flow"] = cumulative
-        data["avg_daily_flow"] = avg_daily
-        data["consecutive_pos_days"] = consecutive_pos
-        data["trend_accel"] = trend_accel
-        data["trend_score"] = round(score, 1)
+        data["cumulative"] = cumulative
+        data["avg_daily"] = cumulative / n_days if n_days else 0
+        data["consecutive"] = consecutive_pos
+        data["accel"] = trend_accel
+        data["score"] = round(score, 1)
+        data["n_days"] = n_days
 
     return sector_data
 
@@ -208,158 +181,201 @@ def analyze_sector_trend(dates: List[str], days: int) -> Dict[str, dict]:
 # ============================================================
 # 潜伏股票筛选
 # ============================================================
-SNEAK_CRITERIA = {
-    "main_flow_min": 100e4,       # 主力净流入 > 100万
-    "main_flow_max_ratio": 20,     # 主力占比 < 20%（非追涨）
-    "large_order_min": 50e4,       # 大单净流入 > 50万
-    "turnover_max": 8.0,           # 换手率 < 8%（非过热）
-    "turnover_min": 0.5,           # 换手率 > 0.5%（有活跃度）
-    "volume_ratio_min": 0.8,       # 量比 > 0.8
-    "change_max": 9.0,             # 涨跌幅 < 9%（非涨停追板）
-    "change_min": -3.0,            # 涨跌幅 > -3%（排除大跌股）
-}
+def screen_sneak_stocks(
+    sector_data: Dict[str, dict],
+    dates: List[str],
+    days: int,
+    top_n_sectors: int = 5,
+) -> List[dict]:
+    """
+    在主力流入板块中，从 fund_flow 快照筛选潜伏个股
+
+    使用最新日期的全市场 fund_flow 快照，
+    按"行业"字段匹配股票到 Top 板块
+    """
+    # 1. 取当日 fund_flow 快照
+    if not dates:
+        return []
+    latest_date = dates[0]
+    fund_csv = find_latest_snapshot(latest_date, "fund_flow")
+    if not fund_csv:
+        print(f"  ⚠ 未找到 fund_flow 快照 ({latest_date})", flush=True)
+        return []
+
+    all_stocks = read_csv(fund_csv)
+    print(f"  读取 {len(all_stocks)} 只个股数据 ({os.path.basename(fund_csv)})", flush=True)
+
+    # 2. Top N 流入板块
+    ranked_sectors = sorted(
+        sector_data.items(),
+        key=lambda x: x[1].get("score", 0),
+        reverse=True,
+    )
+    # 过滤：累计流入 > 0 且至少有数据
+    top_sectors = [
+        (code, data) for code, data in ranked_sectors
+        if data.get("cumulative", 0) > 0 and data.get("n_days", 0) > 0
+    ][:top_n_sectors]
+
+    print(f"\n  Top {len(top_sectors)} 流入板块:", flush=True)
+    for code, data in top_sectors:
+        print(f"    {data['name']}({code}) 累计{_fmt_yi(data['cumulative'])} "
+              f"评分{data['score']:.0f}", flush=True)
+
+    # 3. 按行业名称索引股票
+    sector_stocks: Dict[str, List[dict]] = defaultdict(list)
+    for s in all_stocks:
+        industry = s.get("行业", "").strip()
+        if industry:
+            sector_stocks[industry].append(s)
+
+    # 4. 在 Top 板块中逐只评分
+    all_candidates = []
+    for code, sdata in top_sectors:
+        sector_name = sdata["name"]
+        stocks = sector_stocks.get(sector_name, [])
+        if not stocks:
+            # 模糊匹配
+            for ind_name, ind_stocks in sector_stocks.items():
+                if sector_name in ind_name or ind_name in sector_name:
+                    stocks = ind_stocks
+                    break
+
+        if not stocks:
+            print(f"    {sector_name}: 无匹配个股", flush=True)
+            continue
+
+        print(f"\n  [{sector_name}] {len(stocks)} 只成分股，逐只评分 ...", flush=True)
+
+        scored = []
+        for stock in stocks:
+            result = _score_stock(stock, sector_name)
+            if result["sneak_score"] > 0:
+                scored.append(result)
+
+        scored.sort(key=lambda x: x["sneak_score"], reverse=True)
+
+        # 板块内 Top 8
+        for s in scored[:8]:
+            print(f"    {s['code']} {s['name']:<8s} "
+                  f"评分{s['sneak_score']:.0f} "
+                  f"主力{s['main_flow_yi']:.2f}亿 "
+                  f"换手{s['turnover']:.1f}% "
+                  f"涨跌{s['change_pct']:+.1f}%",
+                  flush=True)
+
+        all_candidates.extend(scored)
+
+    all_candidates.sort(key=lambda x: x["sneak_score"], reverse=True)
+    return all_candidates
 
 
-def score_sneak_stock(stock: dict, sector_name: str) -> Dict:
-    """
-    评估单只股票的"潜伏"特征
-    返回: {code, name, score, signals, reasons}
-    """
-    code = stock.get("代码", stock.get("f12", ""))
-    name = stock.get("名称", stock.get("f14", ""))
-    main_flow = _to_float(stock.get("主力净流入", stock.get("f62", 0)))
-    main_ratio = _to_float(stock.get("主力占比%", stock.get("f184", 0)))
-    super_large_flow = _to_float(stock.get("超大单净流入", stock.get("f66", 0)))
-    large_flow = _to_float(stock.get("大单净流入", stock.get("f72", 0)))
-    turnover = _to_float(stock.get("换手率%", stock.get("f8", 0)))
-    volume_ratio = _to_float(stock.get("量比", stock.get("f10", 0)))
-    change_pct = _to_float(stock.get("涨跌幅%", stock.get("f3", 0)))
-    market_cap = _to_float(stock.get("总市值", stock.get("f20", 0)))
-    flow_5d = _to_float(stock.get("5日主力净流入", stock.get("f164", 0)))
-    flow_10d = _to_float(stock.get("10日主力净流入", stock.get("f174", 0)))
-    rank_5d = stock.get("5日排名", stock.get("_rank_5d", ""))
-    rank_10d = stock.get("10日排名", stock.get("_rank_10d", ""))
+def _score_stock(stock: dict, sector_name: str) -> dict:
+    """单只股票的潜伏评分 (0-100)"""
+    code = stock.get("代码", "").strip()
+    name = stock.get("名称", "").strip()
+    main_flow = _to_float(stock.get("主力净流入", 0))
+    main_ratio = _to_float(stock.get("主力占比", 0))
+    super_large = _to_float(stock.get("超大单净流入", 0))
+    large_flow = _to_float(stock.get("大单净流入", 0))
+    mid_flow = _to_float(stock.get("中单净流入", 0))
+    small_flow = _to_float(stock.get("小单净流入", 0))
+    turnover = _to_float(stock.get("换手率", 0))
+    volume_ratio = _to_float(stock.get("量比", 0))
+    change_pct = _to_float(stock.get("涨跌幅", 0))
+    market_cap = _to_float(stock.get("总市值", 0))
+    flow_5d = _to_float(stock.get("5日主力净流入", 0))
+    flow_10d = _to_float(stock.get("10日主力净流入", 0))
+    margin_net = _to_float(stock.get("融资净买入", 0))
+    total_large = super_large + large_flow
 
     signals = []
     score = 0.0
 
-    # 1. 主力净流入适中 (0-20)
-    c = SNEAK_CRITERIA
-    if main_flow > c["main_flow_min"] and main_ratio < c["main_flow_max_ratio"]:
-        signals.append(f"主力流入{_fmt_yi(main_flow)} 占比{main_ratio:.1f}% → 有资金但非热门")
-        score += 20
+    # 1. 主力净流入适中 (20分) — 有资金但非极端
+    if main_flow > 100e4 and main_ratio > 0:
+        signals.append(f"主力净流入{_fmt_yi(main_flow)} 占比{main_ratio:.1f}%")
+        score += 12
+        # 占比适中加分（非涨停热门）
+        if main_ratio < 20:
+            score += 8
+            signals[-1] += " → 温和流入"
+        else:
+            signals[-1] += " → 注意：占比偏高"
 
-    # 2. 大单 + 超大单正流入 (0-25)
-    total_large = super_large_flow + large_flow
-    if total_large > c["large_order_min"]:
-        signals.append(f"大单+超大单净流入{_fmt_yi(total_large)} → 机构行为特征")
-        score += 25
-
-    # 3. 换手率适中 (0-20)
-    if c["turnover_min"] < turnover < c["turnover_max"]:
-        signals.append(f"换手率{turnover:.1f}% → 活跃但未过热")
-        score += 20
-    elif turnover > c["turnover_max"]:
-        signals.append(f"换手率{turnover:.1f}%过高 → 可能已追涨")
-        score -= 10
-
-    # 4. 量比合理 (0-15)
-    if volume_ratio > c["volume_ratio_min"]:
-        signals.append(f"量比{volume_ratio:.1f} → 交投活跃")
+    # 2. 大单+超大单正流入 (25分) — 机构行为
+    if total_large > 50e4:
+        signals.append(f"大单+超大单{_fmt_yi(total_large)} → 机构特征")
         score += 15
+        if super_large > 0 and large_flow > 0:
+            score += 10
+            signals[-1] += "（双单支撑）"
+    elif total_large > 0:
+        score += 5
 
-    # 5. 涨跌幅合理 (0-10)
-    if c["change_min"] < change_pct < c["change_max"]:
-        signals.append(f"涨跌{change_pct:+.2f}% → 温和上涨")
+    # 3. 换手率适中 (20分)
+    if 0.5 < turnover < 8:
+        signals.append(f"换手率{turnover:.1f}% → 活跃适中")
+        score += 12
+        if 1 < turnover < 5:
+            score += 8
+    elif turnover >= 8:
+        signals.append(f"换手率{turnover:.1f}%过高 → 注意风险")
+        score -= 5
+    else:
+        signals.append(f"换手率{turnover:.2f}%过低 → 缺乏活跃度")
+
+    # 4. 量比合理 (15分)
+    if volume_ratio > 0.8:
+        signals.append(f"量比{volume_ratio:.1f}")
         score += 10
+        if 1.0 < volume_ratio < 3.0:
+            score += 5
+            signals[-1] += " → 温和放量"
 
-    # 6. 趋势加速：5日 > 10日 (0-10)
+    # 5. 涨跌幅温和 (10分)
+    if -3 < change_pct < 9:
+        signals.append(f"涨跌{change_pct:+.1f}%")
+        score += 5
+        if 0 < change_pct < 5:
+            score += 5
+            signals[-1] += " → 温和上涨"
+
+    # 6. 趋势加速 5d > 10d (10分)
     if flow_5d > flow_10d and flow_5d > 0:
-        signals.append(f"5日流入{_fmt_yi(flow_5d)} > 10日{_fmt_yi(flow_10d)} → 近期加速")
-        score += 10
+        signals.append(f"5日{_fmt_yi(flow_5d)} > 10日{_fmt_yi(flow_10d)} → 趋势加速")
+        score += 6
+        if flow_5d > flow_10d * 1.5:
+            score += 4
+            signals[-1] += "（显著）"
+
+    # 7. 融资净买入 > 0 — 杠杆资金也看好
+    if margin_net > 0:
+        score += 3
+        # 不添加信号，静默加分
+
+    # 8. 中单流出 + 主力流入 = 散户在卖、主力在接
+    if main_flow > 0 and mid_flow < 0:
+        score += 5
+        signals.append(f"中单流出示弱{_fmt_yi(mid_flow)} → 散户卖出，主力承接")
 
     return {
         "code": code,
         "name": name,
         "sector": sector_name,
         "main_flow_yi": round(main_flow / 1e8, 2),
-        "main_ratio": round(main_ratio, 2),
+        "main_ratio": round(main_ratio, 1),
         "large_flow_yi": round(total_large / 1e8, 2),
-        "turnover": round(turnover, 2),
-        "volume_ratio": round(volume_ratio, 2),
-        "change_pct": round(change_pct, 2),
-        "market_cap_yi": round(market_cap / 1e8, 2),
+        "turnover": round(turnover, 1),
+        "volume_ratio": round(volume_ratio, 1),
+        "change_pct": round(change_pct, 1),
+        "market_cap_yi": round(market_cap / 1e8, 0),
         "flow_5d_yi": round(flow_5d / 1e8, 2),
         "flow_10d_yi": round(flow_10d / 1e8, 2),
-        "rank_5d": rank_5d,
-        "sneak_score": round(score, 1),
+        "margin_yi": round(margin_net / 1e8, 2),
+        "sneak_score": round(min(score, 100), 1),
         "signals": signals,
     }
-
-
-def screen_sneak_stocks(
-    sector_data: Dict[str, dict],
-    date_path: str,
-    top_n_sectors: int = 5,
-    top_n_stocks: int = 20,
-) -> List[dict]:
-    """
-    在主力流入的板块中筛选潜伏股票
-    """
-    # 1. 找到Top流入板块
-    ranked_sectors = sorted(
-        sector_data.items(),
-        key=lambda x: x[1].get("trend_score", 0),
-        reverse=True,
-    )[:top_n_sectors]
-
-    all_candidates = []
-
-    for code, sdata in ranked_sectors:
-        sector_name = sdata["name"]
-        cumulative = sdata.get("cumulative_flow", 0)
-        if cumulative <= 0:
-            continue
-
-        print(f"\n  扫描板块: {sector_name}({code}) "
-              f"累计流入{_fmt_yi(cumulative)} "
-              f"评分{sdata.get('trend_score', 0):.0f}",
-              flush=True)
-
-        # 2. 读取该板块成分股
-        stock_csvs = find_stock_csvs(date_path)
-        stocks_found = []
-
-        for stock_csv in stock_csvs:
-            s_code, s_name, stocks = read_sector_stocks(stock_csv)
-            if s_code == code or sector_name in s_name:
-                stocks_found = stocks
-                break
-
-        if not stocks_found:
-            print(f"    未找到成分股数据", flush=True)
-            continue
-
-        # 3. 逐只评分
-        scored = []
-        for stock in stocks_found:
-            result = score_sneak_stock(stock, sector_name)
-            if result["sneak_score"] > 0:
-                scored.append(result)
-
-        scored.sort(key=lambda x: x["sneak_score"], reverse=True)
-        for s in scored[:5]:
-            print(f"    {s['code']} {s['name']} "
-                  f"评分{s['sneak_score']:.0f} "
-                  f"主力流入{s['main_flow_yi']:.2f}亿 "
-                  f"大单{s['large_flow_yi']:.2f}亿",
-                  flush=True)
-
-        all_candidates.extend(scored)
-
-    # 综合排序
-    all_candidates.sort(key=lambda x: x["sneak_score"], reverse=True)
-    return all_candidates[:top_n_stocks]
 
 
 # ============================================================
@@ -372,83 +388,88 @@ def generate_report(
     days: int,
 ) -> str:
     """生成 Markdown 分析报告"""
-    today = datetime.now().strftime("%Y%m%d")
     lines = []
+    analyzed_dates = dates[:days]
 
-    lines.append(f"# 板块资金流 + 主力潜伏分析报告")
+    lines.append("# 板块资金流 + 主力潜伏分析报告")
     lines.append(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"**分析范围**: 近 {len(dates[:days])} 个交易日 ({', '.join(dates[:days])})")
+    lines.append(f"**分析范围**: {len(analyzed_dates)} 个交易日")
+    lines.append(f"**日期**: {', '.join(analyzed_dates)}")
     lines.append("")
 
     # ── 一、板块资金流趋势 ──
-    lines.append("## 一、板块资金流趋势 Top 10")
+    lines.append("## 一、板块资金流趋势 Top 15")
     lines.append("")
-    lines.append("| 排名 | 板块 | 代码 | 累计流入 | 日均流入 | 5日流入 | 10日流入 | 趋势加速 | 连续流入 | 趋势评分 |")
-    lines.append("|------|------|------|----------|----------|---------|----------|----------|----------|----------|")
+    lines.append("| # | 板块 | 代码 | 累计流入 | 日均流入 | 5日流入 | 10日流入 | 趋势 | 连续流入 | 评分 |")
+    lines.append("|---|------|------|----------|----------|---------|----------|------|----------|------|")
 
     ranked = sorted(
         sector_data.items(),
-        key=lambda x: x[1].get("trend_score", 0),
+        key=lambda x: x[1].get("score", 0),
         reverse=True,
-    )[:10]
+    )[:15]
 
     for i, (code, data) in enumerate(ranked, 1):
-        accel = data.get("trend_accel", 0)
-        accel_str = "🟢加速" if accel > 0 else ("🔴减速" if accel < 0 else "→")
+        accel = data.get("accel", 0)
+        if accel > 1e8:
+            accel_str = "🟢加速"
+        elif accel < -1e8:
+            accel_str = "🔴减速"
+        else:
+            accel_str = "→ 持平"
         lines.append(
             f"| {i} | {data['name']} | {code} | "
-            f"{_fmt_yi(data.get('cumulative_flow', 0))} | "
-            f"{_fmt_yi(data.get('avg_daily_flow', 0))} | "
-            f"{_fmt_yi(data.get('flow_5d', 0))} | "
-            f"{_fmt_yi(data.get('flow_10d', 0))} | "
+            f"{_fmt_yi_short(data.get('cumulative', 0))} | "
+            f"{_fmt_yi_short(data.get('avg_daily', 0))} | "
+            f"{_fmt_yi_short(data.get('flow_5d', 0))} | "
+            f"{_fmt_yi_short(data.get('flow_10d', 0))} | "
             f"{accel_str} | "
-            f"{data.get('consecutive_pos_days', 0)}/{len(dates[:days])}天 | "
-            f"{data.get('trend_score', 0):.0f} |"
+            f"{data.get('consecutive', 0)}/{data.get('n_days', 0)}天 | "
+            f"**{data.get('score', 0):.0f}** |"
         )
-
     lines.append("")
 
-    # ── 二、主力潜伏个股 ──
+    # ── 二、主力潜伏候选 ──
     lines.append("## 二、主力潜伏候选股票")
     lines.append("")
-    lines.append("**筛选逻辑**：板块主力持续流入 + 个股主力温和流入（非热门追涨）+ 大单资金正流入 + 换手率适中 + 量比合理")
+    lines.append("> **筛选逻辑**：板块主力持续流入 + 个股主力温和流入 + 大单支撑 + 换手适中 + 量比合理 + 趋势加速")
     lines.append("")
 
     if candidates:
-        lines.append("| # | 代码 | 名称 | 板块 | 主力流入(亿) | 占比% | 大单(亿) | 换手% | 量比 | 涨跌% | 市值(亿) | 5日(亿) | 10日(亿) | 潜伏评分 |")
-        lines.append("|---|------|------|------|-------------|-------|---------|-------|------|-------|----------|---------|----------|----------|")
+        top = candidates[:30]
+        lines.append("| # | 代码 | 名称 | 板块 | 主力(亿) | 占比% | 大单(亿) | 换手% | 量比 | 涨跌% | 5日(亿) | 10日(亿) | 融资(亿) | 评分 |")
+        lines.append("|---|------|------|------|----------|-------|----------|-------|------|-------|---------|----------|----------|------|")
 
-        for i, c in enumerate(candidates, 1):
+        for i, c in enumerate(top, 1):
             lines.append(
                 f"| {i} | {c['code']} | {c['name']} | {c['sector']} | "
                 f"{c['main_flow_yi']:.2f} | {c['main_ratio']:.1f} | {c['large_flow_yi']:.2f} | "
                 f"{c['turnover']:.1f} | {c['volume_ratio']:.1f} | {c['change_pct']:+.1f} | "
-                f"{c['market_cap_yi']:.1f} | {c['flow_5d_yi']:.2f} | {c['flow_10d_yi']:.2f} | "
+                f"{c['flow_5d_yi']:.2f} | {c['flow_10d_yi']:.2f} | {c['margin_yi']:.2f} | "
                 f"**{c['sneak_score']:.0f}** |"
             )
     else:
-        lines.append("> ⚠ 未找到符合条件的潜伏股票。请确保已运行数据采集：")
-        lines.append("> ```bash")
-        lines.append("> python -m data_collector.main --date=20260702")
-        lines.append("> ```")
+        lines.append("> ⚠ 未找到符合条件的潜伏股票")
 
     lines.append("")
 
-    # ── 三、信号详情 ──
-    lines.append("## 三、候选股票信号详情")
-    lines.append("")
-
-    for i, c in enumerate(candidates[:10], 1):
-        lines.append(f"### {i}. {c['code']} {c['name']} ({c['sector']}) — 评分 {c['sneak_score']:.0f}")
+    # ── 三、Top 10 信号详情 ──
+    if candidates:
+        lines.append("## 三、Top 10 股票信号详情")
         lines.append("")
-        for sig in c["signals"]:
-            lines.append(f"- ✅ {sig}")
-        lines.append("")
+        for i, c in enumerate(candidates[:10], 1):
+            lines.append(f"### {i}. {c['code']} {c['name']} — {c['sector']} (评分 {c['sneak_score']:.0f})")
+            lines.append(f"主力流入 {c['main_flow_yi']:.2f}亿 | 占比 {c['main_ratio']:.1f}% | "
+                         f"大单 {c['large_flow_yi']:.2f}亿 | 换手 {c['turnover']:.1f}% | "
+                         f"涨跌 {c['change_pct']:+.1f}%")
+            lines.append("")
+            for sig in c["signals"]:
+                lines.append(f"- ✅ {sig}")
+            lines.append("")
 
-    # ── 数据状态 ──
     lines.append("---")
-    lines.append(f"*数据源: {DATA_ROOT}/*")
-    lines.append(f"*分析日期: {len(dates)} 个交易日有数据*")
+    lines.append(f"*数据源: {RESEARCH_ROOT}/*/intraday/*")
+    lines.append(f"*分析日期数: {len(dates)} 个交易日可用*")
     lines.append("")
 
     return "\n".join(lines)
@@ -460,86 +481,71 @@ def generate_report(
 def main() -> None:
     days = 3
     top_n = 5
-    date_str = None
 
+    global RESEARCH_ROOT
     for arg in sys.argv[1:]:
         if arg.isdigit():
             days = int(arg)
-        elif arg.startswith("--date="):
-            date_str = arg.split("=")[1]
         elif arg.startswith("--top="):
             top_n = int(arg.split("=")[1])
+        elif arg.startswith("--data-root="):
+            RESEARCH_ROOT = arg.split("=", 1)[1]
 
     print("═" * 60, flush=True)
     print(f"  板块资金流 + 主力潜伏分析", flush=True)
+    print(f"  数据源: {RESEARCH_ROOT}", flush=True)
     print("═" * 60, flush=True)
 
-    # 1. 扫描数据日期
+    # 1. 扫描数据
     dates = find_data_dates()
     if not dates:
-        print("\n⚠ 未找到板块资金流数据！", flush=True)
-        print(f"\n请先运行数据采集命令:", flush=True)
-        print(f"  python -m data_collector.main --date={datetime.now().strftime('%Y%m%d')}", flush=True)
-        print(f"\n数据将保存到: {DATA_ROOT}/<date>/industry_flow*.csv", flush=True)
-        # 不退出，生成空报告模板
-        sector_data = {}
-        candidates = []
-    else:
-        print(f"\n[数据扫描] 找到 {len(dates)} 个有效日期: {', '.join(dates[:min(5, len(dates))])}",
-              flush=True)
+        print("\n⚠ 未找到 research_data/<date>/intraday/ 数据！")
+        print("请先运行盘中数据采集。")
+        return
 
-        # 2. 板块趋势分析
-        print(f"\n[板块分析] 近 {min(days, len(dates))} 天资金流趋势 ...", flush=True)
-        sector_data = analyze_sector_trend(dates, min(days, len(dates)))
+    print(f"\n[数据] {len(dates)} 个交易日: {', '.join(dates[:min(6, len(dates))])}", flush=True)
+    analyze_days = min(days, len(dates))
 
-        if sector_data:
-            ranked = sorted(
-                sector_data.items(),
-                key=lambda x: x[1].get("trend_score", 0),
-                reverse=True,
-            )
-            print(f"\n 🏆 Top 5 流入板块:")
-            for i, (code, data) in enumerate(ranked[:5], 1):
-                print(f"  {i}. {data['name']}({code}) "
-                      f"累计{_fmt_yi(data.get('cumulative_flow', 0))} "
-                      f"评分{data.get('trend_score', 0):.0f}",
-                      flush=True)
-        else:
-            print("  ⚠ 未能解析板块数据", flush=True)
+    # 2. 板块趋势
+    print(f"\n[板块] 分析近 {analyze_days} 天趋势 ...", flush=True)
+    sector_data = analyze_sector_trend(dates, analyze_days)
 
-        # 3. 潜伏个股筛选
-        print(f"\n[个股筛选] 在Top {top_n} 流入板块中筛选潜伏股票 ...", flush=True)
-        candidates = []
-        if date_str:
-            target_path = os.path.join(DATA_ROOT, date_str)
-        elif dates:
-            target_path = os.path.join(DATA_ROOT, dates[0])
-        else:
-            target_path = ""
+    if sector_data:
+        ranked = sorted(sector_data.items(), key=lambda x: x[1].get("score", 0), reverse=True)
+        print(f"\n  🏆 Top 流入板块:", flush=True)
+        for i, (code, data) in enumerate(ranked[:5], 1):
+            print(f"  {i}. {data['name']}({code}) "
+                  f"累计{_fmt_yi(data['cumulative'])} "
+                  f"评分{data['score']:.0f}",
+                  flush=True)
 
-        if sector_data and target_path and os.path.isdir(target_path):
-            candidates = screen_sneak_stocks(
-                sector_data, target_path,
-                top_n_sectors=top_n, top_n_stocks=20,
-            )
-            print(f"\n 共筛选出 {len(candidates)} 只潜伏候选", flush=True)
-        else:
-            print("  ⚠ 无可用数据，跳过个股筛选", flush=True)
+    # 3. 潜伏选股
+    print(f"\n[选股] 在Top {top_n}板块中筛选潜伏 ...", flush=True)
+    candidates = screen_sneak_stocks(sector_data, dates, analyze_days, top_n_sectors=top_n)
+    print(f"\n  共 {len(candidates)} 只潜伏候选", flush=True)
 
-    # 4. 生成报告
-    print(f"\n[报告] 生成 Markdown 报告 ...", flush=True)
-    report = generate_report(sector_data, candidates, dates, days)
+    # 4. 报告
+    print(f"\n[报告] 生成中 ...", flush=True)
+    report = generate_report(sector_data, candidates, dates, analyze_days)
     os.makedirs(REPORT_DIR, exist_ok=True)
-    report_path = os.path.join(
-        REPORT_DIR,
-        f"SECTOR_FLOW_REPORT_{datetime.now().strftime('%Y%m%d')}.md",
-    )
+
+    # 清理旧报告，只保留最新
+    old_reports = sorted(glob.glob(os.path.join(REPORT_DIR, "SECTOR_FLOW_REPORT_*.md")))
+    for old in old_reports[:-1]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+
+    report_path = os.path.join(REPORT_DIR, f"SECTOR_FLOW_REPORT_{datetime.now().strftime('%Y%m%d')}.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
-    print(f"\n✅ 报告已保存: {report_path}", flush=True)
+    print(f"  ✅ {report_path}", flush=True)
 
-    # 5. 输出摘要
-    print(report.split("---")[0] if "---" in report else report[:2000])
+    # 摘要输出
+    print(f"\n{'═' * 60}")
+    print(report[:3000])
+    print(f"{'═' * 60}")
 
 
 if __name__ == "__main__":
