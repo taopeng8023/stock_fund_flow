@@ -490,6 +490,8 @@ def main() -> None:
             top_n = int(arg.split("=")[1])
         elif arg.startswith("--data-root="):
             RESEARCH_ROOT = arg.split("=", 1)[1]
+        elif arg.startswith("--data_root="):
+            RESEARCH_ROOT = arg.split("=", 1)[1]
 
     print("═" * 60, flush=True)
     print(f"  板块资金流 + 主力潜伏分析", flush=True)
