@@ -9,7 +9,7 @@
   S1: ◆ H1+G2 → ▲ T+5    S2: ★ D1 → ★ T+15   S3: A3 → ◆ T+15
   S4: ▲ B1 → ▲ T+2        S5: ★ D2 → ★ T+10   S6: ▲ I1 → ▲ T+5
 
-用法: python strategy_screener.py --date 20260702 --sample 2000
+用法: python strategy_screener.py --sample 2000
 """
 import argparse, os, random, sys, warnings
 from collections import defaultdict
@@ -428,15 +428,15 @@ def run(data_dir, target_wr=85.0, sample=0, top_n=20, seed=42):
 
 
 def main():
-    p = argparse.ArgumentParser(description="6策略选股器 v9")
-    p.add_argument("--date", default="20260702")
+    p = argparse.ArgumentParser(description="6策略选股器 v10")
+    p.add_argument("--date", default="", help="数据日期 YYYYMMDD（仅用于标识，不影响数据路径）")
     p.add_argument("--target", type=float, default=85.0)
     p.add_argument("--sample", type=int, default=2000)
     p.add_argument("--top", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(os.path.dirname(script_dir), "data", args.date, "daily")
+    data_dir = os.path.join(os.path.dirname(script_dir), "data", "daily")
     if not os.path.isdir(data_dir): print(f"错误: {data_dir}"); sys.exit(1)
     ok = run(data_dir, args.target, args.sample, args.top, args.seed)
     sys.exit(0 if ok else 1)

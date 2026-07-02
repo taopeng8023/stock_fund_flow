@@ -3,7 +3,7 @@
 K线形态涨跌规律分析 — 从每日K线CSV统计形态的次日/后N日涨跌概率
 
 用法:
-    python /Users/taopeng/PycharmProjects/stock_fund_flow/baostock_data/analysis/kline_pattern.py --date 20260701 --stocks 100
+    python baostock_data/analysis/kline_pattern.py --stocks 100
 
 依赖: pandas (纯Python+pandas, 无其他依赖)
 """
@@ -210,7 +210,7 @@ def print_report(stats, date_str, stock_count):
 
 def main():
     parser = argparse.ArgumentParser(description="K线形态涨跌规律分析")
-    parser.add_argument("--date", type=str, default="20260701", help="数据日期 YYYYMMDD")
+    parser.add_argument("--date", type=str, default="", help="数据日期 YYYYMMDD（仅用于输出报告标识）")
     parser.add_argument("--stocks", type=int, default=20, help="分析股票数量上限")
     args = parser.parse_args()
 

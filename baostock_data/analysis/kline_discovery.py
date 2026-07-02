@@ -8,7 +8,7 @@ K线形态胜率发现引擎 v2 — 确认日机制 + 多条件AND组合 → 迭
     - 每个形态 5-7 个 AND 条件
 
 用法:
-    python kline_discovery.py --date 20260701 --target 85 --min-stocks 50 --max-stocks 800 --seed 42
+    python kline_discovery.py --target 85 --min-stocks 50 --max-stocks 800 --seed 42
 """
 import argparse
 import os
@@ -687,7 +687,7 @@ def print_final_report(batch_results, target_win_rate):
 
 def main():
     parser = argparse.ArgumentParser(description="K线形态胜率发现引擎 v2")
-    parser.add_argument("--date", default="20260701", help="数据日期 YYYYMMDD")
+    parser.add_argument("--date", default="", help="数据日期 YYYYMMDD（仅用于输出报告标识）")
     parser.add_argument("--target", type=float, default=85.0, help="目标胜率")
     parser.add_argument("--min-stocks", type=int, default=50, help="起始采样数")
     parser.add_argument("--max-stocks", type=int, default=800, help="最大采样数")
