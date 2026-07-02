@@ -11,12 +11,23 @@ A股量化选股系统 — 23因子盘中评分 + 三级买入引擎 + 黑天鹅
 
 > **CRITICAL**: 所有系统修改必须以 [FUNDAMENTAL_RULES.md](./FUNDAMENTAL_RULES.md) 为前提条件。违反基本事实的任何逻辑都是无效的。
 
-**已实施模块**: 黑天鹅监控 ✅ | 企业微信通知 ✅ | 持仓管理 ✅ | 买入引擎 ✅ | 7Tab Dashboard ✅
+**已实施模块**: 黑天鹅监控 ✅ | 企业微信通知 ✅ | 持仓管理 ✅ | 买入引擎 ✅ | 7Tab Dashboard ✅ | BaoStock K线 ✅
 
 ## Common Commands
 
 ```bash
 source .venv/bin/activate
+
+# BaoStock K线数据（独立于东方财富数据源）
+python baostock_data/fetch_all_history.py              # 全量历史K线（日/周/月/分钟，多进程并行）
+python baostock_data/fetch_all_history.py --no-minute  # 仅日/周/月线
+python baostock_data/fetch_today.py                    # 增量更新（近5日）
+python baostock_data/fetch_today.py 20260701           # 指定日期
+python baostock_data/convert_to_kline_json.py --date 20260701  # CSV → kline JSON
+
+# K线形态分析
+python baostock_data/analysis/kline_pattern.py --date 20260701 --stocks 100
+python baostock_data/analysis/kline_discovery.py --date 20260701 --target 85
 
 # 数据采集
 python -m data_collector.main --date=20260624
@@ -80,6 +91,21 @@ cd web_dashboard && reflex run           # http://localhost:8000
         ├──► market_diagnosis.py  → data/<date>/diagnosis/diagnosis_<ts>.json
         ├──► performance.py       → performance.json
         └──► sector_screener/     → data/<date>/sector_enhanced_picks.json
+
+BaoStock API (独立K线数据源)
+        │
+        ▼
+  baostock_data/fetcher.py  (BaoStockFetcher)
+  baostock_data/fetch_all_history.py  (多进程全量拉取)
+        │
+        ▼
+  baostock_data/data/YYYYMMDD/daily/*.csv   ← 每只股票独立CSV
+        │
+        ▼
+  baostock_data/convert_to_kline_json.py  → baostock_data/kline_data/*.json
+        │
+        ▼
+  daily_pipeline/score.py  (_load_kline 可用)
 ```
 
 ### Intraday Pipeline (独立于 data_collector)
@@ -100,6 +126,7 @@ daily_pipeline/run.sh
 | Layer | Location | Role |
 |-------|----------|------|
 | Data fetching | `data_collector/fetchers/` | East Money API wrappers, save JSON+CSV to `data/<date>/` |
+| K-line data | `baostock_data/` | BaoStock 历史K线 — 日/周/月/分钟线，多进程拉取，每只股票独立CSV |
 | Data orchestration | `data_collector/` | Pipeline engine, collector registry (10 collectors), retry logic |
 | Intraday scoring | `daily_pipeline/score.py` | **主力评分** — 23因子+体制感知+P因子修正+三级买入引擎 |
 | Stock screening | `sector_screener/` | 26因子板块增强评分 (独立体系，侧重板块共振) |
@@ -207,6 +234,7 @@ httpx==0.28.1
 python-socketio==5.16.3
 granian==2.7.6           # ASGI server
 rich==14.3.4
+baostock                # BaoStock A股历史K线数据
 ```
 
 No `requirements.txt` present. Key absent packages (to be installed per enhancement plan): `peewee`, `apscheduler`, `numpy`.
@@ -222,6 +250,34 @@ No `requirements.txt` present. Key absent packages (to be installed per enhancem
 | 盘中评分 | `daily_pipeline/score.py` | ✅ 23因子+体制感知 |
 | 全量回测 | `daily_pipeline/backtest.py` | ✅ IC+分层+贡献度 |
 | Dashboard | `web_dashboard/` | ✅ 7 Tab |
+| BaoStock K线 | `baostock_data/` | ✅ 全量历史+增量更新+格式转换+K线形态分析 |
+
+### BaoStock Data Module (`baostock_data/`)
+
+```
+baostock_data/
+├── __init__.py              # 模块入口，导出 BaoStockFetcher + 配置常量
+├── config.py                # BAOSTOCK_DATA_ROOT, KLINE_DATA_DIR, 频率/字段定义
+├── fetcher.py               # BaoStockFetcher — 断点续跑+分批增量写入+进度条
+├── fetch_all_history.py     # 全量历史K线（多进程并行，每只股票独立CSV）
+├── fetch_today.py           # 增量更新（近N日）
+├── convert_to_kline_json.py # CSV → kline_data JSON (兼容 daily_pipeline)
+├── data/                    # BAOSTOCK_DATA_ROOT — 原始CSV
+│   └── YYYYMMDD/
+│       ├── daily/           # sh.600000.csv, sz.000001.csv ...
+│       ├── weekly/          # 周线
+│       ├── monthly/         # 月线
+│       ├── minute_5/ ...    # 分钟线 (5/15/30/60)
+│       └── index/           # 指数日线
+├── kline_data/              # KLINE_DATA_DIR — 转换后的JSON
+└── analysis/
+    ├── kline_pattern.py     # K线形态涨跌规律统计
+    └── kline_discovery.py   # K线形态胜率发现引擎 v2（确认日机制+多条件AND组合）
+```
+
+Key config constants:
+- `BAOSTOCK_DATA_ROOT` = `baostock_data/data/` — 原始CSV存储
+- `KLINE_DATA_DIR` = `baostock_data/kline_data/` — 转换后JSON输出
 
 ### Still TODO
 

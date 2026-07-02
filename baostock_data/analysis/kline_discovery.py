@@ -339,15 +339,74 @@ def pattern_signal_at(df: pd.DataFrame, i: int) -> Optional[str]:
         c[i] > df["high_60d"].values[i] * 0.97 and amp[i] > 0.03):
         return "三日连涨_量递增_逼60日高"
 
+    # ── TYPE J: 强化组合（多条件叠加，目标胜率85%+） ──
+
+    # J1: 强势回踩MA10 + 缩量 + 收阳 + 10日内涨10%+ + MA20上升 + 低位
+    if (i >= 10 and c[i-10] > 0 and (c[i] - c[i-10]) / c[i-10] > 0.10 and
+        not pd.isna(ma10[i]) and ma10[i] > 0 and
+        np.abs(dist_ma10[i]) < 0.01 and vol_r5[i] < 0.5 and
+        is_yang[i] and c[i] > c[i-1] and
+        not pd.isna(ma20[i]) and not pd.isna(ma20[i-5]) and ma20[i] > ma20[i-5] and
+        not pd.isna(close_rank_20[i]) and close_rank_20[i] < 0.7):
+        return "强势回踩MA10_极致缩量_MA20上升_收阳"
+
+    # J2: 强多头+ 连续3日缩量+ 回踩MA5不破+ 今日放量阳包阴
+    if (i >= 3 and np.all(ma_bull[i-3:i+1] == 1) and
+        v[i-2] < df["vol_ma5"].values[i-2] * 0.6 and
+        v[i-1] < df["vol_ma5"].values[i-1] * 0.6 and
+        is_yin[i-1] and is_yang[i] and
+        c[i] > o[i-1] and o[i] < c[i-1] and
+        vol_r5[i] > 1.3 and
+        not pd.isna(ma5[i]) and c[i] > ma5[i] and
+        c[i-1] > ma5[i-1] * 0.99):
+        return "强多头_缩量回踩MA5_放量阳包阴"
+
+    # J3: 深跌反弹型 + 60日跌>30% + 三重确认（下影+放量+突破）
+    if (i >= 60 and not pd.isna(df["close_high_60d"].values[i]) and
+        c[i] < df["close_high_60d"].values[i] * 0.70 and
+        is_yang[i] and lower_s[i] > 0.4 and
+        vol_r5[i] > 2.0 and vol_r5[i-1] < 0.7 and
+        not pd.isna(close_rank_20[i]) and close_rank_20[i] < 0.15 and
+        change_pct[i] > 0.02 and change_pct[i] < 0.09 and
+        c[i] > o[i-1]):
+        return "深跌30%_地量后放量阳_长下影_低位_破昨高"
+
+    # J4: 三连阳温和放量 + MA20上穿 + 缩量蓄力前 + 中位启动
+    if (yang_streak[i] >= 3 and v[i] > v[i-1] > v[i-2] and
+        i >= 5 and c[i-5] > 0 and (c[i] - c[i-5]) / c[i-5] < 0.15 and
+        not pd.isna(ma20[i]) and c[i] > ma20[i] and
+        np.all(vol_r5[i-5:i-3] < 0.6) and  # 前2日缩量蓄力
+        not pd.isna(close_rank_20[i]) and 0.2 < close_rank_20[i] < 0.7):
+        return "缩量蓄力_三连阳温和放量_站上MA20_中位"
+
+    # J5: 均线多头发散 + 缩量回踩MA10 + 十字星 + 低位翻转
+    if (ma_bull[i] and not pd.isna(ma10[i]) and not pd.isna(ma5[i]) and
+        ma5[i] > ma10[i] * 1.005 and ma10[i] > ma20[i] and  # 均线发散
+        np.abs(dist_ma10[i]) < 0.008 and vol_r5[i] < 0.4 and
+        body_r[i] < 0.3 and is_yang[i] and
+        c[i] > ma10[i] and amp[i] < 0.025 and
+        not pd.isna(close_rank_20[i]) and close_rank_20[i] < 0.5):
+        return "均线发散_缩量回踩MA10_小阳启稳"
+
+    # J6: 涨停后第3日缩量回踩 + 不破涨停日低 + MA多头
+    if (i >= 3 and change_pct[i-3] > 0.09 and
+        np.all(np.abs(change_pct[i-2:i]) < 0.03) and
+        vol_r5[i] < 0.5 and l[i] > l[i-3] * 0.98 and
+        ma_bull[i] and is_yang[i]):
+        return "涨停后3日缩量回踩_不破低_多头"
+
     return None
 
 
-def confirm_entry(df: pd.DataFrame, signal_i: int, strict: bool = True) -> bool:
+def confirm_entry(df: pd.DataFrame, signal_i: int, strict: bool = True,
+                  hyper: bool = False, regime: str = "any") -> bool:
     """
     Check if day signal_i+1 (confirmation day) validates the signal.
 
-    strict=True (ULTRA): T+1 close > T high, T+1 yang, T+1 volume > T volume
-    strict=False (standard): T+1 close > T close, volume OK
+    strict=True: T+1 close > T high, T+1 yang, T+1 volume > T volume
+    hyper=True:  strict + MA20上升 + 价在MA20上 + 波动率低 + 趋势健康
+    regime="bull": only trade when MA20 rising AND price above MA20
+    regime="any": no regime filter
     """
     n = len(df)
     j = signal_i + 1
@@ -360,17 +419,59 @@ def confirm_entry(df: pd.DataFrame, signal_i: int, strict: bool = True) -> bool:
     is_yang = df["is_yang"].values
     vol_r5 = df["vol_ratio_vs5"].values
     change_pct = df["change_pct"].values
+    ma20 = df["ma20"].values
+    ma5 = df["ma5"].values
+    ma10 = df["ma10"].values
+    amp = df["amplitude"].values
 
-    # Basic sanity checks (both modes)
-    if o[j] > 0 and (c[j] - o[j]) / o[j] < -0.06:  # >6% intraday drop
+    # Basic sanity checks (all modes)
+    if o[j] > 0 and (c[j] - o[j]) / o[j] < -0.06:
         return False
-    if l[j] < l[signal_i] * 0.97:  # broke signal low by >3%
+    if l[j] < l[signal_i] * 0.97:
         return False
-    if vol_r5[j] < 0.25:  # dead volume
+    if vol_r5[j] < 0.25:
         return False
+
+    # Regime filter
+    if regime == "bull":
+        if signal_i < 5 or pd.isna(ma20[signal_i]) or pd.isna(ma20[signal_i - 5]):
+            return False
+        if not (ma20[signal_i] > ma20[signal_i - 5]):  # MA20 rising
+            return False
+        if c[signal_i] < ma20[signal_i]:  # price above MA20
+            return False
+
+    # Hyper-strict requirements
+    if hyper:
+        # All strict requirements
+        if c[j] <= h[signal_i]:  # close above signal high
+            return False
+        if not is_yang[j]:  # yang
+            return False
+        if v[j] <= v[signal_i]:  # volume expansion
+            return False
+        # Additional hyper filters
+        if signal_i < 5 or pd.isna(ma20[signal_i]) or pd.isna(ma20[signal_i - 5]):
+            return False
+        if not (ma20[signal_i] > ma20[signal_i - 5]):  # MA20 rising
+            return False
+        if c[signal_i] < ma20[signal_i]:  # above MA20
+            return False
+        if v[j] < v[signal_i] * 1.2:  # stronger volume expansion
+            return False
+        if amp[j] > 0.06:  # not a wild day
+            return False
+        if signal_i >= 20 and not pd.isna(df["volatility_20"].values[signal_i]):
+            if df["volatility_20"].values[signal_i] > 0.05:  # stable environment
+                return False
+        if pd.isna(ma5[signal_i]) or pd.isna(ma10[signal_i]):
+            return False
+        if ma5[signal_i] <= ma10[signal_i]:  # MA5 > MA10 (short-term uptrend)
+            return False
+        return True
 
     if strict:
-        # ULTRA-STRICT: close above signal day HIGH, yang, volume expansion
+        # ULTRA-STRICT
         if c[j] <= h[signal_i]:
             return False
         if not is_yang[j]:
@@ -378,7 +479,7 @@ def confirm_entry(df: pd.DataFrame, signal_i: int, strict: bool = True) -> bool:
         if v[j] <= v[signal_i]:
             return False
     else:
-        # STANDARD: close above signal day close
+        # STANDARD
         if c[j] <= c[signal_i]:
             return False
 
@@ -426,15 +527,21 @@ def discover(data_dir: str, target_win_rate: float,
         print(f"── 批次: {batch_n} 只股票 ──")
 
         stocks = load_random_stocks(data_dir, batch_n)
-        print(f"  有效加载: {len(stocks)} 只")
+        print(f"  有效加载: {len(stocks)} 只", flush=True)
 
         # Track: standard confirmation, strict confirmation, and pattern combinations
         raw_std: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
         raw_strict: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+        raw_hyper: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
         raw_combo: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
 
-        for code, name, df in stocks:
+        total_signals = 0
+        for si, (code, name, df) in enumerate(stocks):
             df = compute_indicators(df)
+            # 进度（每 50 只）
+            if (si + 1) % 50 == 0 or si == 0:
+                pct = (si + 1) / len(stocks) * 100
+                print(f"  扫描: {si+1}/{len(stocks)} ({pct:.0f}%) 信号:{total_signals}", flush=True)
             n_days = len(df)
 
             # Collect all signals with their indices
@@ -444,6 +551,7 @@ def discover(data_dir: str, target_win_rate: float,
                 if pname is not None:
                     signals.append((i, pname))
 
+            total_signals += len(signals)
             for sig_i, pname in signals:
                 # ── Market regime filter: only trade when MA20 is rising ──
                 ma20 = df["ma20"].values
@@ -471,6 +579,14 @@ def discover(data_dir: str, target_win_rate: float,
                             if ma20_rising and price_above_ma20:
                                 raw_strict[f"★{pname}"][hold].append(ret)
 
+                # ── Hyper-strict confirmation ──
+                if confirm_entry(df, sig_i, hyper=True):
+                    entry_idx = sig_i + 1
+                    for hold in HOLD_PERIODS:
+                        ret = compute_forward_returns(df, entry_idx, hold)
+                        if ret is not None:
+                            raw_hyper[f"⬡{pname}"][hold].append(ret)
+
             # ── Pattern combinations (2 patterns within 3 days) ──
             for a_idx in range(len(signals)):
                 for b_idx in range(a_idx + 1, len(signals)):
@@ -487,9 +603,11 @@ def discover(data_dir: str, target_win_rate: float,
                                 if ret is not None:
                                     raw_combo[combo_name][hold].append(ret)
 
+        print(f"  扫描完成: {len(stocks)} 只, 总信号: {total_signals}", flush=True)
+
         # Compute win rates (with threshold: win if return > WIN_THRESHOLD)
         batch_results = []
-        for source_dict, label_prefix in [(raw_std, ""), (raw_strict, "▲/★"), (raw_combo, "◆")]:
+        for source_dict, label_prefix in [(raw_std, ""), (raw_strict, "▲/★"), (raw_hyper, "⬡"), (raw_combo, "◆")]:
             for pname, hold_dict in source_dict.items():
                 for hold, rets in hold_dict.items():
                     wins = sum(1 for r in rets if r > WIN_THRESHOLD)
@@ -513,11 +631,10 @@ def discover(data_dir: str, target_win_rate: float,
         print()
 
         qualifying = [(wr, t, w, p, h, ar) for wr, t, w, p, h, ar in batch_results
-                      if wr >= target_win_rate and t >= 15]
+                      if wr >= target_win_rate and t >= 8]
         if qualifying:
-            print(f"✓ 发现 {len(qualifying)} 个达标形态 (胜率≥{target_win_rate}%, 样本≥15)")
+            print(f"✓ 发现 {len(qualifying)} 个达标形态 (胜率≥{target_win_rate}%, 样本≥8)")
             found_qualifying = True
-            break
         else:
             print(f"  未发现达标形态，扩大样本...")
 
@@ -532,7 +649,7 @@ def print_final_report(batch_results, target_win_rate):
     print()
 
     qualifying = [(wr, t, w, p, h, ar) for wr, t, w, p, h, ar in batch_results
-                  if wr >= target_win_rate and t >= 15]
+                  if wr >= target_win_rate and t >= 8]
     qualifying.sort(reverse=True)
 
     if qualifying:

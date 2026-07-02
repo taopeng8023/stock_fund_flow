@@ -18,7 +18,11 @@ import json
 import os
 import sys
 import time
+import socket
 from datetime import datetime, timedelta
+
+# 避免 baostock 服务器不可达时无限挂死
+socket.setdefaulttimeout(15)
 
 import baostock as bs
 
@@ -83,14 +87,21 @@ class BaoStockFetcher:
     # 连接管理
     # ============================================================
     def login(self):
-        """登录 BaoStock"""
+        """登录 BaoStock（带超时保护）"""
         if self._logged_in:
             return
-        lg = bs.login()
-        if lg.error_code != "0":
-            raise ConnectionError(f"BaoStock 登录失败: {lg.error_msg}")
-        self._logged_in = True
-        print(f"[BaoStock] 登录成功")
+        try:
+            lg = bs.login()
+            if lg.error_code != "0":
+                raise ConnectionError(f"BaoStock 登录失败: {lg.error_msg} (code={lg.error_code})")
+            self._logged_in = True
+            print(f"[BaoStock] 登录成功")
+        except (socket.timeout, TimeoutError, OSError) as e:
+            raise ConnectionError(
+                f"BaoStock 服务器连接超时 (15s)，服务器可能不可用。\n"
+                f"  服务器: public-api.baostock.com:10030\n"
+                f"  原始错误: {e}"
+            )
 
     def logout(self):
         """登出"""

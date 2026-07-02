@@ -13,6 +13,7 @@ BaoStock 数据模块 — A股历史行情数据获取与存储
 from .fetcher import BaoStockFetcher
 from .config import (
     BAOSTOCK_DATA_ROOT,
+    KLINE_DATA_DIR,
     BJS_TZ,
     KLINE_FIELDS,
     KLINE_HEADERS,
@@ -25,6 +26,7 @@ from .config import (
 __all__ = [
     "BaoStockFetcher",
     "BAOSTOCK_DATA_ROOT",
+    "KLINE_DATA_DIR",
     "BJS_TZ",
     "KLINE_FIELDS",
     "KLINE_HEADERS",

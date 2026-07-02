@@ -3,26 +3,26 @@
 全市场历史 K 线全量拉取（每只股票独立文件，多进程并行）
 
 用法:
-    python fetch_all_history.py                  # 全量，8 进程
+    python fetch_all_history.py                  # 全量
     python fetch_all_history.py --no-minute      # 仅日/周/月线
-    python fetch_all_history.py --workers=4      # 4 进程
+    python fetch_all_history.py --workers=4      # 指定进程数
     python fetch_all_history.py 20260630         # 指定日期
 """
 import sys
 import os
 import csv
-import json
 import time
+import socket
 from datetime import datetime, timedelta
-from multiprocessing import get_context
+from concurrent.futures import ProcessPoolExecutor
+
+# 避免 baostock 服务器不可达时无限挂死
+socket.setdefaulttimeout(15)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-import baostock as bs
-
-BJS_TZ = __import__('baostock_data.config', fromlist=['BJS_TZ']).BJS_TZ
-DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+from baostock_data.config import BJS_TZ, BAOSTOCK_DATA_ROOT as DATA_ROOT
 
 KLINE_FIELDS = [
     "date", "code", "open", "high", "low", "close", "preclose",
@@ -51,8 +51,12 @@ INDEX_CODES = {
 }
 
 
+# ============================================================
+# 工具
+# ============================================================
 def to_bs_date(s):
-    if "-" in s: return s
+    if "-" in s:
+        return s
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
 
 
@@ -61,98 +65,121 @@ def now_str():
 
 
 def fmt_duration(seconds):
-    if seconds < 60: return f"{seconds:.0f}s"
-    elif seconds < 3600: return f"{seconds // 60:.0f}m{seconds % 60:.0f}s"
-    else: return f"{seconds // 3600:.0f}h{(seconds % 3600) // 60:.0f}m"
-
-
-def get_stocks():
-    """获取全市场 A 股列表"""
-    bs.login()
-    for offset in range(10):
-        d = (datetime.strptime(now_str(), "%Y%m%d") - timedelta(days=offset))
-        ds = d.strftime("%Y%m%d")
-        rs = bs.query_all_stock(day=to_bs_date(ds))
-        if rs.error_code != "0": continue
-        stocks = []
-        while (rs.error_code == "0") & rs.next():
-            row = rs.get_row_data()
-            if row[1] == "1":
-                stocks.append({"code": row[0], "code_name": row[2]})
-        if stocks:
-            print(f"[主进程] 股票列表: {len(stocks)} 只 (日期: {ds})")
-            bs.logout()
-            return stocks
-    raise RuntimeError("无法获取股票列表")
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        return f"{seconds // 60:.0f}m{seconds % 60:.0f}s"
+    else:
+        return f"{seconds // 3600:.0f}h{(seconds % 3600) // 60:.0f}m"
 
 
 # ============================================================
-# Worker
+# 主进程：股票列表
 # ============================================================
-def worker_login():
-    """登录，带重试"""
-    for attempt in range(5):
+def bs_login():
+    import baostock as bs
+    for attempt in range(3):
         try:
             lg = bs.login()
             if lg.error_code == "0":
                 return True
         except Exception:
             pass
-        time.sleep(1 + attempt)
+        time.sleep(2 + attempt * 2)
     return False
 
 
-def fetch_one(code, fields_str, start_date, end_date, frequency, adjustflag):
-    """拉取单只股票，断连自动重试"""
-    for attempt in range(3):
-        try:
-            rs = bs.query_history_k_data_plus(
-                code=code, fields=fields_str,
-                start_date=start_date, end_date=end_date,
-                frequency=frequency, adjustflag=adjustflag,
-            )
-            if rs.error_code != "0":
-                time.sleep(1 + attempt)
-                continue
-            rows = []
-            while (rs.error_code == "0") & rs.next():
-                rows.append(rs.get_row_data())
-            return rows
-        except (BrokenPipeError, ConnectionError, OSError):
-            wait = 1 + attempt * 2
-            print(f"\n  [worker] {code} 断连, {wait}s 后重试", flush=True)
-            time.sleep(wait)
-            try:
-                worker_login()
-            except Exception:
-                pass
-        except Exception:
-            time.sleep(1 + attempt)
-    return []
+def get_stocks():
+    import baostock as bs
+    print("[登录] BaoStock ...", flush=True)
+    if not bs_login():
+        raise RuntimeError("BaoStock 登录失败，服务器不可用")
+
+    print("[查询] 股票列表 ...", flush=True)
+    for offset in range(10):
+        d = (datetime.now(BJS_TZ) - timedelta(days=offset))
+        ds = d.strftime("%Y%m%d")
+        print(f"  尝试日期: {ds} ...", flush=True)
+        rs = bs.query_all_stock(day=to_bs_date(ds))
+        if rs.error_code != "0":
+            print(f"    错误: {rs.error_msg}", flush=True)
+            continue
+        stocks = []
+        while (rs.error_code == "0") & rs.next():
+            row = rs.get_row_data()
+            if row[1] == "1":
+                stocks.append({"code": row[0], "code_name": row[2]})
+        if stocks:
+            print(f"[完成] {len(stocks)} 只 A 股", flush=True)
+            bs.logout()
+            return stocks
+    raise RuntimeError("无法获取股票列表")
 
 
-def worker_run(chunk_id, stocks, frequency, start_date, end_date,
-               adjustflag, fields, headers, outdir, progress_file):
+# ============================================================
+# 子进程 worker
+# ============================================================
+def _worker_fetch(args):
     """
-    子进程：每只股票写入独立 CSV，进度写入共享文件
+    子进程：独立登录 → 逐只拉取 + 更新共享进度 → 写 CSV。
+    每个子进程拥有独立的 baostock 连接，真正并行。
+
+    args: (chunk_id, chunk, frequency, start_date, end_date,
+           adjustflag, fields, headers, outdir, progress_done, progress_rows)
     """
+    import baostock as bs
+
+    (chunk_id, chunk, frequency, start_date, end_date,
+     adjustflag, fields, headers, outdir,
+     progress_done, progress_rows) = args
+
     fields_str = ",".join(fields)
     name_insert_pos = 3 if frequency in ("5", "15", "30", "60") else 2
-    failed = []
-
-    if not worker_login():
-        return
-
-    t0 = time.time()
+    failed = 0
     row_count = 0
 
-    for i, stock in enumerate(stocks):
+    # 登录
+    for attempt in range(3):
+        try:
+            lg = bs.login()
+            if lg.error_code == "0":
+                break
+        except Exception:
+            pass
+        time.sleep(2 + attempt * 2)
+    else:
+        progress_done.value += len(chunk)
+        return chunk_id, len(chunk), 0, len(chunk)
+
+    # 逐只拉取
+    for stock in chunk:
         code = stock["code"]
         name = stock["code_name"]
         outpath = os.path.join(outdir, f"{code}.csv")
 
-        rows = fetch_one(code, fields_str, start_date, end_date, frequency, adjustflag)
+        # API 调用（带重试）
+        rows = []
+        for attempt in range(3):
+            try:
+                rs = bs.query_history_k_data_plus(
+                    code=code, fields=fields_str,
+                    start_date=start_date, end_date=end_date,
+                    frequency=frequency, adjustflag=adjustflag,
+                )
+                if rs.error_code != "0":
+                    time.sleep(1 + attempt)
+                    continue
+                while (rs.error_code == "0") & rs.next():
+                    rows.append(rs.get_row_data())
+                break
+            except Exception:
+                time.sleep(1 + attempt)
+                try:
+                    bs.login()
+                except Exception:
+                    pass
 
+        # 写 CSV
         with open(outpath, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
@@ -162,104 +189,94 @@ def worker_run(chunk_id, stocks, frequency, start_date, end_date,
                 row_count += 1
 
         if not rows:
-            failed.append(code)
+            failed += 1
 
-        # 每 10 秒写一次进度
-        if (i + 1) % 20 == 0 or (i + 1) == len(stocks):
-            elapsed = time.time() - t0
-            with open(progress_file, "w") as pf:
-                json.dump({
-                    "chunk_id": chunk_id,
-                    "done": i + 1, "total": len(stocks),
-                    "rows": row_count, "failed": len(failed),
-                    "elapsed": elapsed,
-                }, pf)
-
-        # 避免打爆服务端
-        time.sleep(0.05)
+        # 实时更新共享进度（每只股票）
+        progress_done.value += 1
+        progress_rows.value += len(rows)
 
     try:
         bs.logout()
     except Exception:
         pass
 
+    return chunk_id, len(chunk), row_count, failed
+
 
 # ============================================================
-# 主控
+# 多进程批量拉取
 # ============================================================
 def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
-                 fields, headers, date_str, subdir, num_workers):
-    """分块 → 并行拉取，每只股票独立文件"""
-    outdir = os.path.join(DATA_ROOT, date_str, subdir)
+                 fields, headers, date_str, subdir, num_workers, data_root):
+    """多进程拉取，共享进度计数器，实时刷新"""
+    from multiprocessing import Manager
+
+    outdir = os.path.join(data_root, date_str, subdir)
     os.makedirs(outdir, exist_ok=True)
 
-    chunk_size = max(1, len(stocks) // num_workers)
-    chunks = [stocks[i:i + chunk_size] for i in range(0, len(stocks), chunk_size)]
-    num_workers = len(chunks)
+    total = len(stocks)
+    chunk_size = max(1, total // num_workers)
+    chunks = [stocks[i:i + chunk_size] for i in range(0, total, chunk_size)]
+    n_workers = len(chunks)
 
-    # 进度文件目录
-    progress_dir = os.path.join(outdir, "_progress")
-    os.makedirs(progress_dir, exist_ok=True)
+    # 共享进度计数器（跨进程原子更新）
+    manager = Manager()
+    progress_done = manager.Value("i", 0)
+    progress_rows = manager.Value("i", 0)
 
-    print(f"\n  {frequency} K线 — {len(stocks)} 只 → {num_workers} 进程")
-    print(f"  输出目录: {outdir}")
-    print(f"  每进程 ~{chunk_size} 只 | {start_date} → {end_date}")
+    print(f"\n{'─' * 50}", flush=True)
+    print(f"  {frequency} K线 — {total} 只 → {n_workers} 进程", flush=True)
+    print(f"  输出: {outdir}", flush=True)
+    print(f"  范围: {start_date} → {end_date}", flush=True)
+    print(f"{'─' * 50}", flush=True)
 
-    ctx = get_context("spawn")
-    workers = []
+    # 构建任务（每进程一个大块，减少登录次数）
+    tasks = [(cid, chunk, frequency, start_date, end_date,
+              adjustflag, fields, headers, outdir,
+              progress_done, progress_rows)
+             for cid, chunk in enumerate(chunks)]
 
-    for cid, chunk in enumerate(chunks):
-        progress_file = os.path.join(progress_dir, f"worker_{cid}.json")
-        p = ctx.Process(target=worker_run, args=(
-            cid, chunk, frequency, start_date, end_date,
-            adjustflag, fields, headers, outdir, progress_file
-        ))
-        p.start()
-        workers.append(p)
-        time.sleep(0.5)  # 错开启动，避免同时冲击服务端
-
-    # 进度监视
     t0 = time.time()
-    while any(p.is_alive() for p in workers):
-        time.sleep(10)
-        elapsed = time.time() - t0
+    total_failed = 0
 
-        # 汇总所有 worker 进度
-        total_done = 0
-        total_rows = 0
-        total_failed = 0
-        for cid in range(num_workers):
-            pf = os.path.join(progress_dir, f"worker_{cid}.json")
-            if os.path.exists(pf):
-                try:
-                    with open(pf) as f:
-                        d = json.load(f)
-                    total_done += d.get("done", 0)
-                    total_rows += d.get("rows", 0)
-                    total_failed += d.get("failed", 0)
-                except Exception:
-                    pass
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = [executor.submit(_worker_fetch, t) for t in tasks]
 
-        if total_done > 0:
-            pct = total_done / len(stocks) * 100
+        # 轮询进度（每秒），不等待进程结束
+        last_done = 0
+        while not all(f.done() for f in futures):
+            time.sleep(1)
+            done = progress_done.value
+            if done == last_done:
+                continue  # 无变化，跳过打印
+            last_done = done
+
+            elapsed = time.time() - t0
+            pct = done / total * 100
             bar_w = 30
-            filled = int(bar_w * total_done / len(stocks))
+            filled = int(bar_w * done / total)
             bar = "█" * filled + "░" * (bar_w - filled)
-            eta = (elapsed / total_done) * (len(stocks) - total_done)
-            print(f"  [{bar}] {pct:5.1f}% {total_done}/{len(stocks)} "
+            speed = done / elapsed if elapsed > 0 else 0
+            eta = (total - done) / speed if speed > 0 else 0
+            alive = sum(1 for f in futures if f.running())
+            print(f"  [{bar}] {pct:5.1f}% {done}/{total} "
                   f"| {fmt_duration(elapsed)} | ETA {fmt_duration(eta)} "
-                  f"| {total_rows}行 | 失败{total_failed}", flush=True)
+                  f"| {progress_rows.value}行 | 进程{alive}",
+                  flush=True)
 
-    for p in workers:
-        p.join(timeout=5)
+        # 汇总结果
+        for f in futures:
+            try:
+                _, _, _, failed = f.result()
+                total_failed += failed
+            except Exception as e:
+                print(f"  ⚠ 进程异常: {e}", flush=True)
 
-    # 清理进度文件
-    import shutil
-    shutil.rmtree(progress_dir, ignore_errors=True)
-
-    # 统计
+    elapsed = time.time() - t0
     file_count = len([f for f in os.listdir(outdir) if f.endswith(".csv")])
-    print(f"  ✅ {subdir}/ — {file_count} 个文件, 耗时 {fmt_duration(time.time() - t0)}")
+    print(f"  ✅ {subdir}/ — {file_count} 文件, {progress_rows.value} 行, "
+          f"失败 {total_failed} 只, 耗时 {fmt_duration(elapsed)}", flush=True)
+    manager.shutdown()
 
 
 # ============================================================
@@ -268,29 +285,32 @@ def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
 if __name__ == "__main__":
     date_str = None
     with_minute = True
-    num_workers = 8
+    num_workers = min(8, os.cpu_count() or 4)  # 默认 = CPU 核数
 
     for arg in sys.argv[1:]:
-        if arg == "--no-minute": with_minute = False
-        elif arg.startswith("--workers="): num_workers = int(arg.split("=")[1])
-        elif not arg.startswith("--"): date_str = arg
+        if arg == "--no-minute":
+            with_minute = False
+        elif arg.startswith("--workers="):
+            num_workers = int(arg.split("=")[1])
+        elif not arg.startswith("--"):
+            date_str = arg
 
     date_str = date_str or now_str()
     end_date = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
 
-    print("═" * 60)
-    print(f"  BaoStock 全量历史 K 线（{num_workers} 进程，每只股票独立文件）")
-    print(f"  日/周/月线: 1990-12-19 → {end_date}")
+    print("═" * 60, flush=True)
+    print(f"  BaoStock 全量历史 K 线（{num_workers} 进程，本机 {os.cpu_count()} 核）", flush=True)
+    print(f"  日/周/月线: 1990-12-19 → {end_date}", flush=True)
     if with_minute:
-        print(f"  分钟线: 2019-01-02 → {end_date} (5/15/30/60)")
+        print(f"  分钟线: 2019-01-02 → {end_date} (5/15/30/60)", flush=True)
     else:
-        print("  分钟线: 跳过（--no-minute）")
-    print("═" * 60)
+        print("  分钟线: 跳过（--no-minute）", flush=True)
+    print("═" * 60, flush=True)
 
     t_total = time.time()
 
     # 0. 股票列表
-    print("\n[0/3] 获取股票列表 ...")
+    print("\n[0/3] 获取股票列表", flush=True)
     stocks = get_stocks()
     date_dir = os.path.join(DATA_ROOT, date_str)
     os.makedirs(date_dir, exist_ok=True)
@@ -299,57 +319,71 @@ if __name__ == "__main__":
         w.writerow(["代码", "名称", "类型"])
         for s in stocks:
             w.writerow([s["code"], s["code_name"], "1"])
+    print(f"  -> stock_list.csv ({len(stocks)} 条)", flush=True)
 
     # 1. 日线
-    print("\n[1/3] 日线")
+    print("\n[1/3] 日线", flush=True)
     run_parallel(stocks, "d", "1990-12-19", end_date, "2",
-                 KLINE_FIELDS, KLINE_HEADERS, date_str,
-                 "daily", num_workers)
+                 KLINE_FIELDS, KLINE_HEADERS, date_str, "daily",
+                 num_workers, DATA_ROOT)
 
     # 2. 周线 + 月线
-    print("\n[2/3] 周线 + 月线")
+    print("\n[2/3] 周线 + 月线", flush=True)
     run_parallel(stocks, "w", "1990-12-19", end_date, "2",
-                 KLINE_FIELDS, KLINE_HEADERS, date_str,
-                 "weekly", num_workers)
+                 KLINE_FIELDS, KLINE_HEADERS, date_str, "weekly",
+                 num_workers, DATA_ROOT)
     run_parallel(stocks, "m", "1990-12-19", end_date, "2",
-                 KLINE_FIELDS, KLINE_HEADERS, date_str,
-                 "monthly", num_workers)
+                 KLINE_FIELDS, KLINE_HEADERS, date_str, "monthly",
+                 num_workers, DATA_ROOT)
 
     # 3. 分钟线
     if with_minute:
-        print("\n[3/3] 分钟线")
+        print("\n[3/3] 分钟线", flush=True)
         for freq in ["5", "15", "30", "60"]:
             run_parallel(stocks, freq, "2019-01-02", end_date, "2",
                          KLINE_FIELDS_MINUTE, KLINE_HEADERS_MINUTE, date_str,
-                         f"minute_{freq}", num_workers)
+                         f"minute_{freq}", num_workers, DATA_ROOT)
 
-    # 指数（串行）
-    print("\n[指数]")
-    bs.login()
-    idx_fields = ["date", "code", "open", "high", "low", "close", "preclose",
-                   "volume", "amount", "pctChg"]
-    idx_headers = ["日期", "代码", "名称", "开盘", "最高", "最低", "收盘", "前收盘",
-                    "成交量", "成交额", "涨跌幅"]
-    idx_outdir = os.path.join(date_dir, "index")
-    os.makedirs(idx_outdir, exist_ok=True)
-    for code, name in INDEX_CODES.items():
-        print(f"    {code} ({name}) ...", end=" ", flush=True)
-        rows = fetch_one(code, ",".join(idx_fields), "2006-01-01", end_date, "d", "3")
-        outpath = os.path.join(idx_outdir, f"{code}.csv")
-        cnt = 0
-        with open(outpath, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(idx_headers)
-            for row in rows:
-                row.insert(1, name)
-                w.writerow(row)
-                cnt += 1
-        print(f"{cnt} 行")
-    bs.logout()
+    # 指数（主进程串行，数据量小）
+    print("\n[指数]", flush=True)
+    if bs_login():
+        import baostock as bs
+        idx_fields = ["date", "code", "open", "high", "low", "close", "preclose",
+                       "volume", "amount", "pctChg"]
+        idx_headers = ["日期", "代码", "名称", "开盘", "最高", "最低", "收盘", "前收盘",
+                        "成交量", "成交额", "涨跌幅"]
+        idx_outdir = os.path.join(date_dir, "index")
+        os.makedirs(idx_outdir, exist_ok=True)
+        for code, name in INDEX_CODES.items():
+            print(f"    {code} ({name}) ...", end=" ", flush=True)
+            rows = []
+            for attempt in range(3):
+                try:
+                    rs = bs.query_history_k_data_plus(
+                        code=code, fields=",".join(idx_fields),
+                        start_date="2006-01-01", end_date=end_date,
+                        frequency="d", adjustflag="3",
+                    )
+                    if rs.error_code == "0":
+                        while (rs.error_code == "0") & rs.next():
+                            rows.append(rs.get_row_data())
+                        break
+                except Exception:
+                    time.sleep(1 + attempt)
+            cnt = 0
+            outpath = os.path.join(idx_outdir, f"{code}.csv")
+            with open(outpath, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(idx_headers)
+                for row in rows:
+                    row.insert(1, name)
+                    w.writerow(row)
+                    cnt += 1
+            print(f"{cnt} 行", flush=True)
+        bs.logout()
 
-    print(f"\n{'═' * 60}")
-    print(f"  ✅ 全量拉取完成 — {date_str}")
-    print(f"  总耗时: {fmt_duration(time.time() - t_total)}")
-    print(f"  数据目录: {date_dir}")
-    print(f"  结构: daily/sh.600000.csv, weekly/sh.600000.csv, ...")
-    print(f"{'═' * 60}")
+    print(f"\n{'═' * 60}", flush=True)
+    print(f"  ✅ 全量拉取完成 — {date_str}", flush=True)
+    print(f"  总耗时: {fmt_duration(time.time() - t_total)}", flush=True)
+    print(f"  数据目录: {date_dir}", flush=True)
+    print(f"{'═' * 60}", flush=True)

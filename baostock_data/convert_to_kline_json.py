@@ -15,6 +15,8 @@ from glob import glob
 
 import pandas as pd
 
+from baostock_data.config import BAOSTOCK_DATA_ROOT, KLINE_DATA_DIR
+
 COL_MAP = {
     "日期": "date", "开盘": "open", "最高": "high",
     "最低": "low", "收盘": "close", "成交量": "volume",
@@ -53,16 +55,13 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="限制转换数量 (0=全部)")
     args = parser.parse_args()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    baostock_root = script_dir  # baostock_data/
-    project_root = os.path.dirname(baostock_root)
-    data_dir = os.path.join(baostock_root, "data", args.date, "daily")
+    data_dir = os.path.join(BAOSTOCK_DATA_ROOT, args.date, "daily")
 
     if not os.path.isdir(data_dir):
         print(f"错误: 数据目录不存在: {data_dir}")
         sys.exit(1)
 
-    output_dir = args.output_dir or os.path.join(project_root, "kline_data")
+    output_dir = args.output_dir or KLINE_DATA_DIR
     os.makedirs(output_dir, exist_ok=True)
 
     csv_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +

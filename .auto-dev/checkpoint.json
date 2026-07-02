@@ -1,13 +1,27 @@
 {
-  "request": "v3 超严格确认 + 形态组合 集成在 daily_pipeline 评分体系，历史数据评分&回测&验证&修改直达评分体系胜率80%以上",
+  "request": "对 baostock_data/data/20260702/daily 目录下K线数据做策略回归，迭代优化直到胜率≥85%",
   "status": "in_progress",
-  "started_at": "2026-07-01T20:00:00Z",
+  "started_at": "2026-07-02T00:33:56.130645",
   "acceptance_criteria": [
-    { "id": 1, "description": "K线CSV→JSON转换 (605只)", "done": true },
-    { "id": 2, "description": "kline_scorer.py 形态评分器 (8形态)", "done": true },
-    { "id": 3, "description": "集成到 score.py (kline_pattern 维度, 权重6%)", "done": true },
-    { "id": 4, "description": "历史日期评分 (含kline_pattern)", "done": false },
-    { "id": 5, "description": "全市场回测验证", "done": false },
-    { "id": 6, "description": "迭代权重/阈值至胜率≥80%", "done": false }
+    {
+      "id": 1,
+      "description": "分析当前 kline_discovery.py 的胜率基线",
+      "done": false
+    },
+    {
+      "id": 2,
+      "description": "优化/新增K线形态模式，提升胜率至85%+",
+      "done": false
+    },
+    {
+      "id": 3,
+      "description": "每个达标形态样本量≥15，确保统计显著性",
+      "done": false
+    },
+    {
+      "id": 4,
+      "description": "验证最终结果有≥1个形态胜率≥85%",
+      "done": false
+    }
   ]
 }

@@ -8,7 +8,9 @@ from datetime import timezone, timedelta
 # 路径
 # ============================================================
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(MODULE_DIR)
 BAOSTOCK_DATA_ROOT = os.path.join(MODULE_DIR, "data")
+KLINE_DATA_DIR = os.path.join(PROJECT_ROOT, "kline_data")
 
 # ============================================================
 # 时区
