@@ -25,6 +25,7 @@ import socket
 import threading
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, List, Set, Dict
 
 socket.setdefaulttimeout(15)
 
@@ -64,7 +65,7 @@ def fmt_duration(seconds: float) -> str:
         return f"{seconds // 3600:.0f}h{(seconds % 3600) // 60:.0f}m"
 
 
-def read_last_date(csv_path: str) -> str | None:
+def read_last_date(csv_path: str) -> Optional[str]:
     """读取 CSV 最后一行的日期"""
     if not os.path.exists(csv_path):
         return None
@@ -94,8 +95,8 @@ class ProgressTracker:
         self.total = total
         self.done_count = 0
         self.row_count = 0
-        self.failed_codes: set[str] = set()
-        self.completed_codes: set[str] = set()
+        self.failed_codes: Set[str] = set()
+        self.completed_codes: Set[str] = set()
         self._lock = threading.Lock()
         self.progress_path = progress_path
         self.t0 = time.time()
@@ -198,8 +199,8 @@ class UpdateWorker:
         frequency: str,
         start_date: str,
         end_date: str,
-        fields: list[str],
-        headers: list[str],
+        fields: List[str],
+        headers: List[str],
         progress: ProgressTracker,
         minute_mode: bool = False,
     ):
@@ -234,7 +235,7 @@ class UpdateWorker:
             except Exception:
                 pass
 
-    def process(self, chunk: list[dict]) -> None:
+    def process(self, chunk: List[dict]) -> None:
         """处理一批股票"""
         if not self._login():
             for s in chunk:
@@ -273,7 +274,7 @@ class UpdateWorker:
                 is_append = True
 
             # API 调用（带重试 + 断连恢复）
-            rows: list[list[str]] = []
+            rows: List[List[str]] = []
             for attempt in range(3):
                 try:
                     rs = self._bs.query_history_k_data_plus(
@@ -326,7 +327,7 @@ class UpdateWorker:
 # ============================================================
 # 股票列表获取（主线程执行，复用连接）
 # ============================================================
-def get_stocks() -> list[dict]:
+def get_stocks() -> List[dict]:
     """获取全市场 A 股列表"""
     import baostock as bs
 
@@ -351,7 +352,7 @@ def get_stocks() -> list[dict]:
         rs = bs.query_all_stock(day=to_bs_date(ds))
         if rs.error_code != "0":
             continue
-        stocks: list[dict] = []
+        stocks: List[dict] = []
         while (rs.error_code == "0") & rs.next():
             row = rs.get_row_data()
             if row[1] == "1":  # type=1 A股
@@ -368,12 +369,12 @@ def get_stocks() -> list[dict]:
 # 多线程批量拉取
 # ============================================================
 def run_parallel(
-    stocks: list[dict],
+    stocks: List[dict],
     frequency: str,
     start_date: str,
     end_date: str,
-    fields: list[str],
-    headers: list[str],
+    fields: List[str],
+    headers: List[str],
     out_dir: str,
     num_workers: int,
     label: str,
@@ -441,7 +442,7 @@ def run_parallel(
 # 指数更新（主线程，数据量小无需并行）
 # ============================================================
 def update_index(
-    start_date: str, end_date: str, stocks: list[dict]
+    start_date: str, end_date: str, stocks: List[dict]
 ) -> None:
     """更新指数日线（主线程串行，数据量小）"""
     import baostock as bs
@@ -491,7 +492,7 @@ def update_index(
             is_append = True
 
         print(f"    {code} ({name}) ...", end=" ", flush=True)
-        rows: list[list[str]] = []
+        rows: List[List[str]] = []
         for attempt in range(3):
             try:
                 rs = bs.query_history_k_data_plus(
