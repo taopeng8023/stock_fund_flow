@@ -1,32 +1,32 @@
 {
-  "request": "根据 baostock_data 目录下的K线数据&全量数据获取代码，新增K线数据更新代码，根据本机配置使用多线程更新，直到所有的数据更新完结束",
+  "request": "根据 research_data 板块数据快照，分析最近几天主力流入哪个板块，找到主力开始潜伏的股票",
   "status": "completed",
-  "started_at": "2026-07-02T21:00:00+08:00",
-  "completed_at": "2026-07-02T21:15:00+08:00",
+  "started_at": "2026-07-02T22:00:00+08:00",
+  "completed_at": "2026-07-02T22:30:00+08:00",
   "acceptance_criteria": [
     {
       "id": 1,
-      "description": "探索现有 fetch_all_history.py / fetch_today.py / fetcher.py 的代码结构和数据格式",
+      "description": "探索 sector_flow.py 数据结构和可用数据源格式",
       "done": true
     },
     {
       "id": 2,
-      "description": "新增 fetch_update.py：基于本机 CPU 核心数自动配置多线程，增量拉取所有股票最新K线",
+      "description": "编写 sector_flow_analysis.py — 多日板块资金流趋势分析 + 潜伏股票筛选",
       "done": true
     },
     {
       "id": 3,
-      "description": "支持命令行参数控制更新天数（默认近5日）和线程数（默认 CPU 核心数）",
+      "description": "筛选逻辑：主力持续流入板块 + 个股早期积累信号（量比/换手/大单/估值位置）",
       "done": true
     },
     {
       "id": 4,
-      "description": "断点续跑：记录已更新的股票，中断后可从断点继续",
+      "description": "生成 Markdown 分析报告，列出Top板块和潜伏候选股票",
       "done": true
     },
     {
       "id": 5,
-      "description": "运行验证：语法检查通过，数据能正常追加到已有 CSV",
+      "description": "语法检查通过，脚本可运行",
       "done": true
     }
   ]
