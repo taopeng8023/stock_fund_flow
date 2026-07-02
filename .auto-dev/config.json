@@ -1,14 +1,8 @@
 {
-  "_comment": "複製這個檔案為 .auto-dev/config.json，編輯 build/test 指令以自訂 quality-gate。未提供任一欄位時，Hook 會回退到 Node default（tsc + npm test）。",
+  "_comment": "stock_fund_flow 量化选股项目 — quality-gate 配置",
+  "_note_build": "Python 全项目语法检查，跳过 .venv / .claude / __pycache__",
+  "_note_test": "pytest 可用且有测试文件时才运行，否则正常跳过",
 
-  "_examples": {
-    "node":    { "build": "npx tsc --noEmit", "test": "npm test --silent" },
-    "python":  { "build": "ruff check .",     "test": "pytest -q" },
-    "go":      { "build": "go build ./...",   "test": "go test ./..." },
-    "rust":    { "build": "cargo check",      "test": "cargo test" },
-    "deno":    { "build": "deno check **/*.ts", "test": "deno test" }
-  },
-
-  "build": "python -c \"import py_compile; print('OK')\"",
-  "test": "python -m pytest -q 2>/dev/null || echo 'no tests — skip'"
+  "build": "bash -c 'py=$(ls .venv/bin/python3 .venv/bin/python 2>/dev/null || which python3 || which python); $py -m compileall -q -x \"\\\\.venv\" -x \"\\\\.claude\" -x \"__pycache__\" .'",
+  "test": "bash -c 'py=$(ls .venv/bin/python3 .venv/bin/python 2>/dev/null || which python3 || which python); if ! $py -m pytest --version >/dev/null 2>&1; then echo \"pytest not installed — skip\" && exit 0; fi; tests=$(find . -path ./.venv -prune -o \\( -name \"test_*.py\" -o -name \"*_test.py\" \\) -print 2>/dev/null | head -1); if [ -n \"$tests\" ]; then $py -m pytest -q; else echo \"no test files — skip\" && exit 0; fi'"
 }
