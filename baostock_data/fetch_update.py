@@ -217,7 +217,12 @@ class UpdateWorker:
     def _login(self) -> bool:
         import baostock as bs
 
-        for attempt in range(3):
+        try:
+            bs.logout()
+        except Exception:
+            pass
+
+        for attempt in range(5):
             try:
                 lg = bs.login()
                 if lg.error_code == "0":
@@ -225,7 +230,8 @@ class UpdateWorker:
                     return True
             except Exception:
                 pass
-            time.sleep(2 + attempt * 2)
+            if attempt < 4:
+                time.sleep(3 + attempt * 3)
         return False
 
     def _logout(self) -> None:
@@ -327,42 +333,79 @@ class UpdateWorker:
 # ============================================================
 # 股票列表获取（主线程执行，复用连接）
 # ============================================================
-def get_stocks() -> List[dict]:
-    """获取全市场 A 股列表"""
+def _bs_login() -> bool:
+    """BaoStock 登录（带 socket 重置 + 重试）"""
     import baostock as bs
 
-    print("[登录] BaoStock ...", flush=True)
-    for attempt in range(3):
+    # 先确保旧连接被清理
+    try:
+        bs.logout()
+    except Exception:
+        pass
+
+    for attempt in range(5):
         try:
             lg = bs.login()
             if lg.error_code == "0":
-                break
-        except Exception:
-            pass
-        if attempt < 2:
-            time.sleep(2 + attempt * 2)
-    else:
+                return True
+            print(f"    登录返回: {lg.error_msg} (code={lg.error_code})", flush=True)
+        except Exception as e:
+            print(f"    登录异常: {e}", flush=True)
+        if attempt < 4:
+            wait = 3 + attempt * 3
+            print(f"    {wait}s 后重试 ({attempt + 2}/5) ...", flush=True)
+            time.sleep(wait)
+    return False
+
+
+def get_stocks() -> List[dict]:
+    """获取全市场 A 股列表（带断连恢复）"""
+    import baostock as bs
+
+    print("[登录] BaoStock ...", flush=True)
+    if not _bs_login():
         raise RuntimeError("BaoStock 登录失败，服务器不可用")
+    print("  登录成功", flush=True)
 
     print("[查询] 股票列表 ...", flush=True)
     for offset in range(10):
         d = datetime.now(BJS_TZ) - timedelta(days=offset)
         ds = d.strftime("%Y%m%d")
         print(f"  尝试日期: {ds} ...", flush=True)
-        rs = bs.query_all_stock(day=to_bs_date(ds))
-        if rs.error_code != "0":
+        try:
+            rs = bs.query_all_stock(day=to_bs_date(ds))
+        except Exception as e:
+            print(f"    查询异常: {e}，重新登录...", flush=True)
+            _bs_login()
             continue
+
+        if rs.error_code != "0":
+            print(f"    错误: {rs.error_msg}", flush=True)
+            # 断连恢复
+            if "超时" in str(rs.error_msg) or "异常" in str(rs.error_msg):
+                _bs_login()
+            time.sleep(2)
+            continue
+
         stocks: List[dict] = []
-        while (rs.error_code == "0") & rs.next():
-            row = rs.get_row_data()
-            if row[1] == "1":  # type=1 A股
-                stocks.append({"code": row[0], "code_name": row[2] if len(row) > 2 else ""})
+        try:
+            while (rs.error_code == "0") & rs.next():
+                row = rs.get_row_data()
+                if row[1] == "1":
+                    stocks.append({"code": row[0], "code_name": row[2] if len(row) > 2 else ""})
+        except Exception as e:
+            print(f"    读取异常: {e}，重新登录...", flush=True)
+            _bs_login()
+            continue
+
         if stocks:
             print(f"[完成] {len(stocks)} 只 A 股", flush=True)
             bs.logout()
             return stocks
+        else:
+            print(f"    该日期无数据", flush=True)
 
-    raise RuntimeError("无法获取股票列表")
+    raise RuntimeError("无法获取股票列表：近10日无有效数据")
 
 
 # ============================================================
@@ -447,16 +490,8 @@ def update_index(
     """更新指数日线（主线程串行，数据量小）"""
     import baostock as bs
 
-    # 登录
-    for attempt in range(3):
-        try:
-            lg = bs.login()
-            if lg.error_code == "0":
-                break
-        except Exception:
-            pass
-        time.sleep(2 + attempt * 2)
-    else:
+    print("  登录 BaoStock ...", flush=True)
+    if not _bs_login():
         print("  ⚠ 指数登录失败，跳过", flush=True)
         return
 
