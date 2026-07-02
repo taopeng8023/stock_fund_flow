@@ -1,23 +1,25 @@
 #!/usr/bin/env python
 """
-板块资金流趋势分析 + 主力潜伏选股
+板块资金流趋势分析 + 主力潜伏/启动选股
 
 从 research_data/<date>/intraday/ 读取盘中快照数据，分析：
   1. 最近 N 天哪些板块持续获得主力资金净流入
-  2. 在主力流入板块中，识别主力开始"潜伏"的个股
+  2. 在主力流入板块中，识别个股机会：
+
+两种模式：
+  --mode=sneak    潜伏模式（默认）：主力温和流入 + 大单支撑 + 换手适中 + 趋势加速
+  --mode=breakout 启动模式：主力加速流入 + 放量突破 + 价格动量 + 大单主导 + 板块共振
 
 数据源:
   - research_data/<date>/intraday/industry_flow_*.csv  → 行业板块资金流快照
   - research_data/<date>/intraday/fund_flow_*.csv      → 全市场个股资金流（含"行业"字段）
 
-筛选逻辑：
-  板块 — 多日累计主力净流入 > 0 + 趋势评分高
-  个股 — 主力温和流入 + 大单支撑 + 换手率适中 + 量比合理 + 趋势加速
-
 用法:
-    python sector_flow_analysis.py                     # 分析最近3天
-    python sector_flow_analysis.py 5                   # 分析最近5天
-    python sector_flow_analysis.py --top=10            # 分析前10个板块
+    python sector_flow_analysis.py                        # 潜伏模式，近3天
+    python sector_flow_analysis.py 5                      # 近5天
+    python sector_flow_analysis.py --mode=breakout        # 启动模式
+    python sector_flow_analysis.py 5 --mode=breakout      # 启动模式，近5天
+    python sector_flow_analysis.py --top=10               # 前10个板块
 """
 import os
 import sys
@@ -181,95 +183,6 @@ def analyze_sector_trend(dates: List[str], days: int) -> Dict[str, dict]:
 # ============================================================
 # 潜伏股票筛选
 # ============================================================
-def screen_sneak_stocks(
-    sector_data: Dict[str, dict],
-    dates: List[str],
-    days: int,
-    top_n_sectors: int = 5,
-) -> List[dict]:
-    """
-    在主力流入板块中，从 fund_flow 快照筛选潜伏个股
-
-    使用最新日期的全市场 fund_flow 快照，
-    按"行业"字段匹配股票到 Top 板块
-    """
-    # 1. 取当日 fund_flow 快照
-    if not dates:
-        return []
-    latest_date = dates[0]
-    fund_csv = find_latest_snapshot(latest_date, "fund_flow")
-    if not fund_csv:
-        print(f"  ⚠ 未找到 fund_flow 快照 ({latest_date})", flush=True)
-        return []
-
-    all_stocks = read_csv(fund_csv)
-    print(f"  读取 {len(all_stocks)} 只个股数据 ({os.path.basename(fund_csv)})", flush=True)
-
-    # 2. Top N 流入板块
-    ranked_sectors = sorted(
-        sector_data.items(),
-        key=lambda x: x[1].get("score", 0),
-        reverse=True,
-    )
-    # 过滤：累计流入 > 0 且至少有数据
-    top_sectors = [
-        (code, data) for code, data in ranked_sectors
-        if data.get("cumulative", 0) > 0 and data.get("n_days", 0) > 0
-    ][:top_n_sectors]
-
-    print(f"\n  Top {len(top_sectors)} 流入板块:", flush=True)
-    for code, data in top_sectors:
-        print(f"    {data['name']}({code}) 累计{_fmt_yi(data['cumulative'])} "
-              f"评分{data['score']:.0f}", flush=True)
-
-    # 3. 按行业名称索引股票
-    sector_stocks: Dict[str, List[dict]] = defaultdict(list)
-    for s in all_stocks:
-        industry = s.get("行业", "").strip()
-        if industry:
-            sector_stocks[industry].append(s)
-
-    # 4. 在 Top 板块中逐只评分
-    all_candidates = []
-    for code, sdata in top_sectors:
-        sector_name = sdata["name"]
-        stocks = sector_stocks.get(sector_name, [])
-        if not stocks:
-            # 模糊匹配
-            for ind_name, ind_stocks in sector_stocks.items():
-                if sector_name in ind_name or ind_name in sector_name:
-                    stocks = ind_stocks
-                    break
-
-        if not stocks:
-            print(f"    {sector_name}: 无匹配个股", flush=True)
-            continue
-
-        print(f"\n  [{sector_name}] {len(stocks)} 只成分股，逐只评分 ...", flush=True)
-
-        scored = []
-        for stock in stocks:
-            result = _score_stock(stock, sector_name)
-            if result["sneak_score"] > 0:
-                scored.append(result)
-
-        scored.sort(key=lambda x: x["sneak_score"], reverse=True)
-
-        # 板块内 Top 8
-        for s in scored[:8]:
-            print(f"    {s['code']} {s['name']:<8s} "
-                  f"评分{s['sneak_score']:.0f} "
-                  f"主力{s['main_flow_yi']:.2f}亿 "
-                  f"换手{s['turnover']:.1f}% "
-                  f"涨跌{s['change_pct']:+.1f}%",
-                  flush=True)
-
-        all_candidates.extend(scored)
-
-    all_candidates.sort(key=lambda x: x["sneak_score"], reverse=True)
-    return all_candidates
-
-
 def _score_stock(stock: dict, sector_name: str) -> dict:
     """单只股票的潜伏评分 (0-100)"""
     code = stock.get("代码", "").strip()
@@ -378,6 +291,185 @@ def _score_stock(stock: dict, sector_name: str) -> dict:
     }
 
 
+def _score_breakout_stock(stock: dict, sector_name: str) -> dict:
+    """启动模式评分 (0-100)：主力加速流入 + 放量突破 + 价格动量 + 大单主导 + 板块共振"""
+    code = stock.get("代码", "").strip()
+    name = stock.get("名称", "").strip()
+    main_flow = _to_float(stock.get("主力净流入", 0))
+    main_ratio = _to_float(stock.get("主力占比", 0))
+    super_large = _to_float(stock.get("超大单净流入", 0))
+    large_flow = _to_float(stock.get("大单净流入", 0))
+    mid_flow = _to_float(stock.get("中单净流入", 0))
+    small_flow = _to_float(stock.get("小单净流入", 0))
+    turnover = _to_float(stock.get("换手率", 0))
+    volume_ratio = _to_float(stock.get("量比", 0))
+    change_pct = _to_float(stock.get("涨跌幅", 0))
+    market_cap = _to_float(stock.get("总市值", 0))
+    flow_5d = _to_float(stock.get("5日主力净流入", 0))
+    flow_10d = _to_float(stock.get("10日主力净流入", 0))
+    margin_net = _to_float(stock.get("融资净买入", 0))
+    total_large = super_large + large_flow
+    total_retail = mid_flow + small_flow
+
+    signals = []
+    score = 0.0
+
+    # 1. 主力加速流入 (30pts) — 今日主力显著流入 + 趋势加速
+    if main_flow > 100e4:
+        score += 12
+        signals.append(f"主力净流入{_fmt_yi(main_flow)}")
+        if main_ratio > 3:
+            score += 8
+            signals[-1] += f" 占比{main_ratio:.1f}%"
+        if flow_5d > flow_10d and flow_5d > 0:
+            score += 10
+            signals.append(f"趋势加速: 5日{_fmt_yi(flow_5d)} > 10日{_fmt_yi(flow_10d)}")
+    elif main_flow > 0:
+        score += 5
+
+    # 2. 放量突破 (25pts) — 量比放大 + 换手活跃
+    if volume_ratio > 1.5:
+        score += 15
+        signals.append(f"放量: 量比{volume_ratio:.1f}")
+        if turnover > 3:
+            score += 10
+            signals[-1] += f" 换手{turnover:.1f}% → 量价配合"
+    elif volume_ratio > 1.0:
+        score += 8
+        signals.append(f"温和放量: 量比{volume_ratio:.1f}")
+
+    # 3. 价格动量 (20pts) — 涨幅 + 量价方向一致
+    if 1 < change_pct < 9:
+        score += 12
+        signals.append(f"涨跌{change_pct:+.1f}% → 多头启动")
+        if change_pct > 2:
+            score += 8
+    elif 0 < change_pct <= 1:
+        score += 6
+        signals.append(f"涨跌{change_pct:+.1f}% → 温和蓄力")
+    elif change_pct < -3:
+        score -= 5
+        signals.append(f"回调{change_pct:+.1f}% → 注意")
+
+    # 4. 大单主导 (15pts) — 主力买入 vs 散户卖出
+    if total_large > 100e4 and abs(total_large) > abs(total_retail):
+        score += 10
+        signals.append(f"大单主导: {_fmt_yi(total_large)} > 散户{_fmt_yi(total_retail)}")
+        if super_large > large_flow:
+            score += 5
+            signals[-1] += " → 超大单占优"
+
+    # 5. 板块共振 (10pts) — 个股在流入板块中
+    score += 10  # 已经在Top板块中，直接给分
+    if change_pct > 0 and main_flow > 0 and turnover > 1:
+        signals.append(f"板块+资金+量价共振")
+
+    return {
+        "code": code,
+        "name": name,
+        "sector": sector_name,
+        "main_flow_yi": round(main_flow / 1e8, 2),
+        "main_ratio": round(main_ratio, 1),
+        "large_flow_yi": round(total_large / 1e8, 2),
+        "turnover": round(turnover, 1),
+        "volume_ratio": round(volume_ratio, 1),
+        "change_pct": round(change_pct, 1),
+        "market_cap_yi": round(market_cap / 1e8, 0),
+        "flow_5d_yi": round(flow_5d / 1e8, 2),
+        "flow_10d_yi": round(flow_10d / 1e8, 2),
+        "margin_yi": round(margin_net / 1e8, 2),
+        "sneak_score": round(min(score, 100), 1),
+        "signals": signals,
+    }
+
+
+# ============================================================
+# 选股入口（统一）
+# ============================================================
+def screen_stocks(
+    sector_data: Dict[str, dict],
+    dates: List[str],
+    days: int,
+    top_n_sectors: int = 5,
+    mode: str = "sneak",
+) -> List[dict]:
+    """
+    在主力流入板块中筛选股票
+    mode: "sneak" = 潜伏, "breakout" = 启动
+    """
+    if not dates:
+        return []
+    latest_date = dates[0]
+    fund_csv = find_latest_snapshot(latest_date, "fund_flow")
+    if not fund_csv:
+        print(f"  ⚠ 未找到 fund_flow 快照 ({latest_date})", flush=True)
+        return []
+
+    all_stocks = read_csv(fund_csv)
+    print(f"  读取 {len(all_stocks)} 只个股 ({os.path.basename(fund_csv)})", flush=True)
+
+    # Top N 流入板块
+    ranked_sectors = sorted(
+        sector_data.items(),
+        key=lambda x: x[1].get("score", 0),
+        reverse=True,
+    )
+    top_sectors = [
+        (code, data) for code, data in ranked_sectors
+        if data.get("cumulative", 0) > 0 and data.get("n_days", 0) > 0
+    ][:top_n_sectors]
+
+    mode_label = "启动上涨" if mode == "breakout" else "潜伏"
+    print(f"\n  Top {len(top_sectors)} 流入板块 ({mode_label}模式):", flush=True)
+    for code, data in top_sectors:
+        print(f"    {data['name']}({code}) 累计{_fmt_yi(data['cumulative'])} "
+              f"评分{data['score']:.0f}", flush=True)
+
+    # 按行业名称索引
+    sector_stocks: Dict[str, List[dict]] = defaultdict(list)
+    for s in all_stocks:
+        industry = s.get("行业", "").strip()
+        if industry:
+            sector_stocks[industry].append(s)
+
+    # 选股函数
+    scorer = _score_breakout_stock if mode == "breakout" else _score_stock
+
+    all_candidates = []
+    for code, sdata in top_sectors:
+        sector_name = sdata["name"]
+        stocks = sector_stocks.get(sector_name, [])
+        if not stocks:
+            for ind_name, ind_stocks in sector_stocks.items():
+                if sector_name in ind_name or ind_name in sector_name:
+                    stocks = ind_stocks
+                    break
+        if not stocks:
+            print(f"    {sector_name}: 无匹配个股", flush=True)
+            continue
+
+        print(f"\n  [{sector_name}] {len(stocks)} 只成分股 ...", flush=True)
+
+        scored = []
+        for stock in stocks:
+            result = scorer(stock, sector_name)
+            if result["sneak_score"] > 0:
+                scored.append(result)
+
+        scored.sort(key=lambda x: x["sneak_score"], reverse=True)
+        for s in scored[:8]:
+            print(f"    {s['code']} {s['name']:<8s} "
+                  f"评分{s['sneak_score']:.0f} "
+                  f"主力{s['main_flow_yi']:.2f}亿 "
+                  f"换手{s['turnover']:.1f}% "
+                  f"涨跌{s['change_pct']:+.1f}%",
+                  flush=True)
+        all_candidates.extend(scored)
+
+    all_candidates.sort(key=lambda x: x["sneak_score"], reverse=True)
+    return all_candidates
+
+
 # ============================================================
 # 报告生成
 # ============================================================
@@ -386,12 +478,13 @@ def generate_report(
     candidates: List[dict],
     dates: List[str],
     days: int,
+    mode_label: str = "主力潜伏",
 ) -> str:
     """生成 Markdown 分析报告"""
     lines = []
     analyzed_dates = dates[:days]
 
-    lines.append("# 板块资金流 + 主力潜伏分析报告")
+    lines.append(f"# 板块资金流 + {mode_label}分析报告")
     lines.append(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"**分析范围**: {len(analyzed_dates)} 个交易日")
     lines.append(f"**日期**: {', '.join(analyzed_dates)}")
@@ -481,6 +574,7 @@ def generate_report(
 def main() -> None:
     days = 3
     top_n = 5
+    mode = "sneak"  # sneak | breakout
 
     global RESEARCH_ROOT
     for arg in sys.argv[1:]:
@@ -488,13 +582,18 @@ def main() -> None:
             days = int(arg)
         elif arg.startswith("--top="):
             top_n = int(arg.split("=")[1])
+        elif arg.startswith("--mode="):
+            mode = arg.split("=", 1)[1]
         elif arg.startswith("--data-root="):
             RESEARCH_ROOT = arg.split("=", 1)[1]
         elif arg.startswith("--data_root="):
             RESEARCH_ROOT = arg.split("=", 1)[1]
 
+    mode_label = "启动上涨" if mode == "breakout" else "主力潜伏"
+    report_prefix = "BREAKOUT" if mode == "breakout" else "SECTOR_FLOW"
+
     print("═" * 60, flush=True)
-    print(f"  板块资金流 + 主力潜伏分析", flush=True)
+    print(f"  板块资金流 + {mode_label}分析", flush=True)
     print(f"  数据源: {RESEARCH_ROOT}", flush=True)
     print("═" * 60, flush=True)
 
@@ -521,25 +620,28 @@ def main() -> None:
                   f"评分{data['score']:.0f}",
                   flush=True)
 
-    # 3. 潜伏选股
-    print(f"\n[选股] 在Top {top_n}板块中筛选潜伏 ...", flush=True)
-    candidates = screen_sneak_stocks(sector_data, dates, analyze_days, top_n_sectors=top_n)
-    print(f"\n  共 {len(candidates)} 只潜伏候选", flush=True)
+    # 3. 选股
+    print(f"\n[选股] 在Top {top_n}板块中筛选{mode_label} ...", flush=True)
+    candidates = screen_stocks(
+        sector_data, dates, analyze_days,
+        top_n_sectors=top_n, mode=mode,
+    )
+    print(f"\n  共 {len(candidates)} 只候选", flush=True)
 
     # 4. 报告
     print(f"\n[报告] 生成中 ...", flush=True)
-    report = generate_report(sector_data, candidates, dates, analyze_days)
+    report = generate_report(sector_data, candidates, dates, analyze_days, mode_label)
     os.makedirs(REPORT_DIR, exist_ok=True)
 
-    # 清理旧报告，只保留最新
-    old_reports = sorted(glob.glob(os.path.join(REPORT_DIR, "SECTOR_FLOW_REPORT_*.md")))
+    # 清理旧同模式报告，只保留最新
+    old_reports = sorted(glob.glob(os.path.join(REPORT_DIR, f"{report_prefix}_REPORT_*.md")))
     for old in old_reports[:-1]:
         try:
             os.remove(old)
         except Exception:
             pass
 
-    report_path = os.path.join(REPORT_DIR, f"SECTOR_FLOW_REPORT_{datetime.now().strftime('%Y%m%d')}.md")
+    report_path = os.path.join(REPORT_DIR, f"{report_prefix}_REPORT_{datetime.now().strftime('%Y%m%d')}.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"  ✅ {report_path}", flush=True)
