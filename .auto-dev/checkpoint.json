@@ -1,27 +1,33 @@
 {
-  "request": "对 baostock_data/data/20260702/daily 目录下K线数据做策略回归，迭代优化直到胜率≥85%",
-  "status": "in_progress",
-  "started_at": "2026-07-02T00:33:56.130645",
+  "request": "根据 baostock_data 目录下的K线数据&全量数据获取代码，新增K线数据更新代码，根据本机配置使用多线程更新，直到所有的数据更新完结束",
+  "status": "completed",
+  "started_at": "2026-07-02T21:00:00+08:00",
+  "completed_at": "2026-07-02T21:15:00+08:00",
   "acceptance_criteria": [
     {
       "id": 1,
-      "description": "分析当前 kline_discovery.py 的胜率基线",
-      "done": false
+      "description": "探索现有 fetch_all_history.py / fetch_today.py / fetcher.py 的代码结构和数据格式",
+      "done": true
     },
     {
       "id": 2,
-      "description": "优化/新增K线形态模式，提升胜率至85%+",
-      "done": false
+      "description": "新增 fetch_update.py：基于本机 CPU 核心数自动配置多线程，增量拉取所有股票最新K线",
+      "done": true
     },
     {
       "id": 3,
-      "description": "每个达标形态样本量≥15，确保统计显著性",
-      "done": false
+      "description": "支持命令行参数控制更新天数（默认近5日）和线程数（默认 CPU 核心数）",
+      "done": true
     },
     {
       "id": 4,
-      "description": "验证最终结果有≥1个形态胜率≥85%",
-      "done": false
+      "description": "断点续跑：记录已更新的股票，中断后可从断点继续",
+      "done": true
+    },
+    {
+      "id": 5,
+      "description": "运行验证：语法检查通过，数据能正常追加到已有 CSV",
+      "done": true
     }
   ]
 }
