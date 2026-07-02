@@ -518,7 +518,8 @@ def discover(data_dir: str, target_win_rate: float,
         else:
             n += 50
 
-    all_batch_results = []
+    all_batch_results = {}
+    accumulated = {}  # (pname, hold) → (wr, total, wins, pname, hold, avg_r)
     found_qualifying = False
 
     WIN_THRESHOLD = 0.005  # 最小盈利阈值：0.5%，过滤噪音
@@ -618,7 +619,11 @@ def discover(data_dir: str, target_win_rate: float,
                         batch_results.append((wr, total, wins, pname, hold, avg_r))
 
         batch_results.sort(reverse=True)
-        all_batch_results = batch_results
+        # 累积所有批次的形态（去重：同形态+同周期保留最大的 n）
+        for wr, total, wins, pname, hold, avg_r in batch_results:
+            key = (pname, hold)
+            if key not in accumulated or total > accumulated[key][1]:
+                accumulated[key] = (wr, total, wins, pname, hold, avg_r)
 
         # Show top from each category
         shown = 0
@@ -638,6 +643,7 @@ def discover(data_dir: str, target_win_rate: float,
         else:
             print(f"  未发现达标形态，扩大样本...")
 
+    all_batch_results = sorted(accumulated.values(), reverse=True)
     return all_batch_results, found_qualifying
 
 
@@ -653,14 +659,14 @@ def print_final_report(batch_results, target_win_rate):
     qualifying.sort(reverse=True)
 
     if qualifying:
-        print(f"达标形态 (胜率≥{target_win_rate}%, 样本≥15): {len(qualifying)} 个")
+        print(f"达标形态 (胜率≥{target_win_rate}%, 样本≥8): {len(qualifying)} 个")
         print()
         print(f"{'形态名称':40s} {'周期':6s} {'胜率':>7s} {'样本':>6s} {'均收益':>8s}")
         print("-" * 75)
         for wr, total, wins, pname, hold, avg_r in qualifying:
             print(f"{pname:40s} T+{hold:<4d} {wr:6.1f}% {total:5d}  {avg_r:+7.2f}%")
     else:
-        print(f"未发现达标形态 (胜率≥{target_win_rate}%, 样本≥15)")
+        print(f"未发现达标形态 (胜率≥{target_win_rate}%, 样本≥8)")
         print()
         print("TOP 15 形态 (按胜率):")
         print()

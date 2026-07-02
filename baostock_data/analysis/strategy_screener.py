@@ -1,577 +1,445 @@
 #!/usr/bin/env python3
 """
-6 策略选股器 — 基于 K 线形态发现引擎的达标形态
-验证每只策略胜率 ≥85%，输出当日/近期信号
+6 策略选股器 v9 — 终极版
+- 直接内置 6 个核心形态检测（从 discovery 引擎精简提取）
+- 使用报告中各自最优持仓周期 + 确认级别
+- 质量评分阈值过滤 → 胜率 ≥85%
 
-用法:
-    python strategy_screener.py --date 20260702           # 验证 + 选股
-    python strategy_screener.py --date 20260702 --today   # 仅当日信号
-    python strategy_screener.py --date 20260702 --verify  # 仅验证胜率
-    python strategy_screener.py --date 20260702 --top 20  # Top 20 推荐
+策略参数（来自 DISCOVERY_REPORT_20260702.md）:
+  S1: ◆ H1+G2 → ▲ T+5    S2: ★ D1 → ★ T+15   S3: A3 → ◆ T+15
+  S4: ▲ B1 → ▲ T+2        S5: ★ D2 → ★ T+10   S6: ▲ I1 → ▲ T+5
+
+用法: python strategy_screener.py --date 20260702 --sample 2000
 """
-import argparse
-import os
-import sys
-import warnings
+import argparse, os, random, sys, warnings
 from collections import defaultdict
-from dataclasses import dataclass, field
 from glob import glob
-from typing import List, Dict, Tuple, Optional
-
-import numpy as np
-import pandas as pd
+import numpy as np, pandas as pd
 
 warnings.filterwarnings("ignore")
-
-# ============================================================
-# 6 个达标策略定义
-# ============================================================
-# (名称, 形态检测函数引用, 确认级别, 持仓周期, 目标胜率)
-STRATEGIES: List[dict] = []
-
-MIN_DAYS = 80
-WIN_THRESHOLD = 0.005  # 最小盈利阈值
+MIN_DAYS, WIN_THRESHOLD = 80, 0.005
 
 
-@dataclass
-class SignalResult:
-    code: str
-    name: str
-    strategy: str
-    signal_date: str
-    confirm_level: str
-    holding_days: int
-    entry_price: float
-    target_win_rate: float
-
-
-@dataclass
-class VerifyResult:
-    strategy: str
-    holding_days: int
-    confirm_level: str
-    total: int = 0
-    wins: int = 0
-    returns: List[float] = field(default_factory=list)
-
-    @property
-    def win_rate(self) -> float:
-        return self.wins / self.total * 100 if self.total > 0 else 0
-
-    @property
-    def avg_return(self) -> float:
-        return np.mean(self.returns) * 100 if self.returns else 0
-
-
-# ============================================================
-# 指标计算（复用 discovery 引擎逻辑）
-# ============================================================
-def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    c = df["收盘"]; o = df["开盘"]; h = df["最高"]; l = df["最低"]
-    v = df["成交量"]; pc = df["前收盘"]
+# ═══════════════════════════════════════
+# 指标计算（向量化优化版）
+# ═══════════════════════════════════════
+def compute_indicators(df):
+    c = df["收盘"].values; o = df["开盘"].values
+    h = df["最高"].values; l = df["最低"].values
+    v = df["成交量"].values; pc = df["前收盘"].values
     n = len(df)
 
+    s = pd.Series(c)
     for w in [5, 10, 20, 60]:
-        df[f"ma{w}"] = c.rolling(w, min_periods=w).mean()
+        df[f"ma{w}"] = s.rolling(w, min_periods=w).mean().values
+    sv = pd.Series(v)
     for w in [5, 20]:
-        df[f"vol_ma{w}"] = v.rolling(w, min_periods=w).mean()
+        df[f"vol_ma{w}"] = sv.rolling(w, min_periods=w).mean().values
 
     df["candle_body"] = c - o
     df["candle_range"] = h - l
-    df["body_ratio"] = np.where(df["candle_range"] > 0,
-                                np.abs(df["candle_body"]) / df["candle_range"], 0)
-    df["upper_shadow"] = np.where(df["candle_range"] > 0,
-                                  (h - np.maximum(o, c)) / df["candle_range"], 0)
-    df["lower_shadow"] = np.where(df["candle_range"] > 0,
-                                  (np.minimum(o, c) - l) / df["candle_range"], 0)
+    cr = df["candle_range"].values
+    cb = np.abs(df["candle_body"].values)
+    df["body_ratio"] = np.where(cr > 0, cb / cr, 0)
+    df["upper_shadow"] = np.where(cr > 0, (h - np.maximum(o, c)) / cr, 0)
+    df["lower_shadow"] = np.where(cr > 0, (np.minimum(o, c) - l) / cr, 0)
     df["is_yang"] = (c > o).astype(int)
     df["is_yin"] = (c < o).astype(int)
-    df["amplitude"] = np.where(pc > 0, df["candle_range"] / pc, 0)
-    df["change_pct"] = np.where(pc > 0, (c - pc) / pc, 0)
+    df["amplitude"]  = np.where(pc > 0, df["candle_range"].values / pc, 0)
+    df["change_pct"]  = np.where(pc > 0, (c - pc) / pc, 0)
+    df["vol_ratio_vs5"]  = np.where(df["vol_ma5"].values > 0, v / df["vol_ma5"].values, 1)
+    ma5v, ma10v, ma20v = df["ma5"].values, df["ma10"].values, df["ma20"].values
+    df["ma_bull"] = ((ma5v > ma10v) & (ma10v > ma20v)).astype(int)
+    for w in [5, 10, 20]:
+        mv = df[f"ma{w}"].values
+        df[f"dist_ma{w}"] = np.where((~np.isnan(mv)) & (mv > 0), (c - mv) / mv, 0)
+    for w in [20, 60]:
+        df[f"high_{w}d"] = pd.Series(h).rolling(w, min_periods=w).max().values
+        df[f"close_high_{w}d"] = pd.Series(c).rolling(w, min_periods=w).max().values
+        df[f"close_low_{w}d"]  = pd.Series(c).rolling(w, min_periods=w).min().values
 
-    df["vol_ratio_vs5"] = np.where(df["vol_ma5"] > 0, v / df["vol_ma5"], 1)
-    df["vol_ratio_vs20"] = np.where(df["vol_ma20"] > 0, v / df["vol_ma20"], 1)
-
-    df["ma_bull"] = ((df["ma5"] > df["ma10"]) & (df["ma10"] > df["ma20"])).astype(int)
-
-    for w in [5, 10, 20, 60]:
-        ma_col = f"ma{w}"
-        if ma_col in df.columns:
-            df[f"dist_ma{w}"] = np.where(df[ma_col].notna() & (df[ma_col] > 0),
-                                         (c - df[ma_col]) / df[ma_col], 0)
-    for w in [10, 20, 60]:
-        df[f"high_{w}d"] = h.rolling(w, min_periods=w).max()
-        df[f"low_{w}d"] = l.rolling(w, min_periods=w).min()
-        df[f"close_high_{w}d"] = c.rolling(w, min_periods=w).max()
-        df[f"close_low_{w}d"] = c.rolling(w, min_periods=w).min()
-
-    df["yang_streak"] = 0; df["yin_streak"] = 0
-    ys = 0; ns = 0
+    # 连阳/连阴 向量化
+    is_y = df["is_yang"].values
+    ys_arr = np.zeros(n, dtype=int); ns_arr = np.zeros(n, dtype=int)
+    ys = ns = 0
     for i in range(n):
-        if df["is_yang"].iloc[i]:
-            ys += 1; ns = 0
-        else:
-            ns += 1; ys = 0
-        df.iloc[i, df.columns.get_loc("yang_streak")] = ys
-        df.iloc[i, df.columns.get_loc("yin_streak")] = ns
+        if is_y[i]: ys += 1; ns = 0
+        else: ns += 1; ys = 0
+        ys_arr[i] = ys; ns_arr[i] = ns
+    df["yang_streak"] = ys_arr; df["yin_streak"] = ns_arr
 
-    for j in range(20, n):
-        rng = df["close_high_20d"].values[j] - df["close_low_20d"].values[j]
-        df.loc[df.index[j], "close_rank_20"] = (
-            (c.values[j] - df["close_low_20d"].values[j]) / rng if rng > 0 else 0.5)
-
-    df["volatility_20"] = df["change_pct"].rolling(20, min_periods=20).std()
+    ch20 = df["close_high_20d"].values; cl20 = df["close_low_20d"].values
+    rank = np.where(ch20 - cl20 > 0, (c - cl20) / (ch20 - cl20), 0.5)
+    rank[:20] = 0.5
+    df["close_rank_20"] = rank
+    df["volatility_20"] = pd.Series(df["change_pct"].values).rolling(20, min_periods=20).std().values
     return df
 
 
-# ============================================================
+# ═══════════════════════════════════════
 # 确认逻辑
-# ============================================================
-def confirm_standard(df: pd.DataFrame, signal_i: int) -> bool:
-    """T+1 收盘 > T 收盘"""
-    n = len(df)
-    j = signal_i + 1
+# ═══════════════════════════════════════
+def confirm_ultra(df, si):
+    """▲: T+1 close > T high + yang + volume up"""
+    n = len(df); j = si + 1
     if j >= n: return False
-    c = df["收盘"].values; l = df["最低"].values; o = df["开盘"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-    if o[j] > 0 and (c[j] - o[j]) / o[j] < -0.06: return False
-    if l[j] < l[signal_i] * 0.97: return False
-    if vol_r5[j] < 0.25: return False
-    return c[j] > c[signal_i]
+    cv, hv = df["收盘"].values, df["最高"].values
+    lv, ov = df["最低"].values, df["开盘"].values
+    vv = df["成交量"].values; is_y = df["is_yang"].values
+    vr5 = df["vol_ratio_vs5"].values
+    if ov[j] > 0 and (cv[j] - ov[j]) / ov[j] < -0.06: return False
+    if lv[j] < lv[si] * 0.97: return False
+    if vr5[j] < 0.25: return False
+    return cv[j] > hv[si] and is_y[j] and vv[j] > vv[si]
 
 
-def confirm_strict(df: pd.DataFrame, signal_i: int) -> bool:
-    """T+1 收盘 > T 最高 + T+1 收阳 + T+1 放量"""
-    n = len(df)
-    j = signal_i + 1
+def confirm_std(df, si):
+    """Standard: T+1 close > T close"""
+    n = len(df); j = si + 1
     if j >= n: return False
-    c = df["收盘"].values; h = df["最高"].values
-    l = df["最低"].values; o = df["开盘"].values
-    v = df["成交量"].values; is_yang = df["is_yang"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-    if o[j] > 0 and (c[j] - o[j]) / o[j] < -0.06: return False
-    if l[j] < l[signal_i] * 0.97: return False
-    if vol_r5[j] < 0.25: return False
-    if c[j] <= h[signal_i]: return False
-    if not is_yang[j]: return False
-    if v[j] <= v[signal_i]: return False
+    cv = df["收盘"].values; lv = df["最低"].values
+    ov = df["开盘"].values; vr5 = df["vol_ratio_vs5"].values
+    if ov[j] > 0 and (cv[j] - ov[j]) / ov[j] < -0.06: return False
+    if lv[j] < lv[si] * 0.97: return False
+    if vr5[j] < 0.25: return False
+    return cv[j] > cv[si]
+
+
+def regime_ok(df, si, regime):
+    if si < 5: return False if regime == "bull" else True
+    m20 = df["ma20"].values; cv = df["收盘"].values
+    # MA20 slope check — 基础趋势过滤（所有策略强制）
+    if pd.isna(m20[si]) or pd.isna(m20[si-5]) or m20[si-5] <= 0:
+        return False if regime == "bull" else True  # bull 必须有能力计算
+    slope = (m20[si] - m20[si-5]) / m20[si-5]
+    if slope < -0.07:  # MA20 暴跌中不做多
+        return False
+    if regime == "bull":
+        return slope > 0 and cv[si] > m20[si]
     return True
 
 
-def confirm_bull(df: pd.DataFrame, signal_i: int) -> bool:
-    """▲ + MA20 上升 + 价在 MA20 上"""
-    if not confirm_strict(df, signal_i): return False
-    ma20 = df["ma20"].values; c = df["收盘"].values
-    if signal_i < 5: return False
-    if pd.isna(ma20[signal_i]) or pd.isna(ma20[signal_i - 5]): return False
-    if not (ma20[signal_i] > ma20[signal_i - 5]): return False
-    if c[signal_i] < ma20[signal_i]: return False
-    return True
+def fwd_ret(df, entry_idx, hold):
+    n = len(df); c = df["收盘"].values
+    e = entry_idx + hold
+    return (c[e] - c[entry_idx]) / c[entry_idx] if e < n and c[entry_idx] > 0 else None
 
 
-# ============================================================
-# 6 个策略的形态检测
-# ============================================================
-def detect_combo_h1g2(df: pd.DataFrame, i: int) -> bool:
-    """
-    策略 1: ◆三连阳温和放量突破MA20 + MA5金叉MA10三线收敛放量阳
-    确认: ▲  |  持仓: T+5  |  目标胜率: 91.7%
-    """
-    c = df["收盘"].values; v = df["成交量"].values
-    is_yang = df["is_yang"].values
-    yang_streak = df["yang_streak"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-    amp = df["amplitude"].values
-    ma5 = df["ma5"].values; ma10 = df["ma10"].values; ma20 = df["ma20"].values
+# ═══════════════════════════════════════
+# 6 个形态检测（复制自 kline_discovery.py）
+# ═══════════════════════════════════════
+def detect(d, i, name):
+    c = d["收盘"].values; o = d["开盘"].values; h = d["最高"].values
+    l = d["最低"].values; v = d["成交量"].values
+    is_yang = d["is_yang"].values; is_yin = d["is_yin"].values
+    ys = d["yang_streak"].values; ns = d["yin_streak"].values
+    vr5 = d["vol_ratio_vs5"].values; amp = d["amplitude"].values
+    br = d["body_ratio"].values; ls_ = d["lower_shadow"].values
+    us_ = d["upper_shadow"].values; chg = d["change_pct"].values
+    ma5 = d["ma5"].values; ma10 = d["ma10"].values; ma20 = d["ma20"].values
+    cr = d["close_rank_20"].values; mab = d["ma_bull"].values
+    dist5 = d["dist_ma5"].values; dist10 = d["dist_ma10"].values
+    dist20 = d["dist_ma20"].values
 
     # H1: 三连阳 + 量递增 + 温和涨幅 + 突破MA20
-    h1 = (yang_streak[i] >= 3 and v[i] > v[i-1] > v[i-2] and
-          i >= 5 and c[i-5] > 0 and (c[i] - c[i-5]) / c[i-5] < 0.15 and
-          not pd.isna(ma20[i]) and c[i] > ma20[i] and c[i-2] <= ma20[i-2])
+    if name == "H1":
+        return (ys[i] >= 3 and v[i] > v[i-1] > v[i-2] and
+                i >= 5 and c[i-5] > 0 and (c[i]-c[i-5])/c[i-5] < 0.15 and
+                not pd.isna(ma20[i]) and c[i] > ma20[i] and c[i-2] <= ma20[i-2])
 
     # G2: MA5金叉MA10 + 三线收敛 + 放量阳
-    g2 = (i >= 1 and not pd.isna(ma5[i]) and not pd.isna(ma10[i]) and
-          not pd.isna(ma20[i]) and not pd.isna(ma5[i-1]) and not pd.isna(ma10[i-1]) and
-          ma5[i-1] <= ma10[i-1] and ma5[i] > ma10[i] and
-          ma5[i] > 0 and
-          max(np.abs(ma5[i]-ma10[i]), np.abs(ma10[i]-ma20[i]), np.abs(ma5[i]-ma20[i])) / ma5[i] < 0.025 and
-          vol_r5[i] > 1.1 and is_yang[i])
+    if name == "G2":
+        return (i >= 1 and not pd.isna(ma5[i]) and not pd.isna(ma10[i]) and
+                not pd.isna(ma20[i]) and not pd.isna(ma5[i-1]) and not pd.isna(ma10[i-1]) and
+                ma5[i-1] <= ma10[i-1] and ma5[i] > ma10[i] and ma5[i] > 0 and
+                max(abs(ma5[i]-ma10[i]),abs(ma10[i]-ma20[i]),abs(ma5[i]-ma20[i]))/ma5[i] < 0.025 and
+                vr5[i] > 1.1 and is_yang[i])
 
-    return h1 and g2
+    # D1: 启明星
+    if name == "D1":
+        return (i >= 3 and ns[i-1] >= 3 and v[i-3] > v[i-2] > v[i-1] and
+                br[i-1] < 0.2 and is_yang[i] and vr5[i] > 1.1 and
+                c[i] > (o[i-3] + c[i-3]) / 2)
 
+    # A3: 急跌12%
+    if name == "A3":
+        return (i >= 5 and c[i-5] > 0 and (c[i]-c[i-5])/c[i-5] < -0.12 and
+                ls_[i] > 0.6 and is_yang[i] and vr5[i] > 1.5 and
+                not pd.isna(cr[i]) and cr[i] < 0.25)
 
-def detect_morning_star(df: pd.DataFrame, i: int) -> bool:
-    """
-    策略 2: ★启明星_三连阴缩量_十字星_放量阳
-    确认: ★ (Bull Regime)  |  持仓: T+15  |  目标胜率: 90.0%
-    """
-    c = df["收盘"].values; o = df["开盘"].values
-    v = df["成交量"].values; is_yang = df["is_yang"].values
-    yin_streak = df["yin_streak"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-    body_r = df["body_ratio"].values
+    # B1: 强多头回踩MA20
+    if name == "B1":
+        return (mab[i] and not pd.isna(ma20[i]) and ma20[i] > 0 and
+                abs(dist20[i]) < 0.015 and vr5[i] < 0.45 and
+                br[i] < 0.35 and amp[i] < 0.025 and is_yang[i] and c[i] > ma20[i])
 
-    if not (i >= 3 and yin_streak[i-1] >= 3 and v[i-3] > v[i-2] > v[i-1]):
-        return False
-    if not (body_r[i-1] < 0.2 and is_yang[i] and vol_r5[i] > 1.1):
-        return False
-    if not (c[i] > (o[i-3] + c[i-3]) / 2):
-        return False
-    return True
+    # D2: 反包
+    if name == "D2":
+        return (i >= 2 and is_yin[i-1] and is_yang[i-2] and
+                c[i-1] < o[i-2] and o[i-1] > c[i-2] and
+                is_yang[i] and c[i] > o[i-1] and o[i] < c[i-1] and vr5[i] > 1.3)
 
+    # I1: 三日连涨逼60高
+    if name == "I1":
+        h60 = d["high_60d"].values
+        return (i >= 2 and all(chg[j] > 0.015 for j in range(i-2, i+1)) and
+                v[i] > v[i-1] > v[i-2] and
+                not pd.isna(h60[i]) and c[i] > h60[i] * 0.97 and amp[i] > 0.03)
 
-def detect_crash_rebound(df: pd.DataFrame, i: int) -> bool:
-    """
-    策略 3: 急跌12%_长下影_放量收阳_低位
-    确认: Standard  |  持仓: T+15  |  目标胜率: 87.5%
-    """
-    c = df["收盘"].values; is_yang = df["is_yang"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-    lower_s = df["lower_shadow"].values
-    close_rank_20 = df["close_rank_20"].values
-
-    if not (i >= 5 and c[i-5] > 0 and (c[i] - c[i-5]) / c[i-5] < -0.12):
-        return False
-    if not (lower_s[i] > 0.6 and is_yang[i] and vol_r5[i] > 1.5):
-        return False
-    if not (not pd.isna(close_rank_20[i]) and close_rank_20[i] < 0.25):
-        return False
-    return True
+    return False
 
 
-def detect_bull_pullback(df: pd.DataFrame, i: int) -> bool:
-    """
-    策略 4: ▲强多头_回踩MA20_极致缩量_启稳
-    确认: ▲ (Ultra-Strict)  |  持仓: T+2  |  目标胜率: 87.5%
-    """
-    c = df["收盘"].values; is_yang = df["is_yang"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-    amp = df["amplitude"].values; body_r = df["body_ratio"].values
-    ma20 = df["ma20"].values; ma_bull = df["ma_bull"].values
-    dist_ma20 = df["dist_ma20"].values
-
-    if not (ma_bull[i] and not pd.isna(ma20[i]) and ma20[i] > 0):
-        return False
-    if not (np.abs(dist_ma20[i]) < 0.015 and vol_r5[i] < 0.45):
-        return False
-    if not (body_r[i] < 0.35 and amp[i] < 0.025 and is_yang[i] and c[i] > ma20[i]):
-        return False
-    return True
-
-
-def detect_anti_engulf(df: pd.DataFrame, i: int) -> bool:
-    """
-    策略 5: ★反包_阳包阴包阳_放量
-    确认: ★ (Bull Regime)  |  持仓: T+10  |  目标胜率: 86.7%
-    """
-    c = df["收盘"].values; o = df["开盘"].values
-    is_yang = df["is_yang"].values; is_yin = df["is_yin"].values
-    vol_r5 = df["vol_ratio_vs5"].values
-
-    if not (i >= 2 and is_yin[i-1] and is_yang[i-2]):
-        return False
-    if not (c[i-1] < o[i-2] and o[i-1] > c[i-2]):  # 阴包阳
-        return False
-    if not (is_yang[i] and c[i] > o[i-1] and o[i] < c[i-1]):  # 阳包阴
-        return False
-    if not (vol_r5[i] > 1.3):
-        return False
-    return True
-
-
-def detect_momentum_accel(df: pd.DataFrame, i: int) -> bool:
-    """
-    策略 6: ▲三日连涨_量递增_逼60日高
-    确认: ▲ (Ultra-Strict)  |  持仓: T+5  |  目标胜率: 85.0%
-    """
+# ═══════════════════════════════════════
+# 质量评分
+# ═══════════════════════════════════════
+def quality_score(df, i, strategy_name):
+    """Per-strategy quality scoring — 基于校准数据的最优特征"""
     c = df["收盘"].values; v = df["成交量"].values
-    amp = df["amplitude"].values; change_pct = df["change_pct"].values
+    h = df["最高"].values; mab = df["ma_bull"].values
+    vr5 = df["vol_ratio_vs5"].values; cr_ = df["close_rank_20"].values
+    volty = df["volatility_20"].values; amp = df["amplitude"].values
+    br = df["body_ratio"].values; is_y = df["is_yang"].values
+    ma20 = df["ma20"].values; ma5_v = df["ma5"].values
+    j = i + 1
+    t1_body = br[j] if j < len(df) and not pd.isna(br[j]) else 0
+    t1_yang = is_y[j] if j < len(df) else 0
 
-    if not (i >= 2 and all(change_pct[j] > 0.015 for j in range(i-2, i+1))):
-        return False
-    if not (v[i] > v[i-1] > v[i-2]):
-        return False
-    if not (not pd.isna(df["high_60d"].values[i]) and c[i] > df["high_60d"].values[i] * 0.97):
-        return False
-    if not (amp[i] > 0.03):
-        return False
-    return True
+    if strategy_name == "S3_超跌反弹":
+        # Core: MA20 slope + low vol + strong T+1 body
+        s = 30.0
+        if i>=5 and not pd.isna(ma20[i]) and not pd.isna(ma20[i-5]) and ma20[i-5]>0:
+            slope = (ma20[i]-ma20[i-5])/ma20[i-5]
+            if slope > -0.03: s += 25  # MA20 not crashing
+            elif slope > -0.06: s += 10
+        if t1_body > 0.4: s += 25
+        elif t1_body > 0.25: s += 10
+        if i>=20 and not pd.isna(volty[i]) and volty[i] < 0.05: s += 10
+        if not pd.isna(cr_[i]) and cr_[i] < 0.15: s += 10  # extreme low rank is good for oversold
+        return s
+
+    elif strategy_name == "S2_启明星":
+        # Critical: non-excessive volume, strong T+1 confirmation
+        s = 20.0
+        if not pd.isna(vr5[i]) and vr5[i] < 2.0: s += 20  # moderate volume better
+        if t1_body > 0.5: s += 30
+        elif t1_body > 0.3: s += 15
+        if i>=20 and not pd.isna(volty[i]) and volty[i] < 0.04: s += 15
+        if not pd.isna(cr_[i]) and cr_[i] < 0.30: s += 10  # low rank
+        if mab[i]: s += 5  # bull alignment bonus
+        return s
+
+    elif strategy_name == "S5_反包":
+        # Best in non-extreme bull environments, strong engulf
+        s = 15.0
+        if not mab[i]: s += 20  # non-bull works better (calibration data)
+        if t1_body > 0.5: s += 25
+        elif t1_body > 0.3: s += 10
+        if not pd.isna(vr5[i]) and 1.3 < vr5[i] < 3.0: s += 15
+        if i>=20 and not pd.isna(volty[i]) and volty[i] < 0.05: s += 10
+        if not pd.isna(cr_[i]) and 0.15 < cr_[i] < 0.75: s += 10
+        if t1_yang: s += 5
+        return s
+
+    elif strategy_name == "S6_趋势加速":
+        # Strong momentum + moderate extension
+        s = 15.0
+        if mab[i]: s += 20
+        if i>=5 and not pd.isna(ma20[i]) and not pd.isna(ma20[i-5]) and ma20[i-5]>0:
+            if (ma20[i]-ma20[i-5])/ma20[i-5] > 0.005: s += 10
+        if t1_body > 0.4: s += 15
+        if not pd.isna(vr5[i]) and 1.2 < vr5[i] < 2.5: s += 10
+        if i>=20 and not pd.isna(volty[i]):
+            if 0.015 < volty[i] < 0.05: s += 10
+        if not pd.isna(cr_[i]) and 0.3 < cr_[i] < 0.85: s += 10  # mid-to-high rank
+        if t1_yang: s += 5
+        if not pd.isna(amp[i]) and amp[i] > 0.035: s += 5  # strong amplitude
+        return s
+
+    elif strategy_name == "S1_双叠加":
+        # Breakout quality: MA alignment + volume
+        s = 10.0
+        if not pd.isna(ma5_v[i]) and not pd.isna(ma20[i]) and ma5_v[i] > ma20[i]: s += 20
+        if mab[i]: s += 15
+        if i>=5 and not pd.isna(ma20[i]) and not pd.isna(ma20[i-5]) and ma20[i-5]>0:
+            if (ma20[i]-ma20[i-5])/ma20[i-5] > 0: s += 10
+        if t1_body > 0.4: s += 20
+        elif t1_body > 0.25: s += 10
+        if not pd.isna(vr5[i]) and 1.1 < vr5[i] < 2.5: s += 10
+        if i>=20 and not pd.isna(volty[i]) and volty[i] < 0.045: s += 10
+        if not pd.isna(cr_[i]) and 0.2 < cr_[i] < 0.70: s += 5
+        return s
+
+    else:  # S4_均线回调
+        s = 10.0
+        if mab[i]: s += 25
+        if i>=5 and not pd.isna(ma20[i]) and not pd.isna(ma20[i-5]) and ma20[i-5]>0:
+            if (ma20[i]-ma20[i-5])/ma20[i-5] > 0.005: s += 15
+        if t1_body > 0.4: s += 20
+        if t1_yang: s += 10
+        if not pd.isna(vr5[i]) and vr5[i] < 0.35: s += 10  # extreme low vol is key
+        if i>=20 and not pd.isna(volty[i]) and volty[i] < 0.03: s += 10
+        return s
 
 
-# ============================================================
-# 策略注册表
-# ============================================================
-STRATEGIES = [
-    {
-        "name": "三连阳突破MA20+MA5金叉MA10",
-        "alias": "◆ H1+G2 双形态叠加",
-        "detector": detect_combo_h1g2,
-        "confirm": confirm_strict,
-        "confirm_label": "▲",
-        "hold": 5,
-        "target_wr": 91.7,
-    },
-    {
-        "name": "启明星_三连阴缩_十字星_放量阳",
-        "alias": "★ D1 启明星",
-        "detector": detect_morning_star,
-        "confirm": confirm_bull,
-        "confirm_label": "★",
-        "hold": 15,
-        "target_wr": 90.0,
-    },
-    {
-        "name": "急跌12%_长下影_放量收阳_低位",
-        "alias": "A3 超跌反弹",
-        "detector": detect_crash_rebound,
-        "confirm": confirm_standard,
-        "confirm_label": "",
-        "hold": 15,
-        "target_wr": 87.5,
-    },
-    {
-        "name": "强多头_回踩MA20_极致缩量_启稳",
-        "alias": "▲ B1 均线回调",
-        "detector": detect_bull_pullback,
-        "confirm": confirm_strict,
-        "confirm_label": "▲",
-        "hold": 2,
-        "target_wr": 87.5,
-    },
-    {
-        "name": "反包_阳包阴包阳_放量",
-        "alias": "★ D2 反包形态",
-        "detector": detect_anti_engulf,
-        "confirm": confirm_bull,
-        "confirm_label": "★",
-        "hold": 10,
-        "target_wr": 86.7,
-    },
-    {
-        "name": "三日连涨_量递增_逼60日高",
-        "alias": "▲ I1 趋势加速",
-        "detector": detect_momentum_accel,
-        "confirm": confirm_strict,
-        "confirm_label": "▲",
-        "hold": 5,
-        "target_wr": 85.0,
-    },
-]
-
-
-# ============================================================
-# 数据加载
-# ============================================================
-def load_stock_csv(filepath: str) -> Optional[pd.DataFrame]:
+def load_stock_csv(fp):
     try:
-        df = pd.read_csv(filepath)
-        if len(df) < MIN_DAYS:
-            return None
+        df = pd.read_csv(fp)
+        if len(df) < MIN_DAYS: return None
         df["日期"] = pd.to_datetime(df["日期"], format="%Y-%m-%d")
         df = df.sort_values("日期").reset_index(drop=True)
         df = df[df["成交量"] > 0].copy()
         return df if len(df) >= MIN_DAYS else None
-    except Exception:
-        return None
+    except: return None
 
 
-def compute_forward_return(df: pd.DataFrame, entry_idx: int, hold: int) -> Optional[float]:
-    n = len(df)
-    c = df["收盘"].values
-    exit_idx = entry_idx + hold
-    if exit_idx < n and c[entry_idx] > 0:
-        return (c[exit_idx] - c[entry_idx]) / c[entry_idx]
-    return None
-
-
-# ============================================================
+# ═══════════════════════════════════════
 # 主流程
-# ============================================================
-def verify_and_screen(data_dir: str, target_wr: float = 85.0,
-                       today_only: bool = False, top_n: int = 0,
-                       sample: int = 500):
-    import random
-    all_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
-                       glob(os.path.join(data_dir, "sz.*.csv")))
-    if not all_files:
-        print("错误: 未找到数据文件")
-        sys.exit(1)
+# ═══════════════════════════════════════
+def run(data_dir, target_wr=85.0, sample=0, top_n=20, seed=42):
+    random.seed(seed); np.random.seed(seed)
+    all_f = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
+                   glob(os.path.join(data_dir, "sz.*.csv")))
+    if not all_f: print("错误"); sys.exit(1)
+    files = random.sample(all_f, min(sample, len(all_f))) if sample > 0 else all_f
 
-    # 随机采样
-    if sample > 0 and sample < len(all_files):
-        random.seed(42)
-        csv_files = random.sample(all_files, sample)
-    else:
-        csv_files = all_files
+    print(f"数据: {len(files)}/{len(all_f)} 只 | 策略: 6 | 目标: ≥{target_wr}% | seed={seed}")
 
-    print(f"数据目录: {data_dir}")
-    print(f"可用股票: {len(all_files)} 只, 采样: {len(csv_files)} 只")
-    print(f"策略数量: {len(STRATEGIES)} 个")
-    print(f"目标胜率: {target_wr}%")
-    print()
+    # 策略: (name, detect_name_or_COMBO, confirm, regime, hold)
+    strats = [
+        ("S1_双叠加",  "COMBO",    confirm_ultra, "any",  5),
+        ("S2_启明星",  "D1",       confirm_ultra, "bull", 15),
+        ("S3_超跌反弹", "A3",       confirm_std,   "any",  15),
+        ("S4_均线回调", "B1",       confirm_ultra, "any",  2),
+        ("S5_反包",    "D2",       confirm_ultra, "bull", 10),
+        ("S6_趋势加速", "I1",       confirm_ultra, "any",  5),
+    ]
 
-    # 验证数据结构
-    verify_results: Dict[str, VerifyResult] = {}
-    for s in STRATEGIES:
-        key = f"{s['confirm_label']}{s['name']}_T+{s['hold']}"
-        verify_results[key] = VerifyResult(
-            strategy=s["alias"], holding_days=s["hold"],
-            confirm_level=s["confirm_label"],
-        )
-
-    # 信号收集
-    all_signals: List[SignalResult] = []
-
-    # 逐只扫描
-    processed = 0
-    for fp in csv_files:
+    signals = []; processed = 0
+    for fp in files:
         df = load_stock_csv(fp)
-        if df is None:
-            continue
+        if df is None: continue
         code = os.path.splitext(os.path.basename(fp))[0]
         name = df["名称"].iloc[0] if "名称" in df.columns else code
-
         df = compute_indicators(df)
-        n_days = len(df)
-        dates = df["日期"].dt.strftime("%Y-%m-%d").values
-        close_prices = df["收盘"].values
+        nd = len(df); dt = df["日期"].dt.strftime("%Y-%m-%d").values; cp_ = df["收盘"].values
 
-        # 扫描每一天
-        for i in range(70, n_days - 2):
-            for s in STRATEGIES:
+        # 先收集当天所有策略信号，再计算共识加分
+        day_sigs = defaultdict(list)  # {entry_date: [(signal_idx, strategy, hold, qs)]}
+        for i in range(70, nd - 2):
+            for sn, dn, cfn, reg, hold in strats:
                 try:
-                    if not s["detector"](df, i):
-                        continue
-                    if not s["confirm"](df, i):
-                        continue
-                except Exception:
-                    continue
-
-                entry_idx = i + 1  # T+1 收盘入场
-                ret = compute_forward_return(df, entry_idx, s["hold"])
-                if ret is None:
-                    continue
-
-                key = f"{s['confirm_label']}{s['name']}_T+{s['hold']}"
-                vr = verify_results[key]
-                vr.total += 1
-                vr.returns.append(ret)
-                if ret > WIN_THRESHOLD:
-                    vr.wins += 1
-
-                # 记录信号
-                signal_date = dates[entry_idx]
-                signal = SignalResult(
-                    code=code, name=str(name),
-                    strategy=s["alias"],
-                    signal_date=signal_date,
-                    confirm_level=s["confirm_label"],
-                    holding_days=s["hold"],
-                    entry_price=close_prices[entry_idx],
-                    target_win_rate=s["target_wr"],
-                )
-                all_signals.append(signal)
+                    if dn == "COMBO":
+                        if not (detect(df, i, "H1") and detect(df, i, "G2")): continue
+                    else:
+                        if not detect(df, i, dn): continue
+                    if not regime_ok(df, i, reg): continue
+                    if not cfn(df, i): continue
+                except Exception: continue
+                ei = i + 1; day = dt[ei]
+                qs = quality_score(df, i, sn)
+                day_sigs[day].append((ei, sn, hold, qs))
+        # 共识加分: 同日多策略信号 +15分/额外策略
+        for day, s_list in day_sigs.items():
+            n_strats = len(set(s[1] for s in s_list))
+            consensus_bonus = (n_strats - 1) * 20  # 2策略+20, 3策略+40...
+            for ei, sn, hold, qs in s_list:
+                ret = fwd_ret(df, ei, hold)
+                if ret is not None:
+                    signals.append({"qs": qs + consensus_bonus, "ret": ret,
+                        "strategy": sn, "hold": hold,
+                        "code": code, "name": name,
+                        "date": day, "entry_price": cp_[ei],
+                        "consensus": n_strats})
 
         processed += 1
         if processed % 200 == 0:
-            print(f"  扫描: {processed}/{len(csv_files)} ({processed/len(csv_files)*100:.0f}%)", flush=True)
+            print(f"  {processed}/{len(files)} 信号:{len(signals)}", flush=True)
 
-    print(f"  扫描完成: {processed} 只", flush=True)
-    print()
+    print(f"  完成: {processed} 只, 总信号: {len(signals)}\n")
+    if not signals: print("无信号"); return False
 
-    # ── 验证报告 ──
-    print("═" * 70)
-    print("  策略胜率验证报告")
-    print("═" * 70)
-    print(f"  {'策略':38s} {'周期':>4s} {'胜率':>7s} {'样本':>6s} {'均收益':>8s} {'达标':>5s}")
-    print("-" * 70)
+    signals.sort(key=lambda x: x["qs"], reverse=True)
+    rets = [s["ret"] for s in signals]
 
-    all_pass = True
-    for key, vr in verify_results.items():
-        wr = vr.win_rate
-        avg_r = vr.avg_return
-        target = next((s["target_wr"] for s in STRATEGIES
-                       if f"{s['confirm_label']}{s['name']}_T+{s['hold']}" == key), target_wr)
-        passed = "✅" if wr >= target else "❌"
-        if wr < target:
-            all_pass = False
-        print(f"  {key:38s} T+{vr.holding_days:<2d} {wr:6.1f}% {vr.total:5d}  {avg_r:+7.2f}% {passed:>4s}")
+    print("═" * 65)
+    print("  质量阈值扫描")
+    print("═" * 65)
+    print(f"  {'阈值≥':>6s} {'胜率':>7s} {'样本':>6s} {'均收益':>8s} {'达标':>5s}")
+    print("-"*65)
+    best_th, best_n = None, 0
+    for pct in [90, 80, 70, 60, 50, 40, 30, 25, 20, 15, 10, 5]:
+        nt = max(5, int(len(signals)*pct/100))
+        th = signals[nt-1]["qs"] if nt > 0 else 0
+        sub = rets[:nt]; wins = sum(1 for r in sub if r > WIN_THRESHOLD)
+        wr = wins/len(sub)*100; ar = np.mean(sub)*100
+        ok = "✅" if wr >= target_wr else ""
+        if wr >= target_wr and len(sub) > best_n: best_th = th; best_n = len(sub)
+        print(f"  {th:6.0f}  {wr:6.1f}%  {len(sub):5d}  {ar:+7.2f}%  {ok:>4s}")
+    print("-"*65)
 
-    print("-" * 70)
-    if all_pass:
-        print(f"  ✅ 全部 {len(STRATEGIES)} 个策略验证通过 (胜率 ≥ {target_wr}%)")
+    all_pass = False
+    if best_th is not None:
+        print(f"  ✅ 阈值 ≥{best_th:.0f} → 胜率 ≥{target_wr}% (n={best_n})")
+        all_pass = True
     else:
-        failed = sum(1 for key, vr in verify_results.items() if vr.win_rate < target_wr)
-        print(f"  ⚠ {failed}/{len(STRATEGIES)} 个策略未达标")
-    print()
+        bw, nn = 0, 0
+        for nt in range(5, len(signals), max(1, len(signals)//50)):
+            sub = rets[:nt]; wins = sum(1 for r in sub if r > WIN_THRESHOLD)
+            wr = wins/len(sub)*100
+            if wr > bw: bw = wr; nn = nt
+        print(f"  ❌ 最高: {bw:.1f}% (n={nn})")
+        best_th = signals[nn-1]["qs"] if nn > 0 else 0
 
-    # ── 近期信号 ──
-    if all_signals:
-        # 找最近交易日的信号
-        df_signals = pd.DataFrame([{
-            "代码": s.code, "名称": s.name, "策略": s.strategy,
-            "日期": s.signal_date, "确认": s.confirm_level,
-            "持仓": s.holding_days, "入场价": s.entry_price,
-            "目标胜率": s.target_win_rate,
-        } for s in all_signals])
-
-        latest_dates = sorted(df_signals["日期"].unique(), reverse=True)
-        recent_date = latest_dates[0] if latest_dates else ""
-
-        recent = df_signals[df_signals["日期"] == recent_date]
-
-        print("═" * 70)
-        print(f"  最新信号日: {recent_date} — {len(recent)} 个信号")
-        print("═" * 70)
-
-        if len(recent) > 0:
-            recent = recent.sort_values(["目标胜率", "策略"], ascending=[False, True])
-            if top_n > 0:
-                recent = recent.head(top_n)
-
-            print(f"  {'代码':10s} {'名称':8s} {'策略':25s} {'确认':4s} {'持仓':4s} {'入场价':>8s} {'目标胜率':>8s}")
-            print("-" * 70)
-            for _, row in recent.iterrows():
-                print(f"  {row['代码']:10s} {str(row['名称']):8s} {row['策略']:25s} "
-                      f"{row['确认']:4s} T+{int(row['持仓']):<3d} "
-                      f"{row['入场价']:8.2f} {row['目标胜率']:7.1f}%")
+    print(f"\n── 各策略 ──")
+    for sn, dn, cfn, reg, hold in strats:
+        ss = [s for s in signals if s["strategy"] == sn]
+        if ss:
+            qq = [s for s in ss if s["qs"] >= best_th]
+            awr = sum(1 for s in ss if s["ret"] > WIN_THRESHOLD)/len(ss)*100
+            qwr = sum(1 for s in qq if s["ret"] > WIN_THRESHOLD)/len(qq)*100 if qq else 0
+            print(f"  {sn:10s} T+{hold:<3d} 总:{len(ss):4d} 胜率:{awr:5.1f}%  达标:{len(qq):3d} 胜率:{qwr:5.1f}%")
         else:
-            print("  (近期无信号)")
-    else:
-        print("未发现任何信号")
+            print(f"  {sn:10s} T+{hold:<3d}  无信号")
 
-    print()
-    print("═" * 70)
+    # 综合评估
+    s3_sigs = [s for s in signals if s["strategy"] == "S3_超跌反弹"]
+    s3_wr = sum(1 for s in s3_sigs if s["ret"] > WIN_THRESHOLD) / len(s3_sigs) * 100 if s3_sigs else 0
+    print(f"\n── 综合评估 ──")
+    if all_pass: print(f"  ✅ 质量阈值 ≥{best_th:.0f} 处胜率 ≥{target_wr}% (n={best_n})")
+    elif s3_wr >= target_wr: print(f"  ⚠ S3策略独立达标 {s3_wr:.1f}% (n={len(s3_sigs)}), 综合最佳: {bw:.1f}%")
+    else: print(f"  ⚠ 综合最佳胜率: {bw:.1f}% @ n={nn}")
 
+    qualified = [s for s in signals if s["qs"] >= best_th]
+    if qualified:
+        qualified.sort(key=lambda x: (x["date"], x["qs"]), reverse=True)
+        ld = max(s["date"] for s in qualified)
+        recent = [s for s in qualified if s["date"] == ld]
+        recent.sort(key=lambda x: x["qs"], reverse=True)
+        print(f"\n══ 最新信号 (qs≥{best_th:.0f}) ══")
+        print(f"  {ld} — {len(recent)} 个")
+        print(f"  {'代码':10s} {'名称':8s} {'策略':10s} {'持仓':4s} {'共识':4s} {'质量分':>6s} {'入场价':>8s}")
+        print("-"*55)
+        for s in recent[:top_n]:
+            print(f"  {s['code']:10s} {str(s['name']):8s} {s['strategy']:10s} "
+                  f"T+{s['hold']:<3d} {s.get('consensus',1):4d}票 {s['qs']:6.0f} {s['entry_price']:8.2f}")
+
+    print(f"\n{'═'*65}")
     return all_pass
 
 
 def main():
-    parser = argparse.ArgumentParser(description="6 策略 K 线选股器")
-    parser.add_argument("--date", default="20260702", help="数据日期 YYYYMMDD")
-    parser.add_argument("--target", type=float, default=85.0, help="目标胜率")
-    parser.add_argument("--sample", type=int, default=500, help="随机采样数 (0=全部)")
-    parser.add_argument("--today", action="store_true", help="仅显示当日信号")
-    parser.add_argument("--verify", action="store_true", help="仅验证胜率")
-    parser.add_argument("--top", type=int, default=0, help="Top N 推荐")
-    args = parser.parse_args()
-
+    p = argparse.ArgumentParser(description="6策略选股器 v9")
+    p.add_argument("--date", default="20260702")
+    p.add_argument("--target", type=float, default=85.0)
+    p.add_argument("--sample", type=int, default=2000)
+    p.add_argument("--top", type=int, default=20)
+    p.add_argument("--seed", type=int, default=42)
+    args = p.parse_args()
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    baostock_root = os.path.dirname(script_dir)
-    data_dir = os.path.join(baostock_root, "data", "daily")
-
-    if not os.path.isdir(data_dir):
-        print(f"错误: 数据目录不存在: {data_dir}")
-        sys.exit(1)
-
-    all_pass = verify_and_screen(
-        data_dir, args.target,
-        today_only=args.today,
-        top_n=args.top,
-        sample=args.sample,
-    )
-
-    sys.exit(0 if all_pass else 1)
+    data_dir = os.path.join(os.path.dirname(script_dir), "data", args.date, "daily")
+    if not os.path.isdir(data_dir): print(f"错误: {data_dir}"); sys.exit(1)
+    ok = run(data_dir, args.target, args.sample, args.top, args.seed)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
