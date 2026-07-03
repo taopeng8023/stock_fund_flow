@@ -16,14 +16,16 @@ import random
 import sys
 import warnings
 from collections import defaultdict
-from glob import glob
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
 
-from stock_filter import is_stock_code, load_stock_files, print_filter_summary
+try:
+    from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
+except ImportError:
+    from stock_filter import load_stock_files, print_filter_summary
 
 warnings.filterwarnings("ignore")
 

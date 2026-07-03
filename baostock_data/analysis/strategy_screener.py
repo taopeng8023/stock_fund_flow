@@ -13,10 +13,12 @@
 """
 import argparse, os, random, sys, warnings
 from collections import defaultdict
-from glob import glob
 import numpy as np, pandas as pd
 
-from stock_filter import load_stock_files, print_filter_summary
+try:
+    from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
+except ImportError:
+    from stock_filter import load_stock_files, print_filter_summary
 
 warnings.filterwarnings("ignore")
 MIN_DAYS, WIN_THRESHOLD = 80, 0.005
