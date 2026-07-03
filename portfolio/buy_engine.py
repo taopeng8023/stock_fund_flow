@@ -37,6 +37,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 RESEARCH_ROOT = PROJECT_ROOT / "research_data"
 
+# ── DuckDB 加速层 ──
+try:
+    from db import get_db
+    HAS_DUCKDB = True
+except ImportError:
+    HAS_DUCKDB = False
+
 
 # ═══════════════════════════════════════
 # 崩溃闸门（structure_score 回测: 603201 案例, 108/108 checks）
@@ -60,8 +67,39 @@ def _find_prior_trading_dates(date_str: str, n: int = 3) -> list:
 
 
 def _load_prior_day_returns(prior_dates: list) -> dict:
-    """从 prior_dates 的 scores.csv 读取涨跌幅。返回 {code: [chg_d1, chg_d2, ...]}。"""
+    """从 prior_dates 的 scores.csv 读取涨跌幅。返回 {code: [chg_d1, chg_d2, ...]}。
+
+    使用 DuckDB 跨日 glob 查询替代逐文件 csv.DictReader。
+    """
     from collections import defaultdict
+
+    # DuckDB 加速路径: 全局 glob + 日期过滤
+    if HAS_DUCKDB and prior_dates:
+        try:
+            import pandas as _pd
+            pattern = f"{RESEARCH_ROOT}/*/scores.csv"
+            date_filter = "', '".join(prior_dates)
+            db = get_db()
+            df = db.sql(f"""
+                SELECT 代码, TRY_CAST("涨跌幅" AS DOUBLE) AS chg,
+                       regexp_extract(filename, '([0-9]{{8}})', 1) AS file_date
+                FROM read_csv_auto('{pattern}', filename=true)
+                WHERE 代码 IS NOT NULL AND 代码 != ''
+                  AND regexp_extract(filename, '([0-9]{{8}})', 1) IN ('{date_filter}')
+                ORDER BY file_date DESC
+            """).df()
+
+            returns_map = defaultdict(list)
+            for _, row in df.iterrows():
+                code = str(row['代码'])
+                chg = float(row['chg']) if not _pd.isna(row['chg']) else 0.0
+                returns_map[code].append(chg)
+            if returns_map:
+                return dict(returns_map)
+        except Exception as e:
+            print(f"  DuckDB prior returns 加载失败, 回退: {e}")
+
+    # 回退路径
     returns_map = defaultdict(list)
     for d in prior_dates:
         path = RESEARCH_ROOT / d / "scores.csv"

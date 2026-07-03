@@ -8,6 +8,7 @@ __pycache__/
 .scheduler_history.json
 .playwright-mcp/
 *.db
+*.duckdb
 performance.json
 data/
 research_data/

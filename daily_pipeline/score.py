@@ -10,6 +10,13 @@ import requests
 from collections import defaultdict, Counter
 from datetime import datetime, timezone, timedelta
 
+# ── DuckDB 加速层 ──
+try:
+    from db import get_db, RESEARCH_ROOT as DB_RESEARCH_ROOT
+    HAS_DUCKDB = True
+except ImportError:
+    HAS_DUCKDB = False
+
 # ── 结构分析模块 ──
 try:
     from sector_screener.structurer.scorer import structure_score
@@ -398,23 +405,32 @@ def _load_all_snapshots(date_str, cutoff=None):
     cutoff='1430' 只取 ≤1430 的快照。返回 (snapshots, time_series)
       snapshots: [{ts, stocks: [{code, ...}]}]
       time_series: {code: {ts: {f2, f62, f184, f8, f3}}}
+
+    使用 DuckDB glob 查询替代逐文件 csv.DictReader。
     """
     intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
     if not os.path.isdir(intraday_dir): return [], {}
 
+    # DuckDB 加速路径
+    if HAS_DUCKDB:
+        try:
+            return _load_all_snapshots_duckdb(intraday_dir, cutoff)
+        except Exception as e:
+            print(f"  DuckDB 快照加载失败, 回退 csv.DictReader: {e}")
+
+    # 回退路径: 逐文件 csv.DictReader
     files = sorted([
         f for f in os.listdir(intraday_dir)
         if f.startswith("fund_flow_") and f.endswith(".csv")
     ])
     if not files: return [], {}
 
-    # cutoff 过滤
     if cutoff:
         files = [f for f in files if f.replace("fund_flow_","").replace(".csv","") <= cutoff]
     if not files: return [], {}
 
     snapshots = []
-    time_series = defaultdict(dict)  # {code: {ts: {fields}}}
+    time_series = defaultdict(dict)
 
     for f in files:
         ts = f.replace("fund_flow_", "").replace(".csv", "")
@@ -439,13 +455,77 @@ def _load_all_snapshots(date_str, cutoff=None):
     return snapshots, dict(time_series)
 
 
+def _load_all_snapshots_duckdb(intraday_dir, cutoff=None):
+    """DuckDB 加速版: 单次 glob 查询读取全部快照。"""
+    import pandas as pd
+    db = get_db()
+    pattern = os.path.join(intraday_dir, "fund_flow_*.csv")
+
+    sql = f"""
+        SELECT 代码, 名称,
+            TRY_CAST("最新价" AS DOUBLE) AS f2, TRY_CAST("涨跌幅" AS DOUBLE) AS f3,
+            TRY_CAST("主力净流入" AS DOUBLE) AS f62, TRY_CAST("主力占比" AS DOUBLE) AS f184,
+            TRY_CAST("换手率" AS DOUBLE) AS f8, TRY_CAST("量比" AS DOUBLE) AS f10,
+            regexp_extract(filename, 'fund_flow_([^.]+)\\.csv', 1) AS ts
+        FROM read_csv_auto('{pattern}', filename=true)
+        WHERE 代码 IS NOT NULL AND 代码 != '' AND f2 > 0
+    """
+    if cutoff:
+        sql += f" AND ts <= '{cutoff}'"
+    sql += " ORDER BY ts"
+
+    df = db.sql(sql).df()
+    df['ts'] = df['ts'].astype(str)
+    if cutoff:
+        df = df[df['ts'] <= cutoff]
+
+    # 构建与原函数相同的数据结构
+    snapshots = []
+    time_series = defaultdict(dict)
+
+    for ts, grp in df.groupby('ts', sort=True):
+        stocks_ts = {}
+        for _, row in grp.iterrows():
+            if pd.isna(row['代码']):
+                continue
+            code = str(row['代码'])
+            data = {
+                "f2": float(row['f2']) if not pd.isna(row['f2']) else 0.0,
+                "f3": float(row['f3']) if not pd.isna(row['f3']) else 0.0,
+                "f62": float(row['f62']) if not pd.isna(row['f62']) else 0.0,
+                "f184": float(row['f184']) if not pd.isna(row['f184']) else 0.0,
+                "f8": float(row['f8']) if not pd.isna(row['f8']) else 0.0,
+                "f10": float(row['f10']) if not pd.isna(row['f10']) else 0.0,
+            }
+            stocks_ts[code] = data
+            time_series[code][ts] = data
+        snapshots.append({"ts": str(ts), "stocks": stocks_ts})
+
+    n_multi = sum(1 for v in time_series.values() if len(v) >= 3)
+    cutoff_str = f' 截止{cutoff}' if cutoff else ''
+    if snapshots:
+        print(f"  快照(DuckDB): {len(snapshots)}个 [{snapshots[0]['ts']}→{snapshots[-1]['ts']}]"
+              f"{cutoff_str}  多快照≥3: {n_multi}只")
+    return snapshots, dict(time_series)
+
+
 def _load_sector_snapshots(date_str, cutoff=None):
     """加载全天行业+概念板块流快照，返回时序数据
     {sector_name: {ts: {flow, rank}}, ...}
+
+    使用 DuckDB glob 查询替代逐文件 csv.DictReader。
     """
     intraday_dir = os.path.join(RESEARCH_ROOT, date_str, "intraday")
-    if not os.path.isdir(intraday_dir): return {}, {}
+    if not os.path.isdir(intraday_dir): return {}, {}, {}, {}
 
+    # DuckDB 加速路径
+    if HAS_DUCKDB:
+        try:
+            return _load_sector_snapshots_duckdb(intraday_dir, cutoff)
+        except Exception as e:
+            print(f"  DuckDB 板块快照加载失败, 回退 csv.DictReader: {e}")
+
+    # 回退路径
     def _load_sector_type(prefix):
         files = sorted([f for f in os.listdir(intraday_dir)
                         if f.startswith(prefix) and f.endswith(".csv")])
@@ -462,7 +542,6 @@ def _load_sector_snapshots(date_str, cutoff=None):
                     flow = _tof(r.get("主力净流入"))
                     if name: flows[name] = flow
             snapshots.append((ts, flows))
-        # 计算每个时点的排名
         result = defaultdict(dict)
         for ts, flows in snapshots:
             ranked = sorted(flows.items(), key=lambda x: -x[1])
@@ -476,7 +555,62 @@ def _load_sector_snapshots(date_str, cutoff=None):
     n_ind = sum(1 for v in industry_ts.values() if len(v) >= 2)
     n_con = sum(1 for v in concept_ts.values() if len(v) >= 2)
     print(f"  板块快照: 行业{n_ind}个有轨迹, 概念{n_con}个有轨迹")
-    # 同时提取最新静态流: {name: flow} (替代 _load_sector_flows)
+    sector_static = {}
+    concept_static = {}
+    for name, ts_data in industry_ts.items():
+        if ts_data:
+            latest_ts = max(ts_data.keys())
+            sector_static[name] = ts_data[latest_ts]["flow"]
+    for name, ts_data in concept_ts.items():
+        if ts_data:
+            latest_ts = max(ts_data.keys())
+            concept_static[name] = ts_data[latest_ts]["flow"]
+    return industry_ts, concept_ts, sector_static, concept_static
+
+
+def _load_sector_snapshots_duckdb(intraday_dir, cutoff=None):
+    """DuckDB 加速版: 单次 glob 查询读取全部板块快照。"""
+    import pandas as pd
+    db = get_db()
+
+    def _load_sector_type_duckdb(prefix):
+        pattern = os.path.join(intraday_dir, f"{prefix}*.csv")
+        sql = f"""
+            SELECT "名称",
+                TRY_CAST("主力净流入" AS DOUBLE) AS flow,
+                regexp_extract(filename, '{prefix}([^.]+)\\.csv', 1) AS ts
+            FROM read_csv_auto('{pattern}', filename=true)
+            WHERE "名称" IS NOT NULL AND "名称" != ''
+        """
+        if cutoff:
+            sql += f" AND ts <= '{cutoff}'"
+        sql += " ORDER BY ts"
+
+        df = db.sql(sql).df()
+        if df.empty or len(df['ts'].unique()) < 2:
+            return {}
+
+        result = defaultdict(dict)
+        for ts, grp in df.groupby('ts', sort=True):
+            flows = {}
+            for _, row in grp.iterrows():
+                name = str(row['名称'])
+                flow = float(row['flow']) if not pd.isna(row['flow']) else 0.0
+                if name and name != 'nan':
+                    flows[name] = flow
+            ranked = sorted(flows.items(), key=lambda x: -x[1])
+            for rank, (name, flow) in enumerate(ranked):
+                if name not in result:
+                    result[name] = {}
+                result[name][str(ts)] = {"flow": flow, "rank": rank + 1}
+        return dict(result)
+
+    industry_ts = _load_sector_type_duckdb("industry_flow_")
+    concept_ts = _load_sector_type_duckdb("concept_flow_")
+    n_ind = sum(1 for v in industry_ts.values() if len(v) >= 2)
+    n_con = sum(1 for v in concept_ts.values() if len(v) >= 2)
+    print(f"  板块快照(DuckDB): 行业{n_ind}个有轨迹, 概念{n_con}个有轨迹")
+
     sector_static = {}
     concept_static = {}
     for name, ts_data in industry_ts.items():
@@ -559,7 +693,18 @@ def _multi_snapshot_factors(code, time_series, all_f62_per_ts):
 
 
 def _load_prev_scores(date_str):
-    """加载前一日评分，返回 {code: score}"""
+    """加载前一日评分，返回 {code: score}。
+
+    使用 DuckDB 跨日 glob 查询替代逐目录扫描。
+    """
+    # DuckDB 加速路径
+    if HAS_DUCKDB:
+        try:
+            return _load_prev_scores_duckdb(date_str)
+        except Exception as e:
+            print(f"  DuckDB 前次评分加载失败, 回退 csv.DictReader: {e}")
+
+    # 回退路径: 逐目录扫描
     date_dirs = sorted([
         d for d in os.listdir(RESEARCH_ROOT)
         if os.path.isdir(os.path.join(RESEARCH_ROOT, d)) and d.isdigit() and d < date_str
@@ -575,6 +720,31 @@ def _load_prev_scores(date_str):
                 print(f"  前次评分: {prev_date} ({len(prev)}只)")
                 return prev
     return {}
+
+
+def _load_prev_scores_duckdb(date_str):
+    """DuckDB 加速版: 单次 glob 查询获取最近前次评分。"""
+    db = get_db()
+    pattern = os.path.join(RESEARCH_ROOT, "*", "scores.csv")
+
+    df = db.sql(f"""
+        SELECT 代码, CAST("综合得分" AS DOUBLE) AS 综合得分,
+               regexp_extract(filename, '([0-9]{{8}})', 1) AS file_date
+        FROM read_csv_auto('{pattern}', filename=true)
+        WHERE 代码 IS NOT NULL AND 代码 != ''
+          AND regexp_extract(filename, '([0-9]{{8}})', 1) < '{date_str}'
+        ORDER BY file_date DESC
+    """).df()
+
+    if df.empty:
+        return {}
+
+    latest_date = str(df['file_date'].iloc[0])
+    df_latest = df[df['file_date'] == latest_date]
+    prev = dict(zip(df_latest['代码'], df_latest['综合得分']))
+    if prev:
+        print(f"  前次评分(DuckDB): {latest_date} ({len(prev)}只)")
+    return prev
 
 
 def _print_contribution_summary(results, weights):
