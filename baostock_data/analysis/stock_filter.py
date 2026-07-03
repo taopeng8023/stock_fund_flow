@@ -19,18 +19,53 @@ def _get_project_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _is_stock_by_regex(code: str) -> bool:
+    """正则回退：通过代码前缀判断个股。
+    sh: 6xxxxx/689xxx = 个股, 000xxx = 指数, 5xxxxx = ETF
+    sz: 000xxx-302xxx = 个股, 399xxx = 指数, 159xxx = ETF
+    """
+    import re
+    m = re.match(r'(sh|sz)\.(\d+)', code)
+    if not m:
+        return False
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        return num[0] == '6' or num.startswith('689')
+    elif market == 'sz':
+        return not num.startswith('399') and not num.startswith('159')
+    return False
+
+
 def _load_stock_set() -> set:
-    """从 stock_list.csv 读取所有个股代码，返回 {sh.600000, sz.000001, ...}。"""
+    """从 stock_list.csv 读取所有个股代码。CSV 不可用时回退到正则分类。"""
     project_root = _get_project_root()
     csv_path = os.path.join(project_root, "baostock_data", "data", "stock_list.csv")
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"stock_list.csv 不存在: {csv_path}")
 
     stocks = set()
-    with open(csv_path, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
-            if r.get("类型") == "个股":
-                stocks.add(r["代码"])
+    if os.path.exists(csv_path):
+        with open(csv_path, encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                if r.get("类型") == "个股":
+                    stocks.add(r["代码"])
+        if stocks:
+            return stocks
+
+    # 回退：正则扫描 daily 目录
+    daily_dir = os.path.join(project_root, "baostock_data", "data", "daily")
+    if os.path.isdir(daily_dir):
+        for f in glob(os.path.join(daily_dir, "sh.*.csv")):
+            code = os.path.splitext(os.path.basename(f))[0]
+            if _is_stock_by_regex(code):
+                stocks.add(code)
+        for f in glob(os.path.join(daily_dir, "sz.*.csv")):
+            code = os.path.splitext(os.path.basename(f))[0]
+            if _is_stock_by_regex(code):
+                stocks.add(code)
+
+    if not stocks:
+        raise FileNotFoundError(
+            f"无法获取个股列表: stock_list.csv 不存在且 daily/ 目录为空"
+        )
     return stocks
 
 
