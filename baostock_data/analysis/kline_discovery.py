@@ -29,6 +29,25 @@ HOLD_PERIODS = [1, 2, 3, 5, 10, 15]
 MIN_DAYS = 80
 
 
+def is_stock_code(filename: str) -> bool:
+    """区分个股 vs 指数/ETF。
+
+    sh: 600xxx-689xxx = 个股, 000xxx = 指数, 5xxxxx = ETF
+    sz: 000xxx-302xxx = 个股, 399xxx = 指数, 159xxx = ETF
+    """
+    import re
+    code = os.path.splitext(os.path.basename(filename))[0]
+    m = re.match(r'(sh|sz)\.(\d+)', code)
+    if not m:
+        return False
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        return num[0] == '6' or num.startswith('689')
+    elif market == 'sz':
+        return not num.startswith('399') and not num.startswith('159')
+    return False
+
+
 @dataclass
 class PatternResult:
     name: str
@@ -60,8 +79,10 @@ def load_stock_csv(filepath: str) -> Optional[pd.DataFrame]:
 
 
 def load_random_stocks(data_dir: str, n: int) -> List[Tuple[str, str, pd.DataFrame]]:
-    csv_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
+    all_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
                        glob(os.path.join(data_dir, "sz.*.csv")))
+    # 仅保留个股，过滤指数/ETF
+    csv_files = [f for f in all_files if is_stock_code(f)]
     if not csv_files:
         return []
     if n >= len(csv_files):
@@ -499,11 +520,14 @@ def compute_forward_returns(df: pd.DataFrame, entry_idx: int,
 
 def discover(data_dir: str, target_win_rate: float,
              min_stocks: int, max_stocks: int) -> List:
-    all_stock_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
-                             glob(os.path.join(data_dir, "sz.*.csv")))
+    all_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
+                       glob(os.path.join(data_dir, "sz.*.csv")))
+    # 仅保留个股，过滤指数/ETF
+    all_stock_files = [f for f in all_files if is_stock_code(f)]
     total_available = len(all_stock_files)
+    skipped = len(all_files) - total_available
     print(f"数据目录: {data_dir}")
-    print(f"总可用股票: {total_available} 只")
+    print(f"总文件: {len(all_files)} (跳过 {skipped} 指数/ETF), 个股: {total_available} 只")
     print(f"策略: 形态触发T → T+1确认日 → T+1收盘入场")
     print()
 

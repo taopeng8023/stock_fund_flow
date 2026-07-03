@@ -22,6 +22,25 @@ warnings.filterwarnings("ignore")
 # ---- data loading ---------------------------------------------------------
 
 
+def is_stock_code(filename: str) -> bool:
+    """区分个股 vs 指数/ETF。
+
+    sh: 600xxx-689xxx = 个股, 000xxx = 指数, 5xxxxx = ETF
+    sz: 000xxx-302xxx = 个股, 399xxx = 指数, 159xxx = ETF
+    """
+    import re
+    code = os.path.splitext(os.path.basename(filename))[0]
+    m = re.match(r'(sh|sz)\.(\d+)', code)
+    if not m:
+        return False
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        return num[0] == '6' or num.startswith('689')
+    elif market == 'sz':
+        return not num.startswith('399') and not num.startswith('159')
+    return False
+
+
 def load_stock_csv(filepath, min_days=20):
     """Load single stock daily CSV, return sorted DataFrame or None."""
     try:
@@ -223,13 +242,16 @@ def main():
         print(f"错误: 数据目录不存在: {data_dir}")
         sys.exit(1)
 
-    csv_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) + glob(os.path.join(data_dir, "sz.*.csv")))
+    all_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) + glob(os.path.join(data_dir, "sz.*.csv")))
+    # 过滤指数和ETF，仅保留个股
+    csv_files = [f for f in all_files if is_stock_code(f)]
     if not csv_files:
-        print(f"错误: 目录下无 CSV 文件: {data_dir}")
+        print(f"错误: 目录下无个股 CSV 文件: {data_dir}")
         sys.exit(1)
 
+    skipped = len(all_files) - len(csv_files)
     print(f"数据目录: {data_dir}")
-    print(f"发现 {len(csv_files)} 个 CSV 文件, 将分析前 {args.stocks} 只")
+    print(f"发现 {len(all_files)} 个 CSV 文件 (跳过 {skipped} 个指数/ETF), 将分析前 {args.stocks} 只个股")
 
     all_results = []
     processed = 0
