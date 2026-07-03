@@ -9,6 +9,8 @@ __pycache__/
 .playwright-mcp/
 *.db
 *.duckdb
+!baostock_data/data/
+!baostock_data/data/stock_list.csv
 performance.json
 data/
 research_data/
