@@ -16,6 +16,8 @@ from collections import defaultdict
 from glob import glob
 import numpy as np, pandas as pd
 
+from stock_filter import load_stock_files, print_filter_summary
+
 warnings.filterwarnings("ignore")
 MIN_DAYS, WIN_THRESHOLD = 80, 0.005
 
@@ -297,12 +299,12 @@ def load_stock_csv(fp):
 # ═══════════════════════════════════════
 def run(data_dir, target_wr=85.0, sample=0, top_n=20, seed=42):
     random.seed(seed); np.random.seed(seed)
-    all_f = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
-                   glob(os.path.join(data_dir, "sz.*.csv")))
-    if not all_f: print("错误"); sys.exit(1)
-    files = random.sample(all_f, min(sample, len(all_f))) if sample > 0 else all_f
+    stock_files = load_stock_files(data_dir)
+    if not stock_files: print("错误: 无个股数据"); sys.exit(1)
+    files = random.sample(stock_files, min(sample, len(stock_files))) if sample > 0 else stock_files
 
-    print(f"数据: {len(files)}/{len(all_f)} 只 | 策略: 6 | 目标: ≥{target_wr}% | seed={seed}")
+    print_filter_summary(data_dir)
+    print(f"训练样本: {len(files)} 只 | 策略: 6 | 目标: ≥{target_wr}% | seed={seed}")
 
     # 策略: (name, detect_name_or_COMBO, confirm, regime, hold)
     strats = [

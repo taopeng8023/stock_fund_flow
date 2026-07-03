@@ -11,6 +11,8 @@ from collections import defaultdict
 from glob import glob
 import numpy as np, pandas as pd
 
+from stock_filter import load_stock_files, print_filter_summary
+
 warnings.filterwarnings("ignore")
 MIN_DAYS, WIN_THRESHOLD = 80, 0.005
 
@@ -95,10 +97,10 @@ def confirm_ultra(df, si):
 # ═══════════════════════════════════════
 def discover(data_dir, target_wr=85.0, sample=2000, seed=42):
     random.seed(seed); np.random.seed(seed)
-    all_f = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
-                   glob(os.path.join(data_dir, "sz.*.csv")))
-    files = random.sample(all_f, min(sample, len(all_f))) if sample > 0 else all_f
-    print(f"数据: {len(files)}/{len(all_f)} 只 | 目标: ≥{target_wr}% | seed={seed}")
+    stock_files = load_stock_files(data_dir)
+    files = random.sample(stock_files, min(sample, len(stock_files))) if sample > 0 else stock_files
+    print_filter_summary(data_dir)
+    print(f"训练样本: {len(files)} 只 | 目标: ≥{target_wr}% | seed={seed}")
 
     HOLD_PERIODS = [1, 2, 3, 5, 10, 15]
 
