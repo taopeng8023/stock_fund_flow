@@ -165,15 +165,26 @@ def load_index_files(data_dir: str) -> list[str]:
 
 def print_filter_summary(data_dir: str, main_board_only: bool = False):
     """打印过滤摘要。"""
-    all_files = sorted(
-        glob(os.path.join(data_dir, "sh.*.csv"))
-        + glob(os.path.join(data_dir, "sz.*.csv"))
-    )
+    # 扫描子目录（新结构）+ 扁平目录（兼容旧结构）
+    search_dirs = [
+        os.path.join(data_dir, "stocks"),
+        os.path.join(data_dir, "etfs"),
+        os.path.join(data_dir, "indices"),
+        data_dir,
+    ]
+    all_files = []
+    for sd in search_dirs:
+        if os.path.isdir(sd):
+            all_files.extend(glob(os.path.join(sd, "sh.*.csv")))
+            all_files.extend(glob(os.path.join(sd, "sz.*.csv")))
+    all_files = sorted(set(all_files))
     if main_board_only:
         stock_files = load_main_board_files(data_dir)
         label = "主板个股"
     else:
         stock_files = load_stock_files(data_dir)
         label = "个股"
-    skipped = len(all_files) - len(stock_files)
-    print(f"总文件: {len(all_files)} (跳过 {skipped} 指数/ETF/非主板), {label}: {len(stock_files)} 只")
+    print(f"总文件: {len(all_files)} | "
+          f"个股: {len(stock_files)} | "
+          f"ETF: {len(load_etf_files(data_dir))} | "
+          f"指数: {len(load_index_files(data_dir))}")
