@@ -342,11 +342,11 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
     median_ret = statistics.median(t["next_return"] for t in all_trades)
     rets = [t["next_return"] for t in all_trades]
 
-    # 月度统计
-    monthly = defaultdict(list)
+    # 按年统计
+    yearly = defaultdict(list)
     for t in all_trades:
-        month = t["date"][:6]
-        monthly[month].append(t["next_return"])
+        year = t["date"][:4]
+        yearly[year].append(t["next_return"])
 
     print(f"\n{'═' * 70}")
     print(f"  回测结果汇总")
@@ -361,6 +361,17 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
     print(f"  最大单笔收益: {max(rets):+.2f}%")
     print(f"  最大单笔亏损: {min(rets):+.2f}%")
 
+    # 按年统计
+    print(f"\n  {'年份':<6} {'笔数':>5} {'胜率':>7} {'均收益':>8} {'中位':>8} {'信号笔':>6}")
+    print(f"  {'─'*45}")
+    for year in sorted(yearly.keys()):
+        yr = yearly[year]
+        yr_wr = sum(1 for r in yr if r > 0) / len(yr) * 100
+        yr_avg = statistics.mean(yr)
+        yr_med = statistics.median(yr)
+        yr_sig = sum(1 for t in all_trades if t["date"][:4] == year and t.get("has_signal"))
+        print(f"  {year:<6} {len(yr):>5} {yr_wr:>6.1f}% {yr_avg:>+7.2f}% {yr_med:>+7.2f}% {yr_sig:>6}")
+
     # 多周期统计
     print(f"\n  {'周期':<6} {'笔数':>5} {'胜率':>7} {'均收益':>8} {'中位':>8}")
     print(f"  {'─'*35}")
@@ -372,17 +383,19 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
             med = statistics.median(vals)
             print(f"  {period:<6} {len(vals):>5} {wr:>6.1f}% {avg:>+7.2f}% {med:>+7.2f}%")
 
-    # 月度胜率
+    # 月度统计
+    monthly = defaultdict(list)
+    for t in all_trades:
+        month = t["date"][:6]
+        monthly[month].append(t["next_return"])
     month_wrs = [(m, sum(1 for r in rs if r > 0) / len(rs) * 100, statistics.mean(rs))
                  for m, rs in sorted(monthly.items())]
     positive_months = sum(1 for _, _, avg in month_wrs if avg > 0)
-    print(f"  盈利月份: {positive_months}/{len(month_wrs)} "
+    print(f"\n  盈利月份: {positive_months}/{len(month_wrs)} "
           f"({positive_months/len(month_wrs)*100:.0f}%)")
-
-    # 月度详情
     print(f"\n  {'月份':<8} {'笔数':>5} {'胜率':>7} {'均收益':>8}")
     print(f"  {'─'*30}")
-    for m, wr, avg in month_wrs[-12:]:  # 最近12个月
+    for m, wr, avg in month_wrs[-12:]:
         cnt = len(monthly[m])
         print(f"  {m:<8} {cnt:>5} {wr:>6.1f}% {avg:>+7.2f}%")
 
@@ -397,6 +410,17 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
         t_wr = sum(1 for t in tech_trades if t["win"]) / len(tech_trades) * 100
         t_avg = statistics.mean(t["next_return"] for t in tech_trades)
         print(f"  技术面组 ({len(tech_trades)}笔): WR={t_wr:.1f}%  均收益={t_avg:+.2f}%")
+
+    # 信号组按年
+    if signal_trades:
+        print(f"\n  {'信号按年':<6} {'笔数':>5} {'胜率':>7} {'均收益':>8}")
+        print(f"  {'─'*30}")
+        for year in sorted(yearly.keys()):
+            yr_sig = [t for t in signal_trades if t["date"][:4] == year]
+            if yr_sig:
+                yr_wr = sum(1 for t in yr_sig if t["win"]) / len(yr_sig) * 100
+                yr_avg = statistics.mean(t["next_return"] for t in yr_sig)
+                print(f"  {year:<6} {len(yr_sig):>5} {yr_wr:>6.1f}% {yr_avg:>+7.2f}%")
 
     # Top 推荐统计
     top5_trades = defaultdict(list)
