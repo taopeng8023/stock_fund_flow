@@ -8,6 +8,10 @@ __pycache__/
 .scheduler_history.json
 .playwright-mcp/
 *.db
+*.duckdb
+!baostock_data/data/
+!baostock_data/data/stock_list.csv
+baostock_data/analysis/results/
 performance.json
 data/
 research_data/

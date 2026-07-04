@@ -29,6 +29,7 @@ import baostock as bs
 from .config import (
     BAOSTOCK_DATA_ROOT,
     BJS_TZ,
+    DAILY_DIR,
     KLINE_FIELDS,
     KLINE_HEADERS,
     KLINE_FIELDS_MINUTE,
@@ -41,6 +42,24 @@ from .config import (
     MINUTE_START_DATE,
     INDEX_CODES,
 )
+
+# 股票分类函数 (避免循环导入)
+def _classify_code(code: str) -> str:
+    """根据代码前缀分类: 个股 / 指数 / ETF。"""
+    import re
+    m = re.match(r'(sh|sz|bj)\.(\d+)', code)
+    if not m: return "个股"
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        if num[0] == '6' or num.startswith('689'): return "个股"
+        elif num[0] == '5': return "ETF"
+        elif num.startswith('000'): return "指数"
+    elif market == 'sz':
+        if num.startswith('399'): return "指数"
+        elif num.startswith('159'): return "ETF"
+        else: return "个股"
+    elif market == 'bj': return "个股"
+    return "个股"
 
 
 # ============================================================
@@ -196,11 +215,25 @@ class BaoStockFetcher:
         """保存全市场股票列表到固定路径"""
         date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
         stocks = self.get_stock_list(date_str)
+        # 分类: 个股/指数/ETF
+        try:
+            from .fetch_all_history import classify_stock
+        except ImportError:
+            classify_stock = lambda c: "1"
         with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in stocks:
-                writer.writerow([s["code"], s["code_name"], s["type"]])
+                code = s["code"]
+                if s.get("type") == "1":
+                    stock_type = classify_stock(code)
+                elif s.get("type") == "2":
+                    stock_type = "指数"
+                elif s.get("type") == "3":
+                    stock_type = "其他"
+                else:
+                    stock_type = classify_stock(code)
+                writer.writerow([code, s["code_name"], stock_type])
         self._flush_print(f"  -> stock_list.csv ({len(stocks)} 条)")
         return stocks
 
@@ -336,7 +369,15 @@ class BaoStockFetcher:
 
         for i, stock in enumerate(pending_stocks):
             code = stock["code"]
-            csv_path = os.path.join(out_dir, f"{code}.csv")
+            # 按类型分类到子目录: daily/stocks/ daily/etfs/ daily/indices/
+            if out_dir == DAILY_DIR:
+                typ = _classify_code(code)
+                sub = {"个股": "stocks", "ETF": "etfs", "指数": "indices"}.get(typ, "stocks")
+                stock_out_dir = os.path.join(out_dir, sub)
+                os.makedirs(stock_out_dir, exist_ok=True)
+            else:
+                stock_out_dir = out_dir
+            csv_path = os.path.join(stock_out_dir, f"{code}.csv")
 
             # 增量模式：已有 CSV 时只拉新数据
             stock_start = start_date
@@ -566,15 +607,33 @@ class BaoStockFetcher:
         self._flush_print(f"  BaoStock 全量拉取 — {today_str}")
         self._flush_print(f"{'═' * 60}")
 
-        # 0. 股票列表（只查一次，复用给后续所有批次）
+        # 0. 股票列表（按优先级排序: 个股 > 指数 > ETF，只查一次）
         self._flush_print(f"\n[0/4] 股票列表")
         stocks = self.get_active_stocks()
         all_stocks = self.get_stock_list()
+        # 按分类优先级排序
+        priority = {"个股": 0, "指数": 1, "ETF": 2}
+        stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        all_stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        from collections import Counter
+        cnt = Counter(_classify_code(s["code"]) for s in all_stocks)
+        self._flush_print(f"  分类: 个股{cnt.get('个股',0)} 指数{cnt.get('指数',0)} ETF{cnt.get('ETF',0)} (按此顺序更新)")
+        try:
+            from .fetch_all_history import classify_stock
+        except ImportError:
+            classify_stock = lambda c: "1"
         with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in all_stocks:
-                writer.writerow([s["code"], s["code_name"], s["type"]])
+                code = s["code"]
+                if s.get("type") == "1":
+                    stock_type = classify_stock(code)
+                elif s.get("type") == "2":
+                    stock_type = "指数"
+                else:
+                    stock_type = classify_stock(code)
+                writer.writerow([code, s["code_name"], stock_type])
         self._flush_print(f"  -> stock_list.csv ({len(all_stocks)} 条)")
         self._flush_print(f"  A股 (type=1): {len(stocks)} 只")
 
@@ -621,11 +680,26 @@ class BaoStockFetcher:
 
         stocks = self.get_active_stocks()
         all_stocks = self.get_stock_list()
+        # 按优先级排序: 个股 > 指数 > ETF
+        priority = {"个股": 0, "指数": 1, "ETF": 2}
+        stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        all_stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        try:
+            from .fetch_all_history import classify_stock
+        except ImportError:
+            classify_stock = lambda c: "1"
         with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in all_stocks:
-                writer.writerow([s["code"], s["code_name"], s["type"]])
+                code = s["code"]
+                if s.get("type") == "1":
+                    stock_type = classify_stock(code)
+                elif s.get("type") == "2":
+                    stock_type = "指数"
+                else:
+                    stock_type = classify_stock(code)
+                writer.writerow([code, s["code_name"], stock_type])
         self._flush_print(f"  A股: {len(stocks)} 只")
 
         self._flush_print(f"\n[日线] {start_date} → {end_date}")

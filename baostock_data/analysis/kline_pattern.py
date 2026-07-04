@@ -3,7 +3,7 @@
 K线形态涨跌规律分析 — 从每日K线CSV统计形态的次日/后N日涨跌概率
 
 用法:
-    python /Users/taopeng/PycharmProjects/stock_fund_flow/baostock_data/analysis/kline_pattern.py --date 20260701 --stocks 100
+    python baostock_data/analysis/kline_pattern.py --stocks 100
 
 依赖: pandas (纯Python+pandas, 无其他依赖)
 """
@@ -16,6 +16,11 @@ from glob import glob
 
 import pandas as pd
 import numpy as np
+
+try:
+    from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
+except ImportError:
+    from stock_filter import load_stock_files, print_filter_summary
 
 warnings.filterwarnings("ignore")
 
@@ -210,7 +215,7 @@ def print_report(stats, date_str, stock_count):
 
 def main():
     parser = argparse.ArgumentParser(description="K线形态涨跌规律分析")
-    parser.add_argument("--date", type=str, default="20260701", help="数据日期 YYYYMMDD")
+    parser.add_argument("--date", type=str, default="", help="数据日期 YYYYMMDD（仅用于输出报告标识）")
     parser.add_argument("--stocks", type=int, default=20, help="分析股票数量上限")
     args = parser.parse_args()
 
@@ -223,13 +228,14 @@ def main():
         print(f"错误: 数据目录不存在: {data_dir}")
         sys.exit(1)
 
-    csv_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) + glob(os.path.join(data_dir, "sz.*.csv")))
+    csv_files = load_stock_files(data_dir)
     if not csv_files:
-        print(f"错误: 目录下无 CSV 文件: {data_dir}")
+        print(f"错误: 目录下无个股 CSV 文件: {data_dir}")
         sys.exit(1)
 
     print(f"数据目录: {data_dir}")
-    print(f"发现 {len(csv_files)} 个 CSV 文件, 将分析前 {args.stocks} 只")
+    print_filter_summary(data_dir)
+    print(f"将分析前 {args.stocks} 只个股")
 
     all_results = []
     processed = 0

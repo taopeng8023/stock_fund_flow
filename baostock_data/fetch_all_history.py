@@ -13,6 +13,7 @@ import os
 import csv
 import time
 import socket
+from collections import Counter
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor
 
@@ -87,6 +88,37 @@ def bs_login():
             pass
         time.sleep(2 + attempt * 2)
     return False
+
+
+def classify_stock(code: str) -> str:
+    """根据代码前缀分类: 个股 / 指数 / ETF。
+
+    sh: 6xxxxx/689xxx = 个股, 000xxx = 指数, 5xxxxx = ETF
+    sz: 000xxx-003xxx/300xxx-301xxx = 个股, 399xxx = 指数, 159xxx = ETF
+    bj: 8xxxxx/4xxxxx/9xxxxx = 个股(北交所)
+    """
+    import re
+    m = re.match(r'(sh|sz|bj)\.(\d+)', code)
+    if not m:
+        return "未知"
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        if num[0] == '6' or num.startswith('689'):
+            return "个股"
+        elif num[0] == '5':
+            return "ETF"
+        elif num.startswith('000'):
+            return "指数"
+    elif market == 'sz':
+        if num.startswith('399'):
+            return "指数"
+        elif num.startswith('159'):
+            return "ETF"
+        else:
+            return "个股"
+    elif market == 'bj':
+        return "个股"
+    return "未知"
 
 
 def get_stocks():
@@ -175,7 +207,15 @@ def _worker_fetch(args):
     for stock in chunk:
         code = stock["code"]
         name = stock["code_name"]
-        outpath = os.path.join(outdir, f"{code}.csv")
+        # daily/ 目录按类型分子目录: stocks/ etfs/ indices/
+        if "daily" in outdir and "stocks" not in outdir:
+            typ = classify_stock(code)
+            sub = {"个股": "stocks", "ETF": "etfs", "指数": "indices"}.get(typ, "stocks")
+            stock_outdir = os.path.join(outdir, sub)
+            os.makedirs(stock_outdir, exist_ok=True)
+        else:
+            stock_outdir = outdir
+        outpath = os.path.join(stock_outdir, f"{code}.csv")
 
         # 增量：检查已有数据，只拉新数据
         stock_start = start_date
@@ -348,15 +388,31 @@ if __name__ == "__main__":
 
     t_total = time.time()
 
-    # 0. 股票列表
+    # 0. 股票列表（按优先级排序: 个股 > 指数 > ETF）
     print("\n[0/3] 获取股票列表", flush=True)
     stocks = get_stocks()
+    # 按分类优先级排序
+    priority = {"个股": 0, "指数": 1, "ETF": 2}
+    stocks.sort(key=lambda s: priority.get(classify_stock(s["code"]), 3))
+    cnt = Counter(classify_stock(s["code"]) for s in stocks)
+    print(f"  分类: 个股{cnt.get('个股',0)} 指数{cnt.get('指数',0)} ETF{cnt.get('ETF',0)} (按此顺序更新)", flush=True)
     os.makedirs(DATA_ROOT, exist_ok=True)
     with open(os.path.join(DATA_ROOT, "stock_list.csv"), "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["代码", "名称", "类型"])
         for s in stocks:
-            w.writerow([s["code"], s["code_name"], "1"])
+            code = s["code"]
+            # 根据 BaoStock 类型字段 + 代码前缀双重分类
+            bs_type = s.get("type", "1")
+            if bs_type == "1":
+                stock_type = classify_stock(code)
+            elif bs_type == "2":
+                stock_type = "指数"
+            elif bs_type == "3":
+                stock_type = "其他"
+            else:
+                stock_type = classify_stock(code)
+            w.writerow([code, s["code_name"], stock_type])
     print(f"  -> stock_list.csv ({len(stocks)} 条)", flush=True)
 
     # 1. 日线

@@ -8,7 +8,7 @@ K线形态胜率发现引擎 v2 — 确认日机制 + 多条件AND组合 → 迭
     - 每个形态 5-7 个 AND 条件
 
 用法:
-    python kline_discovery.py --date 20260701 --target 85 --min-stocks 50 --max-stocks 800 --seed 42
+    python kline_discovery.py --target 85 --min-stocks 50 --max-stocks 800 --seed 42
 """
 import argparse
 import os
@@ -16,12 +16,23 @@ import random
 import sys
 import warnings
 from collections import defaultdict
-from glob import glob
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
+
+try:
+    from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
+except ImportError:
+    from stock_filter import load_stock_files, print_filter_summary
+
+try:
+    from result_store import save_results
+    HAS_RESULT_STORE = True
+except ImportError:
+    HAS_RESULT_STORE = False
 
 warnings.filterwarnings("ignore")
 
@@ -60,8 +71,7 @@ def load_stock_csv(filepath: str) -> Optional[pd.DataFrame]:
 
 
 def load_random_stocks(data_dir: str, n: int) -> List[Tuple[str, str, pd.DataFrame]]:
-    csv_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
-                       glob(os.path.join(data_dir, "sz.*.csv")))
+    csv_files = load_stock_files(data_dir)
     if not csv_files:
         return []
     if n >= len(csv_files):
@@ -499,11 +509,10 @@ def compute_forward_returns(df: pd.DataFrame, entry_idx: int,
 
 def discover(data_dir: str, target_win_rate: float,
              min_stocks: int, max_stocks: int) -> List:
-    all_stock_files = sorted(glob(os.path.join(data_dir, "sh.*.csv")) +
-                             glob(os.path.join(data_dir, "sz.*.csv")))
+    all_stock_files = load_stock_files(data_dir)
     total_available = len(all_stock_files)
     print(f"数据目录: {data_dir}")
-    print(f"总可用股票: {total_available} 只")
+    print_filter_summary(data_dir)
     print(f"策略: 形态触发T → T+1确认日 → T+1收盘入场")
     print()
 
@@ -684,10 +693,29 @@ def print_final_report(batch_results, target_win_rate):
     print()
     print("═" * 75)
 
+    # ── 结果持久化 ──
+    if HAS_RESULT_STORE:
+        save_results("kline_discovery", {
+            "date": datetime.now().strftime("%Y%m%d"),
+            "target_wr": target_win_rate,
+            "qualifying_count": len(qualifying),
+            "qualifying": [
+                {"name": pname, "hold": int(hold), "wr": float(wr),
+                 "n": int(total), "avg_r": float(avg_r)}
+                for wr, total, wins, pname, hold, avg_r in qualifying
+            ] if qualifying else [],
+            "top15": [
+                {"name": pname, "hold": int(hold), "wr": float(wr),
+                 "n": int(total), "avg_r": float(avg_r)}
+                for wr, total, wins, pname, hold, avg_r
+                in sorted(batch_results, reverse=True)[:15]
+            ] if batch_results else [],
+        })
+
 
 def main():
     parser = argparse.ArgumentParser(description="K线形态胜率发现引擎 v2")
-    parser.add_argument("--date", default="20260701", help="数据日期 YYYYMMDD")
+    parser.add_argument("--date", default="", help="数据日期 YYYYMMDD（仅用于输出报告标识）")
     parser.add_argument("--target", type=float, default=85.0, help="目标胜率")
     parser.add_argument("--min-stocks", type=int, default=50, help="起始采样数")
     parser.add_argument("--max-stocks", type=int, default=800, help="最大采样数")
