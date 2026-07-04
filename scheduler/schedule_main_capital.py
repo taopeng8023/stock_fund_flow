@@ -123,32 +123,27 @@ def _run_signal_scanner(date_str: str, phase: str) -> bool:
     """
     global _last_scanner_ts, _last_scanner_picks
 
-    scanner_path = PROJECT_ROOT / "baostock_data" / "analysis" / "signal_scanner.py"
+    scanner_path = PROJECT_ROOT / "baostock_data" / "analysis" / "picks.py"
     if not scanner_path.exists():
         print("  ⚠ 选股扫描器不存在，跳过")
         return False
 
-    # 盘中：轻量扫描
+    # 盘中：标准扫描 / 尾盘：高收益精选
     if phase in ("morning", "afternoon"):
-        top_n, min_consensus, lookback = 10, 1, 3
-        label = "盘中快速"
+        scan_mode = ["scan", f"--date={date_str}", "--top=10"]
+        label = "盘中标准"
     elif phase == "closing":
-        top_n, min_consensus, lookback = 30, 2, 5
-        label = "尾盘全量"
+        scan_mode = ["scan", f"--date={date_str}", "--top=30", "--strict"]
+        label = "尾盘精选(>5%)"
     else:
-        top_n, min_consensus, lookback = 50, 1, 5
+        scan_mode = ["scan", f"--date={date_str}", "--top=50"]
         label = "收盘后"
 
-    print(f"  🔍 选股扫描 ({label}): ≥{min_consensus}引擎, 回溯{lookback}天...")
+    print(f"  🔍 选股扫描 ({label})...")
 
     try:
         cp = subprocess.run(
-            [sys.executable, str(scanner_path),
-             f"--date={date_str}",
-             f"--top={top_n}",
-             f"--min-consensus={min_consensus}",
-             f"--lookback={lookback}",
-             "--save"],
+            [sys.executable, str(scanner_path)] + scan_mode,
             cwd=str(PROJECT_ROOT),
             capture_output=True, text=True, timeout=300,
         )
@@ -188,7 +183,7 @@ def _notify_scanner_picks(date_str: str, phase: str):
     import json
     import glob as _glob
     files = sorted(
-        _glob.glob(str(results_dir / "signal_scanner_*.json")), reverse=True
+        _glob.glob(str(results_dir / "picks_scan_*.json")), reverse=True
     )
     if not files:
         return
