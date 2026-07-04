@@ -45,8 +45,9 @@ def _load_stock_set() -> set:
     if os.path.exists(csv_path):
         with open(csv_path, encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
-                if r.get("类型") == "个股":
-                    stocks.add(r["代码"])
+                typ = r.get("类型", "").strip()
+                if typ == "个股":
+                    stocks.add(r["代码"].strip())
         if stocks:
             return stocks
 
@@ -108,12 +109,45 @@ def load_stock_files(data_dir: str) -> list[str]:
     return stock_files
 
 
-def print_filter_summary(data_dir: str):
+def is_main_board(code: str) -> bool:
+    """判断是否为主板股票（排除科创板、创业板、北交所）。
+
+    主板:
+      sh: 600xxx, 601xxx, 603xxx, 605xxx
+      sz: 000xxx, 001xxx, 002xxx, 003xxx
+    排除:
+      688xxx/689xxx (科创板), 300xxx/301xxx (创业板), 8xxxxx (北交所)
+    """
+    import re
+    m = re.match(r'(sh|sz)\.(\d+)', code)
+    if not m:
+        return False
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        return num[:3] in ('600', '601', '603', '605')
+    elif market == 'sz':
+        return num[:3] in ('000', '001', '002', '003')
+    return False
+
+
+def load_main_board_files(data_dir: str) -> list[str]:
+    """加载所有主板个股 K 线文件（排除科创/创业/北交所）。"""
+    stock_files = load_stock_files(data_dir)
+    return [f for f in stock_files
+            if is_main_board(os.path.splitext(os.path.basename(f))[0])]
+
+
+def print_filter_summary(data_dir: str, main_board_only: bool = False):
     """打印过滤摘要。"""
     all_files = sorted(
         glob(os.path.join(data_dir, "sh.*.csv"))
         + glob(os.path.join(data_dir, "sz.*.csv"))
     )
-    stock_files = load_stock_files(data_dir)
+    if main_board_only:
+        stock_files = load_main_board_files(data_dir)
+        label = "主板个股"
+    else:
+        stock_files = load_stock_files(data_dir)
+        label = "个股"
     skipped = len(all_files) - len(stock_files)
-    print(f"总文件: {len(all_files)} (跳过 {skipped} 指数/ETF), 个股: {len(stock_files)} 只")
+    print(f"总文件: {len(all_files)} (跳过 {skipped} 指数/ETF/非主板), {label}: {len(stock_files)} 只")

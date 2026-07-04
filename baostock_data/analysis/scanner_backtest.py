@@ -21,12 +21,12 @@ DAILY_DIR = os.path.join(PROJECT_ROOT, "baostock_data", "data", "daily")
 
 # Import scanner
 sys.path.insert(0, SCRIPT_DIR)
-from signal_scanner import scan_stocks, MIN_DAYS
+from signal_scanner import scan_stocks, MIN_DAYS, MIN_WR_TARGET
 
 try:
-    from stock_filter import load_stock_files
+    from stock_filter import load_stock_files, load_main_board_files
 except ImportError:
-    from baostock_data.analysis.stock_filter import load_stock_files
+    from baostock_data.analysis.stock_filter import load_stock_files, load_main_board_files
 
 try:
     from result_store import save_results

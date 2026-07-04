@@ -31,9 +31,13 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 DAILY_DIR = os.path.join(PROJECT_ROOT, "baostock_data", "data", "daily")
 
 try:
-    from stock_filter import load_stock_files, print_filter_summary
+    from stock_filter import load_stock_files, load_main_board_files, print_filter_summary
 except ImportError:
-    from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
+    from baostock_data.analysis.stock_filter import load_stock_files, load_main_board_files, print_filter_summary
+
+# ── 选股约束 ──
+MIN_WR_TARGET = 85.0  # 最低胜率要求
+MAIN_BOARD_ONLY = True  # 仅主板（排除科创/创业/北交所）
 
 try:
     from result_store import save_results
@@ -261,12 +265,13 @@ def scan_stocks(data_dir: str, target_date: str,
     lookback: 回溯天数，在前 N 天内如果形态曾触发过，且今日仍在合理区间内，即视为有效信号。
     信号衰减: 当天触发=1.0, 1天前=0.85, 2天前=0.7, 3天前=0.55, 4+天前=0.4
     """
-    stock_files = load_stock_files(data_dir)
+    stock_files = load_main_board_files(data_dir) if MAIN_BOARD_ONLY else load_stock_files(data_dir)
     if not stock_files:
         print("无个股数据"); return []
 
-    print_filter_summary(data_dir)
-    print(f"扫描日期: {target_date} | 回溯: {lookback}天 | 最少共识: {min_consensus} 引擎 | 最多输出: {top_n}")
+    print_filter_summary(data_dir, main_board_only=MAIN_BOARD_ONLY)
+    print(f"扫描日期: {target_date} | 回溯: {lookback}天 | 最少共识: {min_consensus} 引擎")
+    print(f"约束: 仅主板 | 胜率≥{MIN_WR_TARGET:.0f}% | 最多输出: {top_n}")
     print()
 
     candidates = []
@@ -339,6 +344,13 @@ def scan_stocks(data_dir: str, target_date: str,
             processed += 1
             continue
 
+        # 85% WR 过滤: 至少一个信号的参考胜率 ≥85%
+        all_wr = [p[2] for p in pattern_signals] + [p[2] for p in pv_signals]
+        max_wr = max(all_wr) if all_wr else 0
+        if max_wr < MIN_WR_TARGET:
+            processed += 1
+            continue
+
         matched += 1
 
         c = df["收盘"].values[idx]
@@ -405,8 +417,8 @@ def scan_stocks(data_dir: str, target_date: str,
 def print_results(candidates, target_date, min_consensus):
     """格式化输出买入候选。"""
     print("═" * 95)
-    print(f"  🎯 稳定选股信号扫描 [{target_date}]")
-    print(f"  交叉验证: ≥{min_consensus} 引擎命中 | 形态×涨跌量价 双引擎")
+    print(f"  🎯 主板选股信号扫描 [{target_date}]")
+    print(f"  约束: 仅主板 | WR≥{MIN_WR_TARGET:.0f}% | 共识≥{min_consensus} | 形态×涨跌量价双引擎")
     print("═" * 95)
 
     if not candidates:
