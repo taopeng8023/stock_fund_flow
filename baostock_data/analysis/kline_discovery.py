@@ -698,7 +698,6 @@ def print_final_report(batch_results, target_win_rate):
         save_results("kline_discovery", {
             "date": datetime.now().strftime("%Y%m%d"),
             "target_wr": target_win_rate,
-            "total_stocks": total_available,
             "qualifying_count": len(qualifying),
             "qualifying": [
                 {"name": pname, "hold": int(hold), "wr": float(wr),
