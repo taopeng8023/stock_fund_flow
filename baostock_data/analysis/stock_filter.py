@@ -12,6 +12,7 @@
 import csv
 import os
 from glob import glob
+from typing import Optional, Set
 
 
 def _get_project_root():
@@ -76,7 +77,7 @@ def _load_stock_set() -> set:
 
 
 # 模块级缓存，避免重复读取
-_STOCK_SET: set | None = None
+_STOCK_SET: Optional[Set] = None
 
 
 def get_stock_set() -> set:
