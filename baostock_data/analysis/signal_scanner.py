@@ -53,6 +53,7 @@ HOLD_PERIODS = [1, 2, 3, 5, 10, 15]
 # ═══════════════════════════════════════
 
 # 形态信号 (kline_discovery): 形态名 → (持仓天数, 参考胜率, 参考均收益)
+# 仅保留训练验证 ≥80% WR 的形态
 PATTERN_SIGNALS = {
     "三日连涨_量递增_逼60日高":     (2, 100.0, 4.65),
     "深跌35%_涨停_巨量_突破MA20":    (5, 100.0, 7.18),
@@ -70,6 +71,11 @@ PRICE_VOL_SIGNALS = {
     "中涨爆量追高":  {"chg_min": 0.05, "chg_max": 0.10, "vol_min": 3.0,
                       "pos_min": 0.5, "pos_max": 0.7, "hold": 5, "wr": 81.8},
 }
+
+# ── 质量过滤阈值 ──
+MIN_TURNOVER_YI = 1.0      # 最低成交额 (亿)
+MIN_PRICE = 5.0             # 最低价格 (排除准仙股)
+MAX_POS_FOR_ENTRY = 0.92   # 不追太高位置
 
 # ═══════════════════════════════════════
 # 技术指标计算
@@ -219,6 +225,49 @@ def detect_sharp_fall_hammer(df, i):
     # 低位
     pos = df["pos_60"].values[i]
     return pos < 0.25 and not pd.isna(pos)
+
+
+def detect_ma_golden_cross(df, i):
+    """MA5金叉MA20 + 放量 + 站上MA20"""
+    if i < 10: return False
+    ma5, ma20 = df["ma5"].values, df["ma20"].values
+    v = df["成交量"].values; vol_ma5 = df["vol_ma5"].values
+    c = df["收盘"].values
+    if pd.isna(ma5[i]) or pd.isna(ma20[i]): return False
+    golden = ma5[i] > ma20[i] and ma5[i-2] <= ma20[i-2]
+    if not golden: return False
+    if not (c[i] > ma20[i]): return False
+    return v[i] > vol_ma5[i] * 1.2 if vol_ma5[i] > 0 else False
+
+
+def detect_yang_shrink_breakout(df, i):
+    """连阳缩量_蓄力突破: 2+连阳 + 缩量 + 价格在MA20附近"""
+    if i < 5: return False
+    c = df["收盘"].values; o = df["开盘"].values
+    v = df["成交量"].values; vol_ma5 = df["vol_ma5"].values
+    ma20 = df["ma20"].values
+    # 连阳
+    if not (c[i] > o[i] and c[i-1] > o[i-1]): return False
+    # 缩量
+    if not (v[i] < vol_ma5[i] * 1.1): return False
+    # 在MA20附近(±5%)
+    if pd.isna(ma20[i]) or ma20[i] <= 0: return False
+    dist = abs(c[i] - ma20[i]) / ma20[i]
+    return dist < 0.05
+
+
+def detect_low_open_high_close(df, i):
+    """低开高走_阳包阴: 今日低开 >2% + 收阳 + 覆盖昨日阴线"""
+    if i < 2: return False
+    c = df["收盘"].values; o = df["开盘"].values
+    prev_c = df["收盘"].values[i-1]
+    # 低开
+    gap = (o[i] - prev_c) / prev_c if prev_c > 0 else 0
+    if gap > -0.01 or gap < -0.05: return False  # 低开1-5%
+    # 收阳 + 包昨日阴线
+    if not (c[i] > o[i]): return False
+    if prev_c < o[i-1] and c[i] > o[i-1]: return True  # 阳包阴
+    return c[i] > prev_c  # 至少覆盖昨日收盘
 
 
 # 形态检测注册表

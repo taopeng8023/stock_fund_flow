@@ -35,6 +35,7 @@ except ImportError:
 from signal_scanner import (
     compute_indicators, PATTERN_DETECTORS, PATTERN_SIGNALS,
     PRICE_VOL_SIGNALS, check_price_vol_signal, MIN_DAYS, MIN_WR_TARGET,
+    MIN_TURNOVER_YI, MIN_PRICE, MAX_POS_FOR_ENTRY,
 )
 
 try:
@@ -108,9 +109,15 @@ def get_forward_return(df: pd.DataFrame, idx: int, days: int = 1) -> float | Non
 def run_backtest(from_date: str, to_date: str, step: int = 5,
                  top_n: int = 10, min_consensus: int = 1):
     """历史 K 线全量回测。"""
+    # ── 确认日模式 ──
+    CONFIRMATION_MODE = False  # T日触发, T+1确认后入场
+    HOLD_DAYS = 1             # 确认后的持仓天数
+
     print("═" * 70)
     print(f"  历史K线回测: {from_date} → {to_date}  (步长: {step}天)")
     print(f"  约束: 主板 | WR≥{MIN_WR_TARGET:.0f}% | 共识≥{min_consensus} | Top{top_n}")
+    if CONFIRMATION_MODE:
+        print(f"  模式: 确认日 — T日触发 → T+1确认(收阳+放量) → T+1收盘入场")
     print("═" * 70)
     print()
 
@@ -199,6 +206,17 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
             c = float(df["收盘"].values[idx])
             pos_60 = float(df["pos_60"].values[idx]) if not pd.isna(df["pos_60"].values[idx]) else 0.5
             ma_bull = bool(df["ma_bull"].values[idx])
+
+            # ── 质量过滤 ──
+            v = float(df["成交量"].values[idx])
+            turnover_yi = v * c / 1e8  # 成交额(亿)
+            if turnover_yi < MIN_TURNOVER_YI:  # 流动性不足
+                continue
+            if c < MIN_PRICE:  # 准仙股
+                continue
+            if pos_60 > MAX_POS_FOR_ENTRY:  # 追高
+                continue
+
             t_score = tech_score(df, idx)
 
             # 检测形态信号
@@ -251,17 +269,44 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
             if idx is None:
                 continue
 
-            next_ret = get_forward_return(df, idx, 1)
-            if next_ret is None:
+            # -- 确认日机制 --
+            if CONFIRMATION_MODE:
+                if idx + 1 >= len(df):
+                    continue
+                t1_open = float(df["开盘"].values[idx + 1])
+                t1_close = float(df["收盘"].values[idx + 1])
+                t1_vol = float(df["成交量"].values[idx + 1])
+                t0_vol = float(df["成交量"].values[idx])
+                if not (t1_close > t1_open and t1_vol > t0_vol * 0.7):
+                    continue
+                entry_price = t1_close
+                entry_idx = idx + 1
+            else:
+                entry_price = pick["price"]
+                entry_idx = idx
+
+            ret_1 = get_forward_return(df, entry_idx, 1)
+            if ret_1 is None:
                 continue
+
+            ret_2 = get_forward_return(df, entry_idx, 2)
+            ret_3 = get_forward_return(df, entry_idx, 3)
+            ret_5 = get_forward_return(df, entry_idx, 5)
 
             all_trades.append({
                 "date": date_str, "code": code, "name": pick["name"],
-                "price": pick["price"], "score": round(pick["score"], 1),
+                "price": round(entry_price, 2),
+                "signal_price": pick["price"],
+                "score": round(pick["score"], 1),
                 "n_signals": pick["n_signals"],
                 "has_signal": pick["has_signal"],
-                "next_return": round(next_ret * 100, 2),
-                "win": next_ret > 0,
+                "confirmed": CONFIRMATION_MODE,
+                "ret_1d": round(ret_1 * 100, 2),
+                "ret_2d": round(ret_2 * 100, 2) if ret_2 is not None else None,
+                "ret_3d": round(ret_3 * 100, 2) if ret_3 is not None else None,
+                "ret_5d": round(ret_5 * 100, 2) if ret_5 is not None else None,
+                "next_return": round(ret_1 * 100, 2),
+                "win": ret_1 > 0,
                 "best_wr": pick["best_wr"],
             })
 
@@ -315,6 +360,17 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
     print(f"  标准差: {statistics.stdev(rets):.2f}%" if len(rets) > 1 else "")
     print(f"  最大单笔收益: {max(rets):+.2f}%")
     print(f"  最大单笔亏损: {min(rets):+.2f}%")
+
+    # 多周期统计
+    print(f"\n  {'周期':<6} {'笔数':>5} {'胜率':>7} {'均收益':>8} {'中位':>8}")
+    print(f"  {'─'*35}")
+    for period, key in [("T+1", "ret_1d"), ("T+2", "ret_2d"), ("T+3", "ret_3d"), ("T+5", "ret_5d")]:
+        vals = [t[key] for t in all_trades if t.get(key) is not None]
+        if vals:
+            wr = sum(1 for v in vals if v > 0) / len(vals) * 100
+            avg = statistics.mean(vals)
+            med = statistics.median(vals)
+            print(f"  {period:<6} {len(vals):>5} {wr:>6.1f}% {avg:>+7.2f}% {med:>+7.2f}%")
 
     # 月度胜率
     month_wrs = [(m, sum(1 for r in rs if r > 0) / len(rs) * 100, statistics.mean(rs))
