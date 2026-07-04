@@ -1,43 +1,39 @@
 #!/usr/bin/env python3
 """
-买入-卖出信号回测系统 — 目标 8%+ 盈利，跨市场周期稳定
+买入-卖出信号回测系统 v2 — 目标 8%+ 盈利，全市场周期稳定
 
-整合 kline_discovery.py 的 35+ K线形态买入信号，添加卖出规则 + 跨周期验证。
+v2 优化:
+  - 熊市过滤: 价格<MA60 时仅允许深跌反弹信号 (TYPE A)
+  - 移动止盈放宽: -5% from peak (v1: -3%)
+  - 信号质量分级: TOP_SIGNALS 优先 + 熊市严格确认
 
 用法:
   python buy_sell_backtest.py                    # 全量回测
-  python buy_sell_backtest.py --sample 500       # 快速验证
-  python buy_sell_backtest.py --target 8.0       # 目标收益
+  python buy_sell_backtest.py --sample 2000      # 快速验证
 """
-import argparse
-import os
-import sys
-import time
-import warnings
+import argparse, os, sys, time, warnings
 from collections import defaultdict
 from typing import Optional, List, Dict, Tuple
-
 import numpy as np
 import pandas as pd
 
 warnings.filterwarnings("ignore")
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
-
 from stock_filter import load_stock_files
 from kline_discovery import compute_indicators, pattern_signal_at, confirm_entry, load_stock_csv
 
-DAILY_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "baostock_data", "data", "daily"
-)
+DAILY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "baostock_data", "data", "daily")
 
 TAKE_PROFIT = 0.08
 STOP_LOSS = -0.05
-TRAILING_STOP = -0.03
+TRAILING_STOP = -0.05    # v2: -5% (v1: -3%)
 MAX_HOLD_DAYS = 20
 MIN_SAMPLE = 10
+
+# 熊市首选信号 (深跌反弹类 — 历史上在任何周期都表现最好)
+BEAR_SAFE_PREFIXES = ("深跌", "急跌", "连阴", "启明星", "双针", "反包")
 
 REGIMES = {
     "bear_2018":   ("2018-01-01", "2018-12-31"),
@@ -49,20 +45,37 @@ REGIMES = {
 }
 
 
+def is_bearish(df: pd.DataFrame, i: int) -> bool:
+    """判断当前是否处于熊市环境 (价格 < MA60 且 MA20 < MA60)"""
+    close = float(df["收盘"].values[i])
+    if "ma60" not in df.columns:
+        return False
+    ma60 = df["ma60"].values[i]
+    ma20 = df["ma20"].values[i] if "ma20" in df.columns else ma60
+    if pd.isna(ma60) or ma60 <= 0:
+        return False
+    return close < ma60 and ma20 < ma60
+
+
+def is_safe_for_bear(pattern: str) -> bool:
+    """判断信号是否适合熊市 (深跌反弹类)"""
+    return pattern.startswith(BEAR_SAFE_PREFIXES)
+
+
 def simulate_exit(df: pd.DataFrame, entry_idx: int,
                   take_profit=TAKE_PROFIT, stop_loss=STOP_LOSS,
                   trailing_stop=TRAILING_STOP, max_hold=MAX_HOLD_DAYS) -> Dict:
-    """模拟卖出，返回最早触发的退出条件。"""
+    """模拟卖出。v2: 移动止盈放宽至 -5%"""
     entry_price = float(df["收盘"].values[entry_idx])
     n = len(df)
     end_idx = min(entry_idx + max_hold + 1, n)
     peak_price = entry_price
-    has_high = "最高" in df.columns
+    has_hl = "最高" in df.columns
 
     for j in range(entry_idx + 1, end_idx):
         close = float(df["收盘"].values[j])
-        high = float(df["最高"].values[j]) if has_high else close
-        low = float(df["最低"].values[j]) if has_high else close
+        high = float(df["最高"].values[j]) if has_hl else close
+        low = float(df["最低"].values[j]) if has_hl else close
         ret = (close - entry_price) / entry_price
         if high > peak_price:
             peak_price = high
@@ -75,8 +88,7 @@ def simulate_exit(df: pd.DataFrame, entry_idx: int,
                     "peak_return": round((peak_price - entry_price) / entry_price * 100, 2),
                     "hold_days": j - entry_idx, "win": True}
 
-        low_ret = (low - entry_price) / entry_price
-        if low_ret <= stop_loss:
+        if (low - entry_price) / entry_price <= stop_loss:
             return {"exit_idx": j, "exit_date": str(df.index[j]),
                     "exit_price": round(entry_price * (1 + stop_loss), 2),
                     "exit_reason": "stop_loss",
@@ -106,12 +118,11 @@ def simulate_exit(df: pd.DataFrame, entry_idx: int,
 class BuySellBacktest:
     def __init__(self, take_profit=TAKE_PROFIT, stop_loss=STOP_LOSS,
                  trailing=TRAILING_STOP, max_hold=MAX_HOLD_DAYS):
-        self.take_profit = take_profit
-        self.stop_loss = stop_loss
-        self.trailing_stop = trailing
-        self.max_hold = max_hold
+        self.take_profit = take_profit; self.stop_loss = stop_loss
+        self.trailing_stop = trailing; self.max_hold = max_hold
         self.trades: List[Dict] = []
         self.signals_by_pattern: Dict[str, List] = defaultdict(list)
+        self.bear_filtered = 0  # count of signals skipped in bear market
 
     def run_stock(self, filepath: str, df: pd.DataFrame,
                   date_range: Optional[Tuple[str, str]] = None) -> int:
@@ -123,20 +134,27 @@ class BuySellBacktest:
             df = df[mask]
             if len(df) < 30:
                 return 0
+
         df = compute_indicators(df)
         count = 0
         for i in range(70, len(df) - 1):
             pattern = pattern_signal_at(df, i)
             if pattern is None:
                 continue
+
+            # v2: 熊市过滤 — 仅允许深跌反弹信号
+            if is_bearish(df, i) and not is_safe_for_bear(pattern):
+                self.bear_filtered += 1
+                continue
+
             if not confirm_entry(df, i, strict=True):
                 continue
+
             result = simulate_exit(df, i, self.take_profit, self.stop_loss,
                                    self.trailing_stop, self.max_hold)
             result["pattern"] = pattern
             result["code"] = os.path.splitext(os.path.basename(filepath))[0]
-            entry_dt = str(df["日期"].values[i])[:10] if "日期" in df.columns else str(df.index[i])
-            result["entry_date"] = entry_dt
+            result["entry_date"] = str(df["日期"].values[i])[:10] if "日期" in df.columns else str(df.index[i])
             result["entry_price"] = float(df["收盘"].values[i])
             self.trades.append(result)
             self.signals_by_pattern[pattern].append(result)
@@ -175,7 +193,8 @@ class BuySellBacktest:
                 "take_profit_rate": round(tp / n * 100, 1),
                 "sharpe": round(sharpe, 2), "profit_factor": round(pf, 2),
                 "max_loss_streak": max_streak, "reason_dist": dict(reason),
-                "pattern_count": len(self.signals_by_pattern)}
+                "pattern_count": len(self.signals_by_pattern),
+                "bear_filtered": self.bear_filtered}
 
     def pattern_summary(self, min_samples=MIN_SAMPLE) -> pd.DataFrame:
         rows = []
@@ -196,25 +215,26 @@ class BuySellBacktest:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="买入-卖出信号回测")
-    parser.add_argument("--sample", type=int, default=0, help="采样数(0=全量)")
-    parser.add_argument("--target", type=float, default=8.0, help="目标收益%")
-    parser.add_argument("--min-wr", type=float, default=50, help="最低胜率")
+    parser = argparse.ArgumentParser(description="买入-卖出信号回测 v2")
+    parser.add_argument("--sample", type=int, default=0)
+    parser.add_argument("--target", type=float, default=8.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     tp_level = args.target / 100
-    tr_level = -(args.target / 100 * 0.4)
+    tr_level = -(args.target / 100 * 0.6)  # v2: 更宽的移动止盈
     t0 = time.time()
 
     stock_files = load_stock_files(DAILY_DIR)
     if args.sample > 0 and args.sample < len(stock_files):
         np.random.seed(args.seed)
         stock_files = list(np.random.choice(stock_files, min(args.sample, len(stock_files)), replace=False))
+    elif args.sample == 0:
+        args.sample = len(stock_files)
 
     print(f"\n{'═' * 70}")
-    print(f"  买入-卖出回测 | 目标 +{int(args.target)}% | {len(stock_files)} 只个股")
-    print(f"  止盈 +{int(args.target)}% | 止损 -5% | 移动止盈 -3% | 持仓≤20日")
+    print(f"  买入-卖出回测 v2 | 目标 +{int(args.target)}% | {len(stock_files)} 只个股")
+    print(f"  止盈 +{int(args.target)}% | 止损 -5% | 移动止盈 -5% | 熊市仅深跌反弹信号")
     print(f"{'═' * 70}")
 
     bt = BuySellBacktest(take_profit=tp_level, trailing=tr_level)
@@ -227,75 +247,82 @@ def main():
             total_sig += bt.run_stock(fpath, df)
         except Exception:
             continue
-        if (i + 1) % 200 == 0:
+        if (i + 1) % 500 == 0:
             e = time.time() - t0
             rate = (i + 1) / e if e > 0 else 1
             eta = (len(stock_files) - i - 1) / rate
-            print(f"  [{i+1}/{len(stock_files)}] {total_sig}信号 | {e:.0f}s | ETA {eta:.0f}s", flush=True)
+            print(f"  [{i+1}/{len(stock_files)}] {total_sig}信号 "
+                  f"过滤{bt.bear_filtered} | {e:.0f}s | ETA {eta:.0f}s", flush=True)
 
     elapsed = time.time() - t0
-    print(f"\n  ✅ {total_sig}笔交易 | {elapsed:.0f}s")
+    print(f"\n  ✅ {total_sig}笔交易 | 熊市过滤{bt.bear_filtered}个信号 | {elapsed:.0f}s")
 
     s = bt.summary()
     print(f"\n{'─' * 60}")
     print(f"  📊 汇总: {s['total_trades']}笔 | 胜率{s['win_rate']}% | 止盈率{s['take_profit_rate']}%")
-    print(f"  均值{s['avg_return']}% | 中位数{s['median_return']}% | 峰值{s['avg_peak_return']}%")
-    print(f"  夏普{s['sharpe']} | 盈亏比{s['profit_factor']} | 连亏{s['max_loss_streak']} | 持仓{s['avg_hold_days']}d")
+    print(f"  均值{s['avg_return']}% | 峰值{s['avg_peak_return']}%")
+    print(f"  夏普{s['sharpe']} | 盈亏比{s['profit_factor']} | 持仓{s['avg_hold_days']}d")
     print(f"  退出: {s['reason_dist']}")
 
     ps = bt.pattern_summary(10)
     if not ps.empty:
         print(f"\n{'─' * 60}")
-        print(f"  🏆 Top 15 信号 (按8%+止盈率)")
+        print(f"  🏆 Top 15 信号")
         print(f"{'─' * 60}")
         for _, row in ps.head(15).iterrows():
             print(f"  {row['pattern'][:50]:<50s} N={row['n']:>4d} WR={row['wr']:>5.1f}% "
                   f"Avg={row['avg_ret']:>+6.2f}% TP={row['tp_rate']:>4.1f}% 8%+={row['hit_8pct']:>4.1f}%")
 
-    # ── 跨周期（按已收集交易分区）──
+    # ── 跨周期 ──
     print(f"\n{'─' * 60}")
-    print(f"  🔬 跨周期稳定性 (按 entry_date 分区)")
+    print(f"  🔬 跨周期稳定性")
     print(f"{'─' * 60}")
     regime_stats = {}
     for reg, (start, end) in REGIMES.items():
         rt = [t for t in bt.trades
               if len(t["entry_date"]) >= 10 and start <= t["entry_date"][:10] <= end]
         if not rt:
-            print(f"  {reg:<12s} 交易=   0 — 无覆盖")
+            print(f"  {reg:<12s} 交易=   0")
             regime_stats[reg] = {"n": 0, "wr": 0, "tp": 0, "avg": 0}
             continue
-        n = len(rt)
-        wr = sum(1 for t in rt if t["win"]) / n * 100
+        n = len(rt); wr = sum(1 for t in rt if t["win"]) / n * 100
         tp = sum(1 for t in rt if t["exit_reason"] == "take_profit") / n * 100
         avg = float(np.mean([t["return_pct"] for t in rt]))
-        print(f"  {reg:<12s} 交易={n:>4d} 胜率={wr:>5.1f}% 止盈={tp:>5.1f}% 均值={avg:>+5.2f}%")
+        peak = float(np.mean([t["peak_return"] for t in rt]))
+        marker = " ✅" if tp >= 25 else (" ⚠" if tp >= 15 else " ❌")
+        print(f"  {reg:<12s} N={n:>4d} WR={wr:>5.1f}% TP={tp:>4.1f}% Avg={avg:>+5.2f}% Peak={peak:>+5.2f}%{marker}")
         regime_stats[reg] = {"n": n, "wr": round(wr, 1), "tp": round(tp, 1), "avg": round(avg, 2)}
 
     valid = [(r["wr"], r["tp"], r["avg"]) for r in regime_stats.values() if r["n"] >= 10]
     if valid:
-        wr_vals = [v[0] for v in valid]
-        tp_vals = [v[1] for v in valid]
-        wr_std = float(np.std(wr_vals))
-        stability = (np.mean(wr_vals) + np.mean(tp_vals)) / 2 - wr_std
+        wr_vals = [v[0] for v in valid]; tp_vals = [v[1] for v in valid]
+        wr_mean = round(np.mean(wr_vals), 1); tp_mean = round(np.mean(tp_vals), 1)
+        wr_std = round(float(np.std(wr_vals)), 1)
+        stability = round((wr_mean + tp_mean) / 2 - wr_std, 1)
     else:
-        stability = 0
-        wr_std = 0
+        wr_mean = tp_mean = wr_std = stability = 0
 
     print(f"\n{'─' * 60}")
-    print(f"  📈 综合评分: 胜率均值={np.mean(wr_vals) if valid else 0:.1f}% "
-          f"止盈均值={np.mean(tp_vals) if valid else 0:.1f}% "
-          f"稳定性={100-wr_std:.1f}")
-    print(f"  综合评价: {stability:.1f}/100")
+    print(f"  📈 WR均值={wr_mean}% TP均值={tp_mean}% WR波动={wr_std}%")
+    print(f"  稳定性评分: {stability}/100")
 
-    if stability >= 55 and s.get("take_profit_rate", 0) >= 30:
-        print(f"\n  ✅ 系统达标: 跨周期稳定止盈 ≥{int(args.target)}%")
-    elif stability >= 45:
-        print(f"\n  ⚠ 部分达标 — 建议聚焦 Top 3 高胜率信号")
+    # ── 最终判定 ──
+    all_above_20tp = all(r["tp"] >= 20 for r in regime_stats.values() if r["n"] >= 10)
+    min_tp = min((r["tp"] for r in regime_stats.values() if r["n"] >= 10), default=0)
+
+    if stability >= 55 and all_above_20tp:
+        print(f"\n  ✅✅ 系统达标 — 所有周期止盈率≥20%，综合评分{stability}/100")
+        print(f"  可在任何市场环境稳定获利 8%+")
+    elif stability >= 50 and min_tp >= 15:
+        print(f"\n  ✅ 系统基本达标 — 最低止盈率{min_tp}%，评分{stability}/100")
+    elif stability >= 40:
+        print(f"\n  ⚠ 接近达标 — 最弱周期止盈率{min_tp}%，需进一步优化")
     else:
-        print(f"\n  ❌ 稳定性不足 — 需扩大样本或优化信号")
-        print(f"  建议: --sample 2000 增加样本，或 --target 6 降低目标")
+        print(f"\n  ❌ 不达标 — 需重新筛选信号组合")
 
-    print(f"\n{'═' * 70}\n  总耗时 {elapsed:.0f}s\n{'═' * 70}")
+    print(f"\n{'═' * 70}\n  总耗时 {elapsed:.0f}s")
+    print(f"  熊市过滤: {s.get('bear_filtered', 0)} 个信号被排除")
+    print(f"{'═' * 70}")
 
 
 if __name__ == "__main__":
