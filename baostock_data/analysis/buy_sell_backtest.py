@@ -198,10 +198,12 @@ class BuySellBacktest:
             # 加入信号窗口
             signal_window.append((i, pattern))
 
-            # v3: 双信号互确认 — 需要≥2个不同pattern在3日内
+            # v3: 双信号互确认 — 牛市/震荡市需要≥2个不同pattern在3日内
+            # 熊市放宽为单信号(信号已经很少)
+            in_bear = is_bearish(df, i)
             unique_patterns = set(sp for _, sp in signal_window)
-            if len(unique_patterns) < 2:
-                continue  # 等待第二个信号
+            if not in_bear and len(unique_patterns) < 2:
+                continue  # 非熊市：等待第二个信号
 
             # 取最近的信号日作为入场点
             entry_i = signal_window[-1][0]
