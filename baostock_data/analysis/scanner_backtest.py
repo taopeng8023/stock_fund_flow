@@ -122,9 +122,9 @@ def run_backtest(scan_date: str, top_n: int = 30,
             "top5_wr": round(top5_wr, 1),
             "top5_avg_return": round(top5_ret, 2),
             "results": [
-                {"code": r["code"], "name": r["name"], "score": r["score"],
-                 "price": r["price"], "next_close": r["next_close"],
-                 "return": r["next_return"], "win": r["win"]}
+                {"code": str(r["code"]), "name": str(r["name"]), "score": float(r["score"]),
+                 "price": float(r["price"]), "next_close": float(r["next_close"]),
+                 "return": float(r["next_return"]), "win": bool(r["win"])}
                 for r in results
             ],
         })
