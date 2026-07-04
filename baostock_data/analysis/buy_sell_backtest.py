@@ -135,7 +135,8 @@ class BuySellBacktest:
                                    self.trailing_stop, self.max_hold)
             result["pattern"] = pattern
             result["code"] = os.path.splitext(os.path.basename(filepath))[0]
-            result["entry_date"] = str(df.index[i])
+            entry_dt = str(df["日期"].values[i])[:10] if "日期" in df.columns else str(df.index[i])
+            result["entry_date"] = entry_dt
             result["entry_price"] = float(df["收盘"].values[i])
             self.trades.append(result)
             self.signals_by_pattern[pattern].append(result)
