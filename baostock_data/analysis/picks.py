@@ -228,9 +228,14 @@ def load_all_stocks(main_board=True):
     return data
 
 
-def find_date_idx(df, date_str):
+def find_date_idx(df, date_str, tail_only=True):
+    """找日期索引。tail_only=True 仅查尾部(短线扫描), False 全量查(历史回测)。"""
     kd = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-    for j in range(len(df)-1, max(len(df)-20, -1), -1):
+    if tail_only:
+        rng = range(len(df)-1, max(len(df)-20, -1), -1)
+    else:
+        rng = range(len(df)-1, -1, -1)
+    for j in rng:
         if str(df["日期"].iloc[j].date()) in (date_str, kd):
             return j
     return None
@@ -242,6 +247,96 @@ def get_trading_dates(from_date, to_date, step=5):
     fd = pd.to_datetime(f"{from_date[:4]}-{from_date[4:6]}-{from_date[6:8]}")
     td = pd.to_datetime(f"{to_date[:4]}-{to_date[4:6]}-{to_date[6:8]}")
     return [d.strftime("%Y%m%d") for d in ref["日期"] if fd <= d <= td][::step]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 长线成长股筛选 — 寻找翻倍潜力股
+# ═══════════════════════════════════════════════════════════════
+
+def compute_growth_score(df, idx):
+    """计算长线成长股质量分 (0-100)。
+
+    维度:
+      1. 长期趋势 (30分): MA60>MA120>MA250 + 价格在均线上方
+      2. 年度表现 (25分): 250日收益率 + 稳定性
+      3. 低波动质量 (20分): 低回撤 + 稳步上涨
+      4. 量价配合 (15分): 放量突破 + 机构吸筹特征
+      5. 新高突破 (10分): 创1年新高或接近
+    """
+    n = len(df)
+    if idx < 250: return 0  # 需要至少1年数据
+    c = df["收盘"].values
+
+    score = 0.0
+
+    # 1. 长期趋势 (30分)
+    ma60 = np.mean(c[max(0,idx-60):idx+1])
+    ma120 = np.mean(c[max(0,idx-120):idx+1])
+    ma250 = np.mean(c[max(0,idx-250):idx+1])
+    if ma60 > ma120 > ma250 and c[idx] > ma60:
+        score += 30  # 完美多头排列
+    elif ma60 > ma250 and c[idx] > ma120:
+        score += 20  # 偏多头
+    elif c[idx] > ma250:
+        score += 10  # 在年线上方
+    # 价格相对 MA250 的距离
+    if ma250 > 0:
+        dist = (c[idx] - ma250) / ma250
+        if 0.1 < dist < 0.5: score += 5  # 温和高于年线
+        elif dist >= 0.5: score += 3  # 强势但可能过热
+
+    # 2. 年度表现 (25分)
+    if idx >= 250 and c[idx-250] > 0:
+        ret_1y = (c[idx] - c[idx-250]) / c[idx-250]
+        if ret_1y > 0.5: score += 25   # 年涨50%+ = 强成长
+        elif ret_1y > 0.3: score += 20
+        elif ret_1y > 0.1: score += 12
+        elif ret_1y > 0: score += 5
+        # 负收益扣分
+        if ret_1y < -0.2: score -= 10
+        # 稳定性: 检查是否稳步上涨(非暴涨暴跌)
+        if idx >= 250:
+            chunks = [c[idx-250+i*50:idx-200+(i+1)*50] for i in range(5)]
+            chunk_rets = [(chunk[-1]-chunk[0])/chunk[0] if chunk[0]>0 else 0 for chunk in chunks]
+            positive_chunks = sum(1 for r in chunk_rets if r > 0)
+            if positive_chunks >= 4: score += 5  # 80%时段上涨 = 稳步
+            elif positive_chunks <= 1: score -= 5  # 大部分时段下跌
+
+    # 3. 低波动质量 (20分)
+    if idx >= 250:
+        daily_rets = [(c[i]-c[i-1])/c[i-1] for i in range(idx-250+1, idx+1) if c[i-1]>0]
+        if daily_rets:
+            vol = np.std(daily_rets)
+            if vol < 0.02: score += 20     # 低波动(<2%/天)
+            elif vol < 0.03: score += 15
+            elif vol < 0.04: score += 8
+        # 最大回撤
+        peak = max(c[idx-250:idx+1])
+        trough = min(c[idx-250:idx+1])
+        dd = (peak-trough)/peak if peak>0 else 0
+        if dd < 0.20: score += 5       # 低回撤
+        elif dd > 0.50: score -= 10    # 腰斩股扣分
+
+    # 4. 量价配合 (15分)
+    v = df["成交量"].values
+    if idx >= 60:
+        vol_60 = np.mean(v[max(0,idx-60):idx+1])
+        vol_20 = np.mean(v[max(0,idx-20):idx+1])
+        if vol_60 > 0 and vol_20 > vol_60 * 1.2: score += 10  # 近期放量
+        elif vol_20 > vol_60: score += 5
+        # 上涨日放量 > 下跌日放量 (机构吸筹)
+        up_vol = [v[i] for i in range(max(0,idx-60), idx+1) if c[i]>c[i-1]]
+        dn_vol = [v[i] for i in range(max(0,idx-60), idx+1) if c[i]<=c[i-1]]
+        if up_vol and dn_vol and np.mean(up_vol) > np.mean(dn_vol) * 1.1:
+            score += 5
+
+    # 5. 新高突破 (10分)
+    if idx >= 250:
+        high_1y = max(c[idx-250:idx])
+        if c[idx] >= high_1y * 0.98: score += 10   # 接近1年新高
+        elif c[idx] >= high_1y * 0.90: score += 5
+
+    return min(100, max(0, score))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -436,6 +531,120 @@ def cmd_analyze(args):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 命令: growth — 长线成长股筛选
+# ═══════════════════════════════════════════════════════════════
+
+def cmd_growth(args):
+    """长线成长股筛选 + 翻倍潜力回测。"""
+    data = load_all_stocks()
+    date_str = args.date or datetime.now().strftime("%Y%m%d")
+
+    if args.backtest:
+        # 回测模式: 从历史数据找过去入选的股票, 跟踪1年后是否翻倍
+        dates = get_trading_dates(args.from_date or "20190101",
+                                  args.to_date or "20250101", step=20)
+        print(f"翻倍回测: {len(dates)}天 | 跟踪1年/2年收益\n")
+        all_results = []
+        for di, ds in enumerate(dates):
+            candidates = []
+            for code, (name, df) in data.items():
+                idx = find_date_idx(df, ds, tail_only=False)
+                if idx is None or idx < 250: continue
+                score = compute_growth_score(df, idx)
+                if score >= args.min_score:
+                    c = float(df["收盘"].values[idx])
+                    candidates.append({"code": code, "name": name, "score": score, "price": c, "idx": idx, "df": df})
+
+            candidates.sort(key=lambda x: -x["score"])
+            for c in candidates[:args.top]:
+                df2 = c["df"]; idx2 = c["idx"]
+                # 跟踪1年
+                ret_1y = None
+                if idx2 + 250 < len(df2):
+                    ret_1y = (float(df2["收盘"].values[idx2+250]) - c["price"]) / c["price"] * 100
+                # 跟踪2年
+                ret_2y = None
+                if idx2 + 500 < len(df2):
+                    ret_2y = (float(df2["收盘"].values[idx2+500]) - c["price"]) / c["price"] * 100
+                doubled = (ret_1y and ret_1y >= 100) or (ret_2y and ret_2y >= 100)
+                all_results.append({"date": ds, "code": c["code"], "name": c["name"],
+                                   "score": c["score"], "ret_1y": ret_1y, "ret_2y": ret_2y,
+                                   "doubled": doubled})
+
+            if (di+1) % 20 == 0:
+                recent = all_results[-200:]
+                dbl = sum(1 for r in recent if r["doubled"]) / len(recent) * 100 if recent else 0
+                print(f"  {di+1}/{len(dates)} {ds}: 累计{len(all_results)}笔 翻倍率={dbl:.0f}%", flush=True)
+
+        if not all_results:
+            print("无候选")
+            return
+
+        # 统计
+        valid_1y = [r for r in all_results if r["ret_1y"] is not None]
+        valid_2y = [r for r in all_results if r["ret_2y"] is not None]
+        doubled = [r for r in all_results if r["doubled"]]
+
+        print(f"\n{'═'*60}")
+        print(f"  翻倍回测结果")
+        print(f"{'═'*60}")
+        print(f"  总候选: {len(all_results)} 笔")
+        if valid_1y:
+            avg1 = np.mean([r["ret_1y"] for r in valid_1y])
+            wr1 = sum(1 for r in valid_1y if r["ret_1y"] > 0) / len(valid_1y) * 100
+            dbl1 = sum(1 for r in valid_1y if r["ret_1y"] >= 100) / len(valid_1y) * 100
+            print(f"  1年 (n={len(valid_1y)}): WR={wr1:.1f}% 均收={avg1:+.1f}% 翻倍率={dbl1:.1f}%")
+        if valid_2y:
+            avg2 = np.mean([r["ret_2y"] for r in valid_2y])
+            wr2 = sum(1 for r in valid_2y if r["ret_2y"] > 0) / len(valid_2y) * 100
+            dbl2 = sum(1 for r in valid_2y if r["ret_2y"] >= 100) / len(valid_2y) * 100
+            print(f"  2年 (n={len(valid_2y)}): WR={wr2:.1f}% 均收={avg2:+.1f}% 翻倍率={dbl2:.1f}%")
+
+        # 最近翻倍股
+        if doubled:
+            print(f"\n  最近翻倍股 (共{len(doubled)}只):")
+            for r in doubled[-10:]:
+                print(f"    {r['code']} {r['name']:<8s} 入选{r['date']} 分{r['score']:.0f} "
+                      f"1年{r['ret_1y']:+.0f}% 2年{r['ret_2y']:+.0f}%")
+
+        if HAS_SAVE:
+            save_results("growth_backtest", {
+                "from": args.from_date, "to": args.to_date,
+                "n_candidates": len(all_results), "n_doubled": len(doubled),
+                "doubled_rate_1y": dbl1 if valid_1y else 0,
+                "doubled_rate_2y": dbl2 if valid_2y else 0,
+            })
+
+    else:
+        # 扫描模式: 当前日期筛选成长股
+        print(f"长线成长股筛选 [{date_str}]\n")
+        candidates = []
+        for code, (name, df) in data.items():
+            idx = find_date_idx(df, date_str)
+            if idx is None or idx < 250: continue
+            score = compute_growth_score(df, idx)
+            if score < args.min_score: continue
+            c = float(df["收盘"].values[idx])
+            ret_1y = (c - float(df["收盘"].values[idx-250])) / float(df["收盘"].values[idx-250]) * 100 if idx >= 250 else 0
+            ma250 = np.mean(df["收盘"].values[max(0,idx-250):idx+1])
+            dist_ma = (c - ma250) / ma250 * 100 if ma250 > 0 else 0
+            candidates.append({
+                "code": code, "name": name, "score": round(score, 1),
+                "price": round(c, 2), "ret_1y": round(ret_1y, 1),
+                "dist_ma250": round(dist_ma, 1),
+            })
+
+        candidates.sort(key=lambda x: -x["score"])
+        top = candidates[:args.top]
+
+        print(f"  {'#':<3} {'代码':<10} {'名称':<8} {'得分':<6} {'价格':>7} {'年涨幅':>7} {'距MA250':>7}")
+        print(f"  {'─'*55}")
+        for i, c in enumerate(top):
+            print(f"  {i+1:<3} {c['code']:<10} {c['name']:<8} {c['score']:<6.1f} {c['price']:>7.2f} {c['ret_1y']:>+6.1f}% {c['dist_ma250']:>+6.1f}%")
+        print(f"\n  共 {len(top)} 只候选 (最低分≥{args.min_score})")
+
+
+# ═══════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════
 
@@ -455,12 +664,21 @@ def main():
     b.add_argument("--top", type=int, default=10)
     b.add_argument("--strict", action="store_true", help="高收益精选回测")
 
-    sp.add_parser("analyze", help="大赢家特征分析")
+    a = sp.add_parser("analyze", help="大赢家特征分析")
+
+    g = sp.add_parser("growth", help="长线成长股筛选")
+    g.add_argument("--date", default=None, help="日期 YYYYMMDD")
+    g.add_argument("--top", type=int, default=30)
+    g.add_argument("--min-score", type=float, default=50, help="最低成长分")
+    g.add_argument("--backtest", action="store_true", help="翻倍回测模式")
+    g.add_argument("--from", dest="from_date", default="20190101")
+    g.add_argument("--to", dest="to_date", default="20250101")
 
     args = p.parse_args()
     if args.cmd == "scan": cmd_scan(args)
     elif args.cmd == "backtest": cmd_backtest(args)
     elif args.cmd == "analyze": cmd_analyze(args)
+    elif args.cmd == "growth": cmd_growth(args)
     else: p.print_help()
 
 
