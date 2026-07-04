@@ -188,7 +188,31 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
     all_trades = []  # [{date, code, name, price, signals, next_ret, win}]
     daily_stats = []  # [{date, n_candidates, wr, avg_ret}]
 
+    # ── 市场体制快速检测（抽样100只）──
+    def detect_market_regime(date_str):
+        """检测当日市场体制: bull/neutral/bear。抽样100只计算涨跌比。"""
+        up = 0; total = 0
+        sample_codes = list(stock_data.keys())[:100]
+        for code in sample_codes:
+            _, df = stock_data.get(code, (None, None))
+            if df is None: continue
+            kdate = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            for j in range(len(df)-1, max(len(df)-5, -1), -1):
+                if str(df["日期"].iloc[j].date()) == kdate:
+                    chg = df["pct_chg"].values[j]
+                    if not pd.isna(chg):
+                        if chg > 0: up += 1
+                        total += 1
+                    break
+        if total < 20: return "neutral"
+        ratio = up / total
+        if ratio > 0.55: return "bull"
+        if ratio < 0.35: return "bear"
+        return "neutral"
+
     for di, date_str in enumerate(all_dates):
+        regime = detect_market_regime(date_str)
+        is_bear = regime == "bear"
         day_candidates = []
 
         for code, (name, df) in stock_data.items():
@@ -224,6 +248,28 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
             all_wr = [s["wr"] for s in signals]
             max_wr = max(all_wr) if all_wr else 0
             has_signal = len(signals) >= min_consensus and max_wr >= MIN_WR_TARGET
+
+            # ── 信号专项高胜率过滤器 ──
+            if has_signal:
+                # 熊市日: 信号强制降级为技术面
+                if is_bear:
+                    has_signal = False
+                # 信号股要求更高流动性（≥2亿）
+                if turnover_yi < 2.0:
+                    has_signal = False
+                # 2. 不追涨停日（当日涨>9% = 次日大概率回落）
+                chg_today = float(df["pct_chg"].values[idx] * 100) if not pd.isna(df["pct_chg"].values[idx]) else 0
+                if chg_today > 9.0:
+                    has_signal = False
+                # 3. 避免缺口下跌日（开盘<昨收*0.98 = 空头信号）
+                if idx > 0:
+                    prev_c = float(df["收盘"].values[idx - 1])
+                    today_o = float(df["开盘"].values[idx])
+                    if prev_c > 0 and today_o < prev_c * 0.97:
+                        has_signal = False
+                # 4. 位置>0.85 的高位信号需要 MA 多头确认
+                if pos_60 > 0.85 and not ma_bull:
+                    has_signal = False
 
             # 综合评分 = 技术面分+(形态加分)
             if has_signal:
@@ -307,6 +353,7 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
                 "ret_5d": round(ret_5 * 100, 2) if ret_5 is not None else None,
                 "next_return": round(ret_1 * 100, 2),
                 "win": ret_1 > 0,
+                "regime": regime,
                 "best_wr": pick["best_wr"],
             })
 
@@ -398,6 +445,13 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
     for m, wr, avg in month_wrs[-12:]:
         cnt = len(monthly[m])
         print(f"  {m:<8} {cnt:>5} {wr:>6.1f}% {avg:>+7.2f}%")
+
+    # ── 体制分布 ──
+    regime_counts = defaultdict(int)
+    for t in all_trades:
+        regime_counts[t.get("regime", "?")] += 1
+    if regime_counts:
+        print(f"\n  体制分布: {dict(regime_counts)}")
 
     # ── 信号 vs 技术面对比 ──
     signal_trades = [t for t in all_trades if t.get("has_signal")]
