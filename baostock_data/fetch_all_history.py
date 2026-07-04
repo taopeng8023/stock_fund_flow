@@ -206,7 +206,15 @@ def _worker_fetch(args):
     for stock in chunk:
         code = stock["code"]
         name = stock["code_name"]
-        outpath = os.path.join(outdir, f"{code}.csv")
+        # daily/ 目录按类型分子目录: stocks/ etfs/ indices/
+        if "daily" in outdir and "stocks" not in outdir:
+            typ = classify_stock(code)
+            sub = {"个股": "stocks", "ETF": "etfs", "指数": "indices"}.get(typ, "stocks")
+            stock_outdir = os.path.join(outdir, sub)
+            os.makedirs(stock_outdir, exist_ok=True)
+        else:
+            stock_outdir = outdir
+        outpath = os.path.join(stock_outdir, f"{code}.csv")
 
         # 增量：检查已有数据，只拉新数据
         stock_start = start_date

@@ -89,24 +89,25 @@ def is_stock_code(filename: str) -> bool:
 
 
 def load_stock_files(data_dir: str) -> list[str]:
-    """从 data_dir 加载所有 K 线 CSV，仅返回个股文件。
+    """从 data_dir/stocks/ 加载所有个股 K 线 CSV。
 
     Args:
-        data_dir: daily/ 目录路径
+        data_dir: daily/ 目录路径 (自动追加 /stocks)
 
     Returns:
         排序后的个股 CSV 文件路径列表
     """
+    stocks_dir = os.path.join(data_dir, "stocks")
+    if os.path.isdir(stocks_dir):
+        return sorted(glob(os.path.join(stocks_dir, "*.csv")))
+    # fallback: 旧结构
+    stock_set = get_stock_set()
     all_files = sorted(
         glob(os.path.join(data_dir, "sh.*.csv"))
         + glob(os.path.join(data_dir, "sz.*.csv"))
     )
-    stock_set = get_stock_set()
-    stock_files = [
-        f for f in all_files
-        if os.path.splitext(os.path.basename(f))[0] in stock_set
-    ]
-    return stock_files
+    return [f for f in all_files
+            if os.path.splitext(os.path.basename(f))[0] in stock_set]
 
 
 def is_main_board(code: str) -> bool:
@@ -131,10 +132,29 @@ def is_main_board(code: str) -> bool:
 
 
 def load_main_board_files(data_dir: str) -> list[str]:
-    """加载所有主板个股 K 线文件（排除科创/创业/北交所）。"""
+    """加载所有主板个股 K 线文件（排除科创/创业/北交所）。
+
+    优先从 data_dir/stocks/ 读取（分类后的目录结构）。
+    """
     stock_files = load_stock_files(data_dir)
     return [f for f in stock_files
             if is_main_board(os.path.splitext(os.path.basename(f))[0])]
+
+
+def load_etf_files(data_dir: str) -> list[str]:
+    """加载所有 ETF K 线文件。"""
+    etfs_dir = os.path.join(data_dir, "etfs")
+    if os.path.isdir(etfs_dir):
+        return sorted(glob(os.path.join(etfs_dir, "*.csv")))
+    return []
+
+
+def load_index_files(data_dir: str) -> list[str]:
+    """加载所有指数 K 线文件。"""
+    idx_dir = os.path.join(data_dir, "indices")
+    if os.path.isdir(idx_dir):
+        return sorted(glob(os.path.join(idx_dir, "*.csv")))
+    return []
 
 
 def print_filter_summary(data_dir: str, main_board_only: bool = False):

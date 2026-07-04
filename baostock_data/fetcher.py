@@ -29,6 +29,7 @@ import baostock as bs
 from .config import (
     BAOSTOCK_DATA_ROOT,
     BJS_TZ,
+    DAILY_DIR,
     KLINE_FIELDS,
     KLINE_HEADERS,
     KLINE_FIELDS_MINUTE,
@@ -41,6 +42,24 @@ from .config import (
     MINUTE_START_DATE,
     INDEX_CODES,
 )
+
+# 股票分类函数 (避免循环导入)
+def _classify_code(code: str) -> str:
+    """根据代码前缀分类: 个股 / 指数 / ETF。"""
+    import re
+    m = re.match(r'(sh|sz|bj)\.(\d+)', code)
+    if not m: return "个股"
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        if num[0] == '6' or num.startswith('689'): return "个股"
+        elif num[0] == '5': return "ETF"
+        elif num.startswith('000'): return "指数"
+    elif market == 'sz':
+        if num.startswith('399'): return "指数"
+        elif num.startswith('159'): return "ETF"
+        else: return "个股"
+    elif market == 'bj': return "个股"
+    return "个股"
 
 
 # ============================================================
@@ -350,7 +369,15 @@ class BaoStockFetcher:
 
         for i, stock in enumerate(pending_stocks):
             code = stock["code"]
-            csv_path = os.path.join(out_dir, f"{code}.csv")
+            # 按类型分类到子目录: daily/stocks/ daily/etfs/ daily/indices/
+            if out_dir == DAILY_DIR:
+                typ = _classify_code(code)
+                sub = {"个股": "stocks", "ETF": "etfs", "指数": "indices"}.get(typ, "stocks")
+                stock_out_dir = os.path.join(out_dir, sub)
+                os.makedirs(stock_out_dir, exist_ok=True)
+            else:
+                stock_out_dir = out_dir
+            csv_path = os.path.join(stock_out_dir, f"{code}.csv")
 
             # 增量模式：已有 CSV 时只拉新数据
             stock_start = start_date
