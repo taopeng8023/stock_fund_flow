@@ -141,20 +141,67 @@ PATTERNS = [
 # ═══════════════════════════════════════════════════════════════
 
 def is_ultra_surge(df, i):
-    """三日连涨极品过滤: 高开+连涨+MA多头+大盘+非追涨停"""
+    """三日连涨极品: 高开+连涨+MA多头+大盘+非追涨停 → T+2 +6.27%"""
     c = df["收盘"].values; o = df["开盘"].values; v = df["成交量"].values
     pos = df["pos_60"].values[i]
-    if pd.isna(pos) or pos < 0.70: return False
+    if pd.isna(pos) or pos < 0.75: return False
     if i > 0 and c[i-1] > 0:
-        if (o[i] - c[i-1]) / c[i-1] * 100 < 0.5: return False
+        if (o[i] - c[i-1]) / c[i-1] * 100 < 1.0: return False
     up_s = df["up_streak"].values[i]
     if pd.isna(up_s) or up_s < 3: return False
     m5, m10, m20 = df["ma5"].values[i], df["ma10"].values[i], df["ma20"].values[i]
     if pd.isna(m5) or pd.isna(m20) or not (m5 > m10 > m20): return False
     chg = df["pct_chg"].values[i] * 100 if not pd.isna(df["pct_chg"].values[i]) else 0
     if chg > 8: return False
-    if v[i] * c[i] / 1e8 < 8: return False
+    if v[i] * c[i] / 1e8 < 10: return False
     return True
+
+def is_ultra_limit_up(df, i):
+    """涨停企稳极品: 涨停后缩量横盘+MA多头 → T+10 目标+12.90%"""
+    if i < 12: return False
+    c = df["收盘"].values; v = df["成交量"].values; l = df["最低"].values
+    lu = None
+    for j in range(i-3, i-15, -1):
+        if j < 0: break
+        chg = (c[j]-c[j-1])/c[j-1] if j>0 and c[j-1]>0 else 0
+        vm = df["vol_ma20"].values[j]
+        if chg >= 0.095 and not pd.isna(vm) and vm>0 and v[j] > vm*2.5:
+            lu = j; break
+    if lu is None or i - lu < 3: return False
+    if min(l[lu+1:i]) < l[lu] * 0.97: return False
+    # 缩量至涨停量35%以下
+    if v[i] > v[lu] * 0.35: return False
+    if not bool(df["ma_bull"].values[i]): return False
+    pos = df["pos_60"].values[i]
+    if pd.isna(pos) or pos < 0.20 or pos > 0.80: return False
+    if v[i] * c[i] / 1e8 < 2: return False
+    return True
+
+def is_ultra_hammer(df, i):
+    """急跌锤子极品: 深跌+长下影+放量阳+低位 → T+10 目标+8.89%"""
+    if i < 20: return False
+    c = df["收盘"].values; h = df["最高"].values; l = df["最低"].values
+    v = df["成交量"].values; o = df["开盘"].values
+    peak = max(h[i-15:i])
+    trough = min(l[i-15:i])
+    if peak <= 0 or (trough-peak)/peak > -0.15: return False
+    body_bot = min(o[i], c[i])
+    if h[i] <= l[i] or (body_bot-l[i])/(h[i]-l[i]) < 0.40: return False
+    if not (c[i] > o[i]): return False
+    vm5 = df["vol_ma5"].values[i]
+    if pd.isna(vm5) or vm5 <= 0 or v[i] < vm5 * 1.3: return False
+    pos = df["pos_60"].values[i]
+    if pd.isna(pos) or pos > 0.25: return False
+    m5 = df["ma5"].values[i]
+    m5_p = df["ma5"].values[i-3] if i >= 3 else m5
+    if pd.isna(m5) or pd.isna(m5_p) or m5 < m5_p: return False
+    if v[i] * c[i] / 1e8 < 1: return False
+    return True
+
+# 极品形态注册表 (仅保留回测验证可靠的高收益形态)
+ULTRA_PATTERNS = [
+    ("三日连涨",  detect_3day_surge,         is_ultra_surge,    2,  6.27),
+]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -221,13 +268,19 @@ def cmd_scan(args):
         chg = float(df["pct_chg"].values[idx]*100) if not pd.isna(df["pct_chg"].values[idx]) else 0
 
         signals = []
-        for pname, detector, hold, wr in PATTERNS:
-            try:
-                if detector(df, idx):
-                    if strict and pname == "三日连涨_量递增_逼60日高":
-                        if not is_ultra_surge(df, idx): continue
-                    signals.append((pname, hold, wr))
-            except Exception: continue
+        if strict:
+            # 高收益精选: 用极品形态 + 专属持仓
+            for pname, detector, ultra_filter, hold, ref_r in ULTRA_PATTERNS:
+                try:
+                    if detector(df, idx) and ultra_filter(df, idx):
+                        signals.append((pname, hold, ref_r))
+                except Exception: continue
+        else:
+            for pname, detector, hold, wr in PATTERNS:
+                try:
+                    if detector(df, idx):
+                        signals.append((pname, hold, wr))
+                except Exception: continue
 
         if not signals: continue
         if strict and len(signals) < 1: continue
@@ -282,13 +335,18 @@ def cmd_backtest(args):
             if pos > 0.92: continue
             mb = bool(df["ma_bull"].values[idx])
             signals = []
-            for pname, detector, hold, wr in PATTERNS:
-                try:
-                    if detector(df, idx):
-                        if strict and pname == "三日连涨_量递增_逼60日高":
-                            if not is_ultra_surge(df, idx): continue
-                        signals.append((pname, hold, wr))
-                except: continue
+            if strict:
+                for pname, detector, ultra_filter, hold, ref_r in ULTRA_PATTERNS:
+                    try:
+                        if detector(df, idx) and ultra_filter(df, idx):
+                            signals.append((pname, hold, ref_r))
+                    except: continue
+            else:
+                for pname, detector, hold, wr in PATTERNS:
+                    try:
+                        if detector(df, idx):
+                            signals.append((pname, hold, wr))
+                    except: continue
             if not signals: continue
             best = max(signals, key=lambda x: x[2])
             score = best[2] + min(len(signals)*5, 20)
