@@ -8,12 +8,19 @@
 """
 import argparse, os, random, sys, warnings
 from collections import defaultdict
+from datetime import datetime
 import numpy as np, pandas as pd
 
 try:
     from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
 except ImportError:
     from stock_filter import load_stock_files, print_filter_summary
+
+try:
+    from result_store import save_results
+    HAS_RESULT_STORE = True
+except ImportError:
+    HAS_RESULT_STORE = False
 
 warnings.filterwarnings("ignore")
 MIN_DAYS, WIN_THRESHOLD = 80, 0.005
@@ -272,6 +279,28 @@ def discover(data_dir, target_wr=85.0, sample=2000, seed=42):
         print(f"  {r['name']:55s} T+{r['hold']:<3d} {r['wr']:6.1f}% {r['n']:5d}  {r['avg_r']:+7.2f}%")
 
     print(f"\n{'═' * 85}")
+
+    # ── 结果持久化 ──
+    if HAS_RESULT_STORE:
+        save_results("discover_price_volume", {
+            "date": datetime.now().strftime("%Y%m%d"),
+            "target_wr": target_wr,
+            "sample": len(files),
+            "signal_defs": len(signal_defs),
+            "total_samples": sum(len(v) for v in results.values()),
+            "qualifying_count": len(qualifying),
+            "qualifying": [
+                {"name": r["name"], "hold": r["hold"], "wr": r["wr"],
+                 "n": r["n"], "avg_r": r["avg_r"]}
+                for r in qualifying
+            ],
+            "top30": [
+                {"name": r["name"], "hold": r["hold"], "wr": r["wr"],
+                 "n": r["n"], "avg_r": r["avg_r"]}
+                for r in summary[:30]
+            ],
+        })
+
     return qualifying, summary
 
 

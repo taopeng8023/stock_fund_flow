@@ -13,12 +13,19 @@
 """
 import argparse, os, random, sys, warnings
 from collections import defaultdict
+from datetime import datetime
 import numpy as np, pandas as pd
 
 try:
     from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
 except ImportError:
     from stock_filter import load_stock_files, print_filter_summary
+
+try:
+    from result_store import save_results
+    HAS_RESULT_STORE = True
+except ImportError:
+    HAS_RESULT_STORE = False
 
 warnings.filterwarnings("ignore")
 MIN_DAYS, WIN_THRESHOLD = 80, 0.005
@@ -345,7 +352,7 @@ def run(data_dir, target_wr=85.0, sample=0, top_n=20, seed=42):
         # 共识加分: 同日多策略信号 +15分/额外策略
         for day, s_list in day_sigs.items():
             n_strats = len(set(s[1] for s in s_list))
-            consensus_bonus = (n_strats - 1) * 20  # 2策略+20, 3策略+40...
+            consensus_bonus = min((n_strats - 1) * 10, 30)  # 2策略+10, 3+20, >=4=30 (校准: 原+20造成43%WR噪声)
             for ei, sn, hold, qs in s_list:
                 ret = fwd_ret(df, ei, hold)
                 if ret is not None:
@@ -428,6 +435,38 @@ def run(data_dir, target_wr=85.0, sample=0, top_n=20, seed=42):
                   f"T+{s['hold']:<3d} {s.get('consensus',1):4d}票 {s['qs']:6.0f} {s['entry_price']:8.2f}")
 
     print(f"\n{'═'*65}")
+
+    # ── 结果持久化 ──
+    if HAS_RESULT_STORE:
+        save_results("strategy_screener", {
+            "date": datetime.now().strftime("%Y%m%d"),
+            "target_wr": target_wr,
+            "sample": len(files),
+            "total_signals": len(signals),
+            "best_wr": float(bw) if 'bw' in dir() else None,
+            "best_n": nn if 'nn' in dir() else None,
+            "best_threshold": float(best_th) if best_th else None,
+            "all_pass": all_pass,
+            "strategies": [
+                {
+                    "name": sn, "hold": hold,
+                    "total": len([s for s in signals if s["strategy"] == sn]),
+                    "wr": (
+                        sum(1 for s in signals if s["strategy"] == sn and s["ret"] > WIN_THRESHOLD) /
+                        max(len([s for s in signals if s["strategy"] == sn]), 1) * 100
+                    ),
+                }
+                for sn, _, _, _, hold in strats
+                if any(s["strategy"] == sn for s in signals)
+            ],
+            "recent_signals": [
+                {"code": s["code"], "name": s["name"], "strategy": s["strategy"],
+                 "hold": s["hold"], "qs": s["qs"], "entry_price": s["entry_price"],
+                 "date": s["date"], "consensus": s.get("consensus", 1)}
+                for s in (recent[:top_n] if 'recent' in dir() else [])
+            ],
+        })
+
     return all_pass
 
 

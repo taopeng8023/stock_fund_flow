@@ -17,6 +17,7 @@ import sys
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
@@ -26,6 +27,12 @@ try:
     from baostock_data.analysis.stock_filter import load_stock_files, print_filter_summary
 except ImportError:
     from stock_filter import load_stock_files, print_filter_summary
+
+try:
+    from result_store import save_results
+    HAS_RESULT_STORE = True
+except ImportError:
+    HAS_RESULT_STORE = False
 
 warnings.filterwarnings("ignore")
 
@@ -685,6 +692,26 @@ def print_final_report(batch_results, target_win_rate):
 
     print()
     print("═" * 75)
+
+    # ── 结果持久化 ──
+    if HAS_RESULT_STORE:
+        save_results("kline_discovery", {
+            "date": datetime.now().strftime("%Y%m%d"),
+            "target_wr": target_win_rate,
+            "total_stocks": total_available,
+            "qualifying_count": len(qualifying),
+            "qualifying": [
+                {"name": pname, "hold": int(hold), "wr": float(wr),
+                 "n": int(total), "avg_r": float(avg_r)}
+                for wr, total, wins, pname, hold, avg_r in qualifying
+            ] if qualifying else [],
+            "top15": [
+                {"name": pname, "hold": int(hold), "wr": float(wr),
+                 "n": int(total), "avg_r": float(avg_r)}
+                for wr, total, wins, pname, hold, avg_r
+                in sorted(batch_results, reverse=True)[:15]
+            ] if batch_results else [],
+        })
 
 
 def main():
