@@ -196,11 +196,25 @@ class BaoStockFetcher:
         """保存全市场股票列表到固定路径"""
         date_str = date_str or datetime.now(BJS_TZ).strftime("%Y%m%d")
         stocks = self.get_stock_list(date_str)
+        # 分类: 个股/指数/ETF
+        try:
+            from .fetch_all_history import classify_stock
+        except ImportError:
+            classify_stock = lambda c: "1"
         with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in stocks:
-                writer.writerow([s["code"], s["code_name"], s["type"]])
+                code = s["code"]
+                if s.get("type") == "1":
+                    stock_type = classify_stock(code)
+                elif s.get("type") == "2":
+                    stock_type = "指数"
+                elif s.get("type") == "3":
+                    stock_type = "其他"
+                else:
+                    stock_type = classify_stock(code)
+                writer.writerow([code, s["code_name"], stock_type])
         self._flush_print(f"  -> stock_list.csv ({len(stocks)} 条)")
         return stocks
 
@@ -570,11 +584,22 @@ class BaoStockFetcher:
         self._flush_print(f"\n[0/4] 股票列表")
         stocks = self.get_active_stocks()
         all_stocks = self.get_stock_list()
+        try:
+            from .fetch_all_history import classify_stock
+        except ImportError:
+            classify_stock = lambda c: "1"
         with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in all_stocks:
-                writer.writerow([s["code"], s["code_name"], s["type"]])
+                code = s["code"]
+                if s.get("type") == "1":
+                    stock_type = classify_stock(code)
+                elif s.get("type") == "2":
+                    stock_type = "指数"
+                else:
+                    stock_type = classify_stock(code)
+                writer.writerow([code, s["code_name"], stock_type])
         self._flush_print(f"  -> stock_list.csv ({len(all_stocks)} 条)")
         self._flush_print(f"  A股 (type=1): {len(stocks)} 只")
 
@@ -621,11 +646,22 @@ class BaoStockFetcher:
 
         stocks = self.get_active_stocks()
         all_stocks = self.get_stock_list()
+        try:
+            from .fetch_all_history import classify_stock
+        except ImportError:
+            classify_stock = lambda c: "1"
         with open(STOCK_LIST_PATH, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["代码", "名称", "类型"])
             for s in all_stocks:
-                writer.writerow([s["code"], s["code_name"], s["type"]])
+                code = s["code"]
+                if s.get("type") == "1":
+                    stock_type = classify_stock(code)
+                elif s.get("type") == "2":
+                    stock_type = "指数"
+                else:
+                    stock_type = classify_stock(code)
+                writer.writerow([code, s["code_name"], stock_type])
         self._flush_print(f"  A股: {len(stocks)} 只")
 
         self._flush_print(f"\n[日线] {start_date} → {end_date}")

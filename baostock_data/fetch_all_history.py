@@ -89,6 +89,37 @@ def bs_login():
     return False
 
 
+def classify_stock(code: str) -> str:
+    """根据代码前缀分类: 个股 / 指数 / ETF。
+
+    sh: 6xxxxx/689xxx = 个股, 000xxx = 指数, 5xxxxx = ETF
+    sz: 000xxx-003xxx/300xxx-301xxx = 个股, 399xxx = 指数, 159xxx = ETF
+    bj: 8xxxxx/4xxxxx/9xxxxx = 个股(北交所)
+    """
+    import re
+    m = re.match(r'(sh|sz|bj)\.(\d+)', code)
+    if not m:
+        return "未知"
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        if num[0] == '6' or num.startswith('689'):
+            return "个股"
+        elif num[0] == '5':
+            return "ETF"
+        elif num.startswith('000'):
+            return "指数"
+    elif market == 'sz':
+        if num.startswith('399'):
+            return "指数"
+        elif num.startswith('159'):
+            return "ETF"
+        else:
+            return "个股"
+    elif market == 'bj':
+        return "个股"
+    return "未知"
+
+
 def get_stocks():
     import baostock as bs
     print("[登录] BaoStock ...", flush=True)
@@ -356,7 +387,18 @@ if __name__ == "__main__":
         w = csv.writer(f)
         w.writerow(["代码", "名称", "类型"])
         for s in stocks:
-            w.writerow([s["code"], s["code_name"], "1"])
+            code = s["code"]
+            # 根据 BaoStock 类型字段 + 代码前缀双重分类
+            bs_type = s.get("type", "1")
+            if bs_type == "1":
+                stock_type = classify_stock(code)
+            elif bs_type == "2":
+                stock_type = "指数"
+            elif bs_type == "3":
+                stock_type = "其他"
+            else:
+                stock_type = classify_stock(code)
+            w.writerow([code, s["code_name"], stock_type])
     print(f"  -> stock_list.csv ({len(stocks)} 条)", flush=True)
 
     # 1. 日线
