@@ -207,7 +207,7 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
         if total < 20: return "neutral"
         ratio = up / total
         if ratio > 0.55: return "bull"
-        if ratio < 0.35: return "bear"
+        if ratio < 0.25: return "bear"
         return "neutral"
 
     for di, date_str in enumerate(all_dates):
@@ -250,25 +250,14 @@ def run_backtest(from_date: str, to_date: str, step: int = 5,
             has_signal = len(signals) >= min_consensus and max_wr >= MIN_WR_TARGET
 
             # ── 信号专项高胜率过滤器 ──
+            # -- 信号高胜率过滤器(精简: 只留3条最有效的) --
             if has_signal:
-                # 熊市日: 信号强制降级为技术面
                 if is_bear:
                     has_signal = False
-                # 信号股要求更高流动性（≥2亿）
-                if turnover_yi < 2.0:
-                    has_signal = False
-                # 2. 不追涨停日（当日涨>9% = 次日大概率回落）
                 chg_today = float(df["pct_chg"].values[idx] * 100) if not pd.isna(df["pct_chg"].values[idx]) else 0
-                if chg_today > 9.0:
+                if chg_today > 9.5:
                     has_signal = False
-                # 3. 避免缺口下跌日（开盘<昨收*0.98 = 空头信号）
-                if idx > 0:
-                    prev_c = float(df["收盘"].values[idx - 1])
-                    today_o = float(df["开盘"].values[idx])
-                    if prev_c > 0 and today_o < prev_c * 0.97:
-                        has_signal = False
-                # 4. 位置>0.85 的高位信号需要 MA 多头确认
-                if pos_60 > 0.85 and not ma_bull:
+                if pos_60 > 0.90 and not ma_bull:
                     has_signal = False
 
             # 综合评分 = 技术面分+(形态加分)
