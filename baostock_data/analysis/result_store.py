@@ -14,6 +14,7 @@
 import json
 import os
 from datetime import datetime
+from typing import Optional, Dict, List
 
 
 def _get_results_dir():
@@ -43,7 +44,7 @@ def save_results(script_name: str, data: dict, timestamp: str = None):
     return path
 
 
-def load_results(script_name: str = None, limit: int = 10) -> list[dict]:
+def load_results(script_name: Optional[str] = None, limit: int = 10) -> List[Dict]:
     """加载历史结果。
 
     Args:
@@ -68,7 +69,7 @@ def load_results(script_name: str = None, limit: int = 10) -> list[dict]:
     return results
 
 
-def get_latest(script_name: str) -> dict | None:
+def get_latest(script_name: str) -> Optional[Dict]:
     """获取最近一次结果。"""
     results = load_results(script_name, limit=1)
     return results[0] if results else None
