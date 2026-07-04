@@ -448,6 +448,7 @@ def main():
     parser.add_argument("--top", type=int, default=30, help="输出候选数")
     parser.add_argument("--min-consensus", type=int, default=1,
                         help="最少引擎命中数 (1=宽松 2=严格)")
+    parser.add_argument("--lookback", type=int, default=5, help="信号回溯天数")
     parser.add_argument("--save", action="store_true", help="保存结果到 JSON")
     args = parser.parse_args()
 
@@ -456,7 +457,8 @@ def main():
         sys.exit(1)
 
     candidates = scan_stocks(DAILY_DIR, args.date,
-                             min_consensus=args.min_consensus, top_n=args.top)
+                             min_consensus=args.min_consensus, top_n=args.top,
+                             lookback=args.lookback)
     print_results(candidates, args.date, args.min_consensus)
 
     if args.save and candidates:
@@ -464,9 +466,9 @@ def main():
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.DictWriter(f, fieldnames=[
                 "code", "name", "price", "score", "chg_today", "turnover_yi",
-                "pos_60", "ma_bull", "n_signals", "n_patterns", "n_pv",
+                "pos_60", "ma_bull", "n_signals", "days_ago", "n_patterns", "n_pv",
                 "best_hold", "best_wr", "patterns", "pv_signals"
-            ])
+            ], extrasaction="ignore")
             w.writeheader()
             for c in candidates:
                 c["patterns"] = ",".join(c["patterns"])
