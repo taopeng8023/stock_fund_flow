@@ -21,18 +21,21 @@ def is_3day_surge_ultra(df, i):
     if i < 5: return False
     if not (c[i] > c[i-1] > c[i-2] and v[i] > v[i-1]): return False
     pos = df["pos_60"].values[i]
-    if pd.isna(pos) or pos < 0.55: return False
+    if pd.isna(pos) or pos < 0.70: return False
+    # 高开 (大赢家关键特征)
     if i > 0 and c[i-1] > 0:
-        if o[i] <= c[i-1]: return False  # 必须高开
+        gap_pct = (o[i] - c[i-1]) / c[i-1] * 100
+        if gap_pct < 0.5: return False
+    # 连涨≥3天
     up_s = df["up_streak"].values[i]
     if pd.isna(up_s) or up_s < 3: return False
-    # MA多头排列 (核心过滤器)
+    # MA多头排列
     ma5, ma10, ma20 = df["ma5"].values[i], df["ma10"].values[i], df["ma20"].values[i]
     if pd.isna(ma5) or pd.isna(ma20) or not (ma5 > ma10 > ma20): return False
     chg = df["pct_chg"].values[i] * 100 if not pd.isna(df["pct_chg"].values[i]) else 0
-    if chg > 9.5: return False
+    if chg > 8: return False
     turnover_yi = v[i] * c[i] / 1e8
-    if turnover_yi < 3: return False
+    if turnover_yi < 8: return False  # 大赢家均值40亿
     return True
 
 def is_deep_fall_ultra(df, i):
