@@ -1,9 +1,17 @@
 """
 BaoStock 数据模块 — 配置常量
 
-数据存储: baostock_data/data/<频率子目录>/  (不再使用日期子目录)
+数据存储: baostock_data/data/<频率子目录>/
+  日线按品种分类:
+    daily/stocks/   ← 个股 (sh.6*/sz.非159非399)
+    daily/etfs/     ← ETF  (sh.5*/sz.159*)
+    daily/indices/  ← 指数 (sh.0*/sz.399*)
+  其他频率 (w/m/minute_*) 扁平存储。
+
+分析脚本统一通过本模块获取路径，不再各自硬编码。
 """
 import os
+import re
 from datetime import timezone, timedelta
 
 # ============================================================
@@ -14,7 +22,7 @@ PROJECT_ROOT = os.path.dirname(MODULE_DIR)
 BAOSTOCK_DATA_ROOT = os.path.join(MODULE_DIR, "data")
 KLINE_DATA_DIR = os.path.join(PROJECT_ROOT, "kline_data")
 
-# 频率子目录（直接存储，不再使用日期子目录）
+# 频率子目录
 DAILY_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "daily")
 WEEKLY_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "weekly")
 MONTHLY_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "monthly")
@@ -23,6 +31,11 @@ MINUTE_15_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_15")
 MINUTE_30_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_30")
 MINUTE_60_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "minute_60")
 INDEX_DIR = os.path.join(BAOSTOCK_DATA_ROOT, "index")
+
+# 日线子目录（按品种分类）
+DAILY_STOCKS_DIR = os.path.join(DAILY_DIR, "stocks")
+DAILY_ETFS_DIR = os.path.join(DAILY_DIR, "etfs")
+DAILY_INDICES_DIR = os.path.join(DAILY_DIR, "indices")
 
 # 频率 → 目录 映射
 FREQ_DIR_MAP = {
@@ -35,8 +48,72 @@ FREQ_DIR_MAP = {
     "60": MINUTE_60_DIR,
 }
 
+# 日线品种 → 子目录 映射
+DAILY_TYPE_DIR_MAP = {
+    "stock": DAILY_STOCKS_DIR,
+    "etf": DAILY_ETFS_DIR,
+    "index": DAILY_INDICES_DIR,
+}
+
+# 所有数据目录（用于初始化）
+ALL_DATA_DIRS = [
+    DAILY_DIR, DAILY_STOCKS_DIR, DAILY_ETFS_DIR, DAILY_INDICES_DIR,
+    WEEKLY_DIR, MONTHLY_DIR,
+    MINUTE_5_DIR, MINUTE_15_DIR, MINUTE_30_DIR, MINUTE_60_DIR,
+    INDEX_DIR, KLINE_DATA_DIR,
+]
+
 # 股票列表固定路径
 STOCK_LIST_PATH = os.path.join(BAOSTOCK_DATA_ROOT, "stock_list.csv")
+
+# ============================================================
+# 目录初始化
+# ============================================================
+def ensure_dirs() -> None:
+    """创建所有数据目录（已有则跳过）。"""
+    for d in ALL_DATA_DIRS:
+        os.makedirs(d, exist_ok=True)
+
+
+# ============================================================
+# 代码分类
+# ============================================================
+def classify_code(code: str) -> str:
+    """根据股票代码判断品种类型，返回 'stock' | 'etf' | 'index'。
+
+    规则:
+      sh.6xxxxx / sh.689xxx → stock (个股)
+      sh.5xxxxx              → etf  (ETF)
+      sh.0xxxxx              → index (上证指数族)
+      sz.0xxxxx-3xxxxx       → stock (排除 159/399)
+      sz.159xxx              → etf  (ETF)
+      sz.399xxx              → index (深证指数族)
+      bj.xxxxxx              → stock (北交所)
+    """
+    m = re.match(r'(sh|sz|bj)\.(\d+)', code)
+    if not m:
+        return "stock"
+    market, num = m.group(1), m.group(2)
+    if market == 'sh':
+        if num.startswith('6') or num.startswith('689'):
+            return "stock"
+        if num.startswith('5'):
+            return "etf"
+        return "index"  # sh.0*
+    elif market == 'sz':
+        if num.startswith('159'):
+            return "etf"
+        if num.startswith('399'):
+            return "index"
+        return "stock"
+    return "stock"  # bj
+
+
+def get_daily_subdir(code: str) -> str:
+    """根据代码返回日线 CSV 应存储的子目录路径。"""
+    typ = classify_code(code)
+    return DAILY_TYPE_DIR_MAP[typ]
+
 
 # ============================================================
 # 时区

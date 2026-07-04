@@ -51,21 +51,26 @@ def _load_stock_set() -> set:
         if stocks:
             return stocks
 
-    # 回退：正则扫描 daily 目录
-    daily_dir = os.path.join(project_root, "baostock_data", "data", "daily")
-    if os.path.isdir(daily_dir):
-        for f in glob(os.path.join(daily_dir, "sh.*.csv")):
-            code = os.path.splitext(os.path.basename(f))[0]
-            if _is_stock_by_regex(code):
-                stocks.add(code)
-        for f in glob(os.path.join(daily_dir, "sz.*.csv")):
-            code = os.path.splitext(os.path.basename(f))[0]
-            if _is_stock_by_regex(code):
-                stocks.add(code)
+    # 回退：扫描 daily/stocks/ 子目录（新结构优先）
+    data_root = os.path.join(project_root, "baostock_data", "data")
+    search_dirs = [
+        os.path.join(data_root, "daily", "stocks"),
+        os.path.join(data_root, "daily"),
+    ]
+    for search_dir in search_dirs:
+        if os.path.isdir(search_dir):
+            for f in glob(os.path.join(search_dir, "sh.*.csv")):
+                code = os.path.splitext(os.path.basename(f))[0]
+                if _is_stock_by_regex(code):
+                    stocks.add(code)
+            for f in glob(os.path.join(search_dir, "sz.*.csv")):
+                code = os.path.splitext(os.path.basename(f))[0]
+                if _is_stock_by_regex(code):
+                    stocks.add(code)
 
     if not stocks:
         raise FileNotFoundError(
-            f"无法获取个股列表: stock_list.csv 不存在且 daily/ 目录为空"
+            f"无法获取个股列表: stock_list.csv 不存在且 daily/stocks/ 目录为空"
         )
     return stocks
 

@@ -23,7 +23,7 @@ socket.setdefaulttimeout(15)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from baostock_data.config import BJS_TZ, BAOSTOCK_DATA_ROOT as DATA_ROOT
+from baostock_data.config import BJS_TZ, BAOSTOCK_DATA_ROOT as DATA_ROOT, classify_code
 
 KLINE_FIELDS = [
     "date", "code", "open", "high", "low", "close", "preclose",
@@ -91,34 +91,9 @@ def bs_login():
 
 
 def classify_stock(code: str) -> str:
-    """根据代码前缀分类: 个股 / 指数 / ETF。
-
-    sh: 6xxxxx/689xxx = 个股, 000xxx = 指数, 5xxxxx = ETF
-    sz: 000xxx-003xxx/300xxx-301xxx = 个股, 399xxx = 指数, 159xxx = ETF
-    bj: 8xxxxx/4xxxxx/9xxxxx = 个股(北交所)
-    """
-    import re
-    m = re.match(r'(sh|sz|bj)\.(\d+)', code)
-    if not m:
-        return "未知"
-    market, num = m.group(1), m.group(2)
-    if market == 'sh':
-        if num[0] == '6' or num.startswith('689'):
-            return "个股"
-        elif num[0] == '5':
-            return "ETF"
-        elif num.startswith('000'):
-            return "指数"
-    elif market == 'sz':
-        if num.startswith('399'):
-            return "指数"
-        elif num.startswith('159'):
-            return "ETF"
-        else:
-            return "个股"
-    elif market == 'bj':
-        return "个股"
-    return "未知"
+    """根据代码前缀分类: 个股 / 指数 / ETF（包装 classify_code，返回中文标签）。"""
+    _map = {"stock": "个股", "index": "指数", "etf": "ETF"}
+    return _map.get(classify_code(code), "个股")
 
 
 def get_stocks():
@@ -209,8 +184,8 @@ def _worker_fetch(args):
         name = stock["code_name"]
         # daily/ 目录按类型分子目录: stocks/ etfs/ indices/
         if "daily" in outdir and "stocks" not in outdir:
-            typ = classify_stock(code)
-            sub = {"个股": "stocks", "ETF": "etfs", "指数": "indices"}.get(typ, "stocks")
+            typ = classify_code(code)
+            sub = {"stock": "stocks", "etf": "etfs", "index": "indices"}.get(typ, "stocks")
             stock_outdir = os.path.join(outdir, sub)
             os.makedirs(stock_outdir, exist_ok=True)
         else:
