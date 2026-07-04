@@ -13,6 +13,7 @@ import os
 import csv
 import time
 import socket
+from collections import Counter
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor
 
@@ -387,9 +388,14 @@ if __name__ == "__main__":
 
     t_total = time.time()
 
-    # 0. 股票列表
+    # 0. 股票列表（按优先级排序: 个股 > 指数 > ETF）
     print("\n[0/3] 获取股票列表", flush=True)
     stocks = get_stocks()
+    # 按分类优先级排序
+    priority = {"个股": 0, "指数": 1, "ETF": 2}
+    stocks.sort(key=lambda s: priority.get(classify_stock(s["code"]), 3))
+    cnt = Counter(classify_stock(s["code"]) for s in stocks)
+    print(f"  分类: 个股{cnt.get('个股',0)} 指数{cnt.get('指数',0)} ETF{cnt.get('ETF',0)} (按此顺序更新)", flush=True)
     os.makedirs(DATA_ROOT, exist_ok=True)
     with open(os.path.join(DATA_ROOT, "stock_list.csv"), "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)

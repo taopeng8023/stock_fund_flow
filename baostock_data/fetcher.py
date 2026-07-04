@@ -607,10 +607,17 @@ class BaoStockFetcher:
         self._flush_print(f"  BaoStock 全量拉取 — {today_str}")
         self._flush_print(f"{'═' * 60}")
 
-        # 0. 股票列表（只查一次，复用给后续所有批次）
+        # 0. 股票列表（按优先级排序: 个股 > 指数 > ETF，只查一次）
         self._flush_print(f"\n[0/4] 股票列表")
         stocks = self.get_active_stocks()
         all_stocks = self.get_stock_list()
+        # 按分类优先级排序
+        priority = {"个股": 0, "指数": 1, "ETF": 2}
+        stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        all_stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        from collections import Counter
+        cnt = Counter(_classify_code(s["code"]) for s in all_stocks)
+        self._flush_print(f"  分类: 个股{cnt.get('个股',0)} 指数{cnt.get('指数',0)} ETF{cnt.get('ETF',0)} (按此顺序更新)")
         try:
             from .fetch_all_history import classify_stock
         except ImportError:
@@ -673,6 +680,10 @@ class BaoStockFetcher:
 
         stocks = self.get_active_stocks()
         all_stocks = self.get_stock_list()
+        # 按优先级排序: 个股 > 指数 > ETF
+        priority = {"个股": 0, "指数": 1, "ETF": 2}
+        stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
+        all_stocks.sort(key=lambda s: priority.get(_classify_code(s["code"]), 3))
         try:
             from .fetch_all_history import classify_stock
         except ImportError:
