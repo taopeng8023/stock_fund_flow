@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 K线数据多线程增量更新脚本
 
@@ -18,6 +18,19 @@ K线数据多线程增量更新脚本
 """
 import sys
 import os
+
+# auto-detect venv
+_script = os.path.abspath(__file__)
+_project = os.path.dirname(os.path.dirname(_script))
+_venv_py = os.path.join(_project, ".venv", "bin", "python3")
+if not os.path.exists(_venv_py):
+    _venv_py = os.path.join(_project, ".venv", "bin", "python")
+if os.path.exists(_venv_py) and _venv_py != sys.executable:
+    try:
+        import baostock  # noqa: F401
+    except ImportError:
+        os.execv(_venv_py, [_venv_py, _script] + sys.argv[1:])
+
 import csv
 import time
 import json
