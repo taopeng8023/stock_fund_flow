@@ -283,10 +283,53 @@ class BuySellBacktest:
         return pd.DataFrame(rows).sort_values("hit_8pct", ascending=False) if rows else pd.DataFrame()
 
 
+def big_winner_analysis(bt: BuySellBacktest, target=8.0) -> Dict:
+    """大赢家分析: 如果不止盈、只用移动止盈，能赚多少？"""
+    if not bt.trades:
+        return {}
+    peaks = [t["peak_return"] for t in bt.trades]
+    rets = [t["return_pct"] for t in bt.trades]
+    n = len(bt.trades)
+
+    # 模拟不同止盈阈值的效果
+    tier_results = {}
+    for tp_pct in [8, 10, 12, 15, 20, 30, 99]:  # 99 = no take-profit
+        tp = tp_pct / 100
+        sim_rets = []
+        sim_wins = 0
+        sim_tp = 0
+        for t in bt.trades:
+            peak = t["peak_return"] / 100
+            actual_ret = t["return_pct"] / 100
+            if peak >= tp:
+                sim_rets.append(tp)
+                sim_wins += 1
+                sim_tp += 1
+            elif actual_ret > 0:
+                sim_rets.append(actual_ret)
+                sim_wins += 1
+            else:
+                sim_rets.append(actual_ret)
+        avg = np.mean(sim_rets) * 100 if sim_rets else 0
+        wr = sim_wins / n * 100
+        tp_rate = sim_tp / n * 100
+        tier_results[f"止盈{tp_pct}%"] = {"avg_ret": round(avg, 2), "wr": round(wr, 1), "tp_rate": round(tp_rate, 1)}
+
+    # 峰值分布
+    peak_dist = {}
+    for th in [5, 8, 10, 15, 20, 30, 50, 100]:
+        cnt = sum(1 for p in peaks if p >= th)
+        peak_dist[f"≥{th}%"] = {"count": cnt, "pct": round(cnt / n * 100, 1)}
+
+    return {"tier_analysis": tier_results, "peak_distribution": peak_dist,
+            "max_peak": round(max(peaks), 1), "avg_peak": round(np.mean(peaks), 2)}
+
+
 def main():
     parser = argparse.ArgumentParser(description="买入-卖出信号回测 v3")
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--target", type=float, default=8.0)
+    parser.add_argument("--big-winner", action="store_true", help="大赢家分析模式")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -394,6 +437,25 @@ def main():
         print(f"\n  ✅ 基本达标 — 评分{stability}/100")
     else:
         print(f"\n  ⚠ 优化中 — 评分{stability}/100，需继续提升")
+
+    # ── 大赢家分析 ──
+    bw = big_winner_analysis(bt, args.target)
+    if bw:
+        print(f"\n{'─' * 60}")
+        print(f"  💰 大赢家分析 — 如果不止盈，让利润奔跑")
+        print(f"{'─' * 60}")
+        print(f"  最大峰值: +{bw['max_peak']}% | 平均峰值: +{bw['avg_peak']}%")
+        print(f"")
+        print(f"  峰值分布:")
+        for label, data in bw["peak_distribution"].items():
+            bar = "█" * int(data["pct"] / 2)
+            print(f"    {label:<8s} {data['count']:>5d}笔 ({data['pct']:>5.1f}%) {bar}")
+        print(f"")
+        print(f"  不同止盈阈值的效果模拟:")
+        print(f"    {'策略':<12s} {'平均收益':>8s} {'胜率':>6s} {'止盈率':>6s}")
+        print(f"    {'─'*40}")
+        for strategy, data in bw["tier_analysis"].items():
+            print(f"    {strategy:<12s} {data['avg_ret']:>+7.2f}% {data['wr']:>5.1f}% {data['tp_rate']:>5.1f}%")
 
     print(f"\n{'═' * 70}")
     print(f"  v3 过滤统计: 熊市排除 {s.get('bear_filtered',0)} | 量质排除 {s.get('quality_filtered',0)} | 双确认通过 {s.get('dual_confirmed',0)}")
