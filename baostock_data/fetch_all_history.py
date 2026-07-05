@@ -6,10 +6,22 @@
     python fetch_all_history.py                  # 全量
     python fetch_all_history.py --no-minute      # 仅日/周/月线
     python fetch_all_history.py --workers=4      # 指定进程数
-    python fetch_all_history.py 20260630         # 指定日期
 """
 import sys
 import os
+
+# auto-detect venv: re-exec with .venv python if baostock not available
+_script = os.path.abspath(__file__)
+_project = os.path.dirname(os.path.dirname(_script))
+_venv_py = os.path.join(_project, ".venv", "bin", "python3")
+if not os.path.exists(_venv_py):
+    _venv_py = os.path.join(_project, ".venv", "bin", "python")
+if os.path.exists(_venv_py) and _venv_py != sys.executable:
+    try:
+        import baostock  # noqa: F401
+    except ImportError:
+        os.execv(_venv_py, [_venv_py, _script] + sys.argv[1:])
+
 import csv
 import time
 import socket
