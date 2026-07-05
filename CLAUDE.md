@@ -30,6 +30,19 @@ python baostock_data/convert_to_kline_json.py --limit 500  # 限制数量
 python baostock_data/analysis/kline_pattern.py --date 20260701 --stocks 100
 python baostock_data/analysis/kline_discovery.py --date 20260701 --target 85
 
+# 买入-卖出信号回测 (v3 — 全6周期止盈率≥36.5%, 43.6%TP)
+python baostock_data/analysis/buy_sell_backtest.py --sample 2000
+python baostock_data/analysis/buy_sell_backtest.py                 # 全量5194只
+python baostock_data/analysis/buy_sell_backtest.py --big-winner     # 大赢家峰值分析
+
+# 板块资金流分析 (潜伏/启动双模式)
+python sector_flow_analysis.py 5 --mode=breakout  # 启动上涨模式
+python sector_flow_analysis.py 5                   # 主力潜伏模式
+
+# 多线程增量K线更新 (自动检测CPU核心数)
+python baostock_data/fetch_update.py               # 近5日, 自动线程数
+python baostock_data/fetch_update.py 3 -w 8        # 近3日, 8线程
+
 # 数据采集
 python -m data_collector.main --date=20260624
 
@@ -98,12 +111,15 @@ BaoStock API (独立K线数据源)
         ▼
   baostock_data/fetcher.py  (BaoStockFetcher)
   baostock_data/fetch_all_history.py  (多进程全量拉取)
+  baostock_data/fetch_update.py       (多线程增量更新)
         │
         ▼
-  baostock_data/data/daily/*.csv   ← 每只股票独立CSV（增量追加，无日期子目录）
+  baostock_data/data/daily/{stocks,etfs,indices}/   ← 按品种分类存储
         │
-        ▼
-  baostock_data/convert_to_kline_json.py  → baostock_data/kline_data/*.json
+        ├──► baostock_data/analysis/kline_discovery.py (形态发现引擎)
+        ├──► baostock_data/analysis/buy_sell_backtest.py (买卖回测)
+        ├──► baostock_data/analysis/picks.py (统一选股入口)
+        └──► baostock_data/convert_to_kline_json.py → kline_data/*.json
         │
         ▼
   daily_pipeline/score.py  (_load_kline 可用)
@@ -134,6 +150,8 @@ daily_pipeline/run.sh
 | Risk management | `portfolio/` | 黑天鹅13条规则、持仓管理、卖出信号、买入引擎 |
 | Notification | `notify/` | 企业微信 Webhook (text/markdown/news) |
 | Web UI | `web_dashboard/` | Reflex app (port 8000), 7 tabs: 诊断/持仓/风险/选股/交易/采集/调度 |
+| Buy-Sell Backtest | `baostock_data/analysis/buy_sell_backtest.py` | K线买卖回测 v3 双确认+ATR+大赢家, 跨6周期 |
+| Sector Analysis | `sector_flow_analysis.py` | 板块资金流趋势 + 潜伏/启动双模式选股 |
 | Backtest | `daily_pipeline/backtest.py` | 全量回测 + 因子IC/分层分析 + 因子贡献度追踪 |
 
 ### Key Design Decisions
@@ -244,46 +262,71 @@ No `requirements.txt` present. Key absent packages (to be installed per enhancem
 
 | Module | File | Status |
 |--------|------|--------|
-| 黑天鹅监控 | `portfolio/black_swan.py` | ✅ 13条规则, Level 0-3响应 |
-| 企业微信通知 | `notify/wecom_sender.py` | ✅ text/markdown/news |
-| 持仓管理 | `portfolio/manager.py` | ✅ 6条卖出规则+BS联动 |
-| 买入引擎 | `portfolio/buy_engine.py` | ✅ 三级规则(P34_gap封王) |
+| 黑天鹅监控 | `portfolio/black_swan.py` | ✅ 13条规则 |
+| 企业微信通知 | `notify/wecom_sender.py` | ✅ |
+| 持仓管理 | `portfolio/manager.py` | ✅ 6条卖出规则 |
+| 买入引擎 | `portfolio/buy_engine.py` | ✅ 三级 P34_gap |
 | 盘中评分 | `daily_pipeline/score.py` | ✅ 23因子+体制感知 |
-| 全量回测 | `daily_pipeline/backtest.py` | ✅ IC+分层+贡献度 |
+| 全量回测 | `daily_pipeline/backtest.py` | ✅ IC+分层 |
 | Dashboard | `web_dashboard/` | ✅ 7 Tab |
-| BaoStock K线 | `baostock_data/` | ✅ 全量历史+增量更新+格式转换+K线形态分析 |
+| BaoStock K线 | `baostock_data/` | ✅ 全量+增量+分类存储 |
+| **买卖回测** | `baostock_data/analysis/buy_sell_backtest.py` | ✅ v3 双确认+ATR止损, 全6周期达标 |
+| **板块流分析** | `sector_flow_analysis.py` | ✅ 潜伏/启动双模式 |
+| **多线程更新** | `baostock_data/fetch_update.py` | ✅ ThreadPoolExecutor, 断点续跑 |
 
-### BaoStock Data Module (`baostock_data/`)
+### BaoStock Data Module
 
 ```
 baostock_data/
-├── __init__.py              # 模块入口，导出 BaoStockFetcher + 配置常量
-├── config.py                # BAOSTOCK_DATA_ROOT, KLINE_DATA_DIR, 频率子目录/字段定义
-├── fetcher.py               # BaoStockFetcher — 断点续跑+增量追加+进度条
-├── fetch_all_history.py     # 全量历史K线（多进程并行，每只股票独立CSV）
-├── fetch_today.py           # 增量更新（近N日，追加到已有CSV）
-├── convert_to_kline_json.py # CSV → kline_data JSON (兼容 daily_pipeline)
-├── data/                    # BAOSTOCK_DATA_ROOT — 原始CSV（无日期子目录）
-│   ├── stock_list.csv       # 全市场股票列表
-│   ├── daily/               # sh.600000.csv, sz.000001.csv ...
-│   ├── weekly/              # 周线
-│   ├── monthly/             # 月线
-│   ├── minute_5/ ...        # 分钟线 (5/15/30/60)
-│   └── index/               # 指数日线
-├── kline_data/              # KLINE_DATA_DIR — 转换后的JSON
+├── __init__.py              # 懒加载 — config常量无需baostock即可导入
+├── config.py                # 路径/分类定义, classify_code(), ensure_dirs()
+├── fetcher.py               # BaoStockFetcher — 日线自动分 stocks/etfs/indices/
+├── fetch_all_history.py     # 多进程全量拉取（自动分类到子目录）
+├── fetch_update.py          # 多线程增量更新（断点续跑+动态线程数）
+├── fetch_today.py           # 单线程增量
+├── data/
+│   ├── daily/
+│   │   ├── stocks/          # 5194只个股 (sh.6*/sz.非159/399)
+│   │   ├── etfs/            # 1576只ETF (sh.5*/sz.159*)
+│   │   └── indices/         # 507只指数 (sh.0*/sz.399*)
+│   ├── weekly/ monthly/ minute_*/ index/
+│   └── stock_list.csv
 └── analysis/
-    ├── kline_pattern.py     # K线形态涨跌规律统计
-    └── kline_discovery.py   # K线形态胜率发现引擎 v2（确认日机制+多条件AND组合）
+    ├── stock_filter.py      # 共享库 — 加载/分类/过滤
+    ├── result_store.py      # 共享库 — JSON持久化
+    ├── kline_discovery.py   # 35+ K线信号 + 确认日引擎
+    ├── kline_pattern.py     # K线形态统计
+    ├── discover_price_volume.py  # 涨跌×量比发现
+    ├── picks.py             # 统一选股入口 (scan/backtest/analyze)
+    └── buy_sell_backtest.py # v3 — 双确认+ATR+量质+大赢家
 ```
 
-Key config constants:
-- `BAOSTOCK_DATA_ROOT` = `baostock_data/data/` — 原始CSV存储（增量追加模式）
-- `KLINE_DATA_DIR` = `baostock_data/kline_data/` — 转换后JSON输出
-- `DAILY_DIR` / `WEEKLY_DIR` / ... / `INDEX_DIR` — 各频率子目录
-- `STOCK_LIST_PATH` = `baostock_data/data/stock_list.csv` — 股票列表固定路径
+Key config:
+- `classify_code(code)` → `'stock'|'etf'|'index'` — 统一代码分类，数据拉取/分析共用
+- `get_daily_subdir(code)` → 日线子目录路径
+- 数据写入（fetcher/fetch_all/fetch_update）自动按品种路由到子目录
+- 数据读取（stock_filter）优先搜索 `stocks/` 子目录，兼容旧扁平结构
+
+### Buy-Sell Backtest System (v3)
+
+三层过滤 → 四层卖出 → 跨6周期验证:
+
+```
+35+ K线信号 (kline_discovery)
+    │
+    ├── 1. 熊市过滤: price<MA60 仅深跌反弹
+    ├── 2. 量价质量: 排除缩量+价在MA5下
+    ├── 3. 双信号互确认: ≥2不同pattern/3日 (熊市放宽)
+    │
+    └── 卖出: 止盈8% → ATR止损 → 移动止盈-5% → 超时20日
+
+结果: 5194只全量回测 — 1976笔, WR72.3%, TP43.6%, 夏普5.54
+      bear_2018 TP36.5% ✅ → bull_2024 TP61.2% ✅ (全周期达标)
+```
 
 ### Still TODO
 
 - `daily_run.sh` — 调度入口脚本
 - APScheduler daemon — 自动化定时任务
 - Peewee ORM — 数据库替代 JSON 文件
+- Buy-sell signals → daily production deployment
