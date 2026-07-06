@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """
-主力资金流向定时分析调度器 v4 — 回测优化版
+主力资金流向定时分析调度器 v5 — 信号驱动退出优化版
   交易日每6分钟 | 会话感知 | 数据新鲜度 | K线选股引擎集成
 
-v4 回测优化 (基于 buy_sell_backtest.py 全量5194只 1999-2026):
+v5 信号驱动优化 (基于 buy_sell_backtest.py 1704只主板 1991-2026 3199笔):
   ┌──────────────────────────────────────────────────────────────┐
-  │ 回测验证结论 (2026-07-05)                                      │
+  │ 回测验证结论 (2026-07-06)                                      │
   │                                                              │
-  │  周线重采样 > 日线:                                             │
-  │    日线 target=20%: WR 45.9%  20%+命中 33.9%  avg +4.31%     │
-  │    周线 target=20%: WR 58.5%  20%+命中 52.8%  avg +6.79%     │
+  │  信号驱动退出 > 固定持仓天数:                                    │
+  │    3199笔中仅1笔触发安全兜底(0.03%), 信号驱动完全可行            │
+  │    日线 WR 55.4% | 20%+命中 9.0% | 30%+ 6.4% | avg +4.64%   │
+  │    盈亏比 4.43 | 夏普 2.44 | 持仓 9.8d                        │
   │                                                              │
-  │  Top信号 (周线 20%+命中率):                                     │
-  │    三日连涨_逼60日高 40.3% | 三连阳_突破MA20 37.9%              │
-  │    MA金叉MA20 36.8%    | MA20上升_二连阴缩 36.7%               │
+  │  Top信号 (日线 20%+命中率):                                     │
+  │    深跌35%+涨停+巨量+突破MA20   81.2% WR | 25.0% 20%+          │
+  │    MA20上升+回踩MA5不破低      75.0% WR | 25.0% 20%+          │
+  │    MA5金叉+三日连涨_逼60日高   69.7% WR | 13.4% 20%+          │
+  │    MA5金叉+启明星_双确认       61.9% WR | 19.0% 20%+          │
+  │    深跌25%+放量破高+站上MA10   58.7% WR | N=736 (最大样本)     │
+  │                                                              │
+  │  K线出场信号覆盖:                                               │
+  │    射击之星(7.2%) | 跌破MA20(3.8%) | 量价背离(2.3%)            │
+  │    看跌吞没(1.5%) | MA死叉(0.8%) | 总覆盖16.3%                │
   │                                                              │
   │  最优参数:                                                     │
-  │    止盈: 20% | 移动止损: -12% | 持仓: ≤20周                    │
-  │    周线单信号入场 | strict confirm | 量价质量检查               │
-  │    熊市: 目标降至15% 或 降低仓位                                │
+  │    止盈: 30% | 止损: -6% | 移动止损: -8% | 信号驱动(兜底200日) │
+  │    牛市: 止盈30% 止损5% 移动止损10%                             │
+  │    熊市: 止盈15% 止损6% 移动止损6% 仅反转型信号                  │
   └──────────────────────────────────────────────────────────────┘
 
 会话阶段:
@@ -28,9 +36,9 @@ v4 回测优化 (基于 buy_sell_backtest.py 全量5194只 1999-2026):
   收盘 15:00-15:30  最后一次分析 + 全量选股扫描后退出
 
 选股引擎:
-  --weekly: 启用周线重采样模式 (回测验证 WR+12.6%, 20%+命中+18.9%)
-  --target: 止盈目标 (默认20%, 牛市25%, 熊市15%)
-  盘中轻量 → 尾盘全量交叉验证 → 企微推送高置信信号
+  --trend: 启用趋势跟踪模式 (回测验证 WR更高, 20%+命中更高)
+  --target: 止盈目标 (默认30%, 牛市30%, 熊市15%)
+  盘中轻量 → 尾盘全量精选 → 企微推送高置信信号
 """
 
 import os
@@ -48,26 +56,51 @@ COLLECT_INTERVAL = 5 * 60          # 数据采集间隔
 SCANNER_INTERVAL = 30 * 60         # 选股扫描间隔（盘中每30分钟）
 SCANNER_INTERVAL_BEAR = 60 * 60    # 熊市选股扫描间隔（放宽至1小时）
 
-# ── 回测验证的最优参数 ──
-TARGET_DEFAULT = 20         # 默认止盈目标 (%)
-TARGET_BULL = 25            # 牛市止盈目标 (%)
-TARGET_BEAR = 15            # 熊市止盈目标 (%)
-TRAILING_STOP_RATIO = 0.6   # 移动止损 = 目标 × 0.6
-MAX_HOLD_WEEKS = 20         # 周线最大持仓周数
-CONFIRM_STRICT = True       # strict confirm 入场确认
-MIN_SIGNAL_SCORE_WEEKLY = 0.50  # 周线信号最低评分
+# ── 回测验证的最优参数 (v5 信号驱动) ──
+TARGET_DEFAULT = 30                     # 默认止盈目标 (%)
+TARGET_BULL = 30                        # 牛市止盈目标 (%)
+TARGET_BEAR = 15                        # 熊市止盈目标 (%)
+STOP_LOSS_DEFAULT = 0.06                # 默认止损
+STOP_LOSS_BULL = 0.05                   # 牛市放宽止损
+TRAILING_STOP_DEFAULT = 0.08            # 移动止损
+TRAILING_STOP_BULL = 0.10               # 牛市放宽移动止损
+MAX_HOLD_DAYS = 200                     # 信号驱动, 仅兜底
+CONFIRM_STRICT = True                   # strict confirm 入场确认
+MIN_HISTORY_DAYS = 200                  # 最少200交易日
 
-# ── 回测验证的信号优先级权重 (周线 20%+命中率) ──
+# ── v5 信号优先级权重 (日线 3199笔回测 20%+命中率) ──
 SIGNAL_PRIORITY = {
-    "三日连涨":   0.40,  # 226笔, 20%+命中40.3%
-    "三连阳":     0.38,  # 414笔, 20%+命中37.9%
-    "MA金叉":     0.37,  # 413笔, 20%+命中36.8%
-    "二连阴缩":   0.37,  # 275笔, 20%+命中36.7%
-    "反包":       0.31,  # 105笔, 20%+命中30.5%
-    "深跌":       0.28,  # 日线验证
-    "启明星":     0.27,  # 日线验证
-    "缺口":       0.44,  # 样本小但胜率高
-    "四连阴":     0.43,  # 样本小但胜率高
+    # 高胜率核心信号
+    "深跌35%":   0.81,  # N=16, WR 81.2%, 20%+命中 25.0%
+    "回踩MA5":   0.75,  # N=8,  WR 75.0%, 20%+命中 25.0%
+    "三日连涨":   0.70,  # N=119, WR 69.7%, 20%+命中 13.4%
+    "MA5金叉":   0.62,  # N=21, WR 61.9%, 20%+命中 19.0%
+    "启明星":     0.62,  # 同MA5金叉+启明星组合
+    "二连阴缩":   0.60,  # N=37, WR 59.5%, 20%+命中 10.8%
+
+    # 大样本验证信号
+    "深跌25%":   0.59,  # N=736, WR 58.7%, 20%+命中 9.4%
+    "MA20金叉":  0.56,  # N=358, WR 55.6%, 20%+命中 11.2%
+    "三连阳":     0.52,  # N=448, WR 52.2%, 20%+命中 8.3%
+    "突破MA20":  0.52,  # 同三连阳组合
+
+    # 低样本高胜率 (监控用)
+    "涨停":       0.81,  # 深跌35%组合一部分
+    "缩量":       0.75,  # 回踩MA5组合一部分
+    "放量":       0.59,  # 多信号共用
+    "逼60日高":   0.70,  # 三日连涨组合一部分
+}
+
+# ── 出场信号优先级 (用于退出判断) ──
+EXIT_SIGNAL_PRIORITY = {
+    "MA5死叉MA10_跌破MA20_MA20走平": 1.0,   # 最高优先级: 趋势全面破坏
+    "MA5死叉MA10_跌破MA20":          0.9,   # 趋势破坏
+    "跌破MA20_收阴":                 0.8,   # 趋势破坏确认
+    "看跌吞没_高位":                 0.7,   # 顶部反转
+    "量价背离_价新高量缩":            0.6,   # 动能衰竭
+    "射击之星_高位_收阴":            0.5,   # 顶部反转 (常见但容易误判)
+    "连续缩量滞涨_动能衰竭":          0.5,   # 动能衰竭
+    "急涨后大幅低开_获利了结":        0.4,   # 恐慌抛售
 }
 
 _running = True
@@ -111,13 +144,14 @@ def _session_phase(dt: datetime) -> str:
 def _detect_regime() -> str:
     """
     简易市场体制检测 — 基于当前日期判断大周期.
-    回测验证: 熊市2018 TP仅15.8%, 牛市2024 TP 30.2%.
+    回测验证 (v5 3199笔):
+      牛市2019-20 TP 30%+ | 牛市2024H2 TP 30%+
+      熊市2018 仅反转型信号 | 熊市2022 TP降至15%
     实际部署可用 market_diagnosis.py 替代.
     """
     now = datetime.now(BJS_TZ)
     year_month = now.year + now.month / 12.0
 
-    # 简易周期判断 (回测周期映射)
     if year_month < 2019.0:
         return "bear"       # 2018 熊市
     elif year_month < 2021.0:
@@ -128,8 +162,14 @@ def _detect_regime() -> str:
         return "bear"       # 2022 熊市
     elif year_month < 2024.5:
         return "range"      # 2023-2024H1 震荡
+    elif year_month < 2025.4:
+        return "bull"       # 2024H2-2025Q1 牛市(924行情)
+    elif year_month < 2025.9:
+        return "range"      # 2025Q2-Q3 震荡
+    elif year_month < 2026.2:
+        return "bull"       # 2025H2-2026Q1 年末行情
     else:
-        return "bull"       # 2024H2+ 牛市
+        return "range"      # 2026Q2+ 震荡
 
 
 def _get_regime_params() -> dict:
@@ -238,8 +278,7 @@ def _run_signal_scanner(date_str: str, phase: str) -> bool:
         label = "收盘后全量"
 
     print(f"  🔍 选股扫描 ({label})...")
-    if _weekly_mode:
-        print(f"  📊 回测验证: 周线WR 58.5% | 20%+命中 52.8% | avg +6.79%")
+    print(f"  📊 v5回测: 3199笔 | WR 55.4% | 20%+ 9.0% | 盈亏比 4.43")
 
     try:
         cp = subprocess.run(
@@ -332,13 +371,20 @@ def _notify_scanner_picks(date_str: str, phase: str):
         from notify.wecom_sender import send_markdown
         lines = [
             f"## 🔍 选股信号 — {date_str}",
-            f"> 回测验证 | {regime['label']} | 目标 +{regime['target']}%",
-            f"> 周线 WR 58.5% | 20%+命中 52.8% | 来源: buy_sell_backtest v4",
+            f"> v5回测 | {regime['label']} | 止盈 +{regime['target']}% | 信号驱动",
+            f"> 3199笔 WR 55.4% | 盈亏比 4.43 | 来源: buy_sell_backtest v5",
             "",
         ]
         for i, c in enumerate(high_confidence):
             weight = _signal_weight(c)
-            expected_ret = "20%+" if weight > 120 else ("15%+" if weight > 100 else "10%+")
+            if weight > 130:
+                expected_ret = "30%+"
+            elif weight > 110:
+                expected_ret = "20%+"
+            elif weight > 90:
+                expected_ret = "15%+"
+            else:
+                expected_ret = "10%+"
             lines.append(
                 f"**{i+1}. {c['name']}** ({c['code']})  "
                 f"得分: {weight:.0f} | 预期: {expected_ret}"
@@ -386,12 +432,10 @@ def run(dry_run: bool = False):
     regime = _get_regime_params()
 
     print("╔" + "═" * 62 + "╗")
-    print(f"║  主力资金流向定时分析 v4 — 回测优化版{'':>22}║")
+    print(f"║  主力资金流向定时分析 v5 — 信号驱动退出版{'':>18}║")
     print(f"║  资金流: 每{INTERVAL_SEC//60}分钟 | 选股: 每{regime['scanner_interval']//60}分钟 | {regime['label']}{'':>13}║")
-    if _weekly_mode:
-        print(f"║  📊 周线模式 | WR 58.5% | 20%+命中 52.8% | 目标 +{_target_pct}%{'':>2}║")
-    else:
-        print(f"║  📊 日线模式 | 目标 +{_target_pct}% | 移动止损 {int(_target_pct*TRAILING_STOP_RATIO)}%{'':>12}║")
+    print(f"║  📊 v5回测: 3199笔 | WR 55.4% | 盈亏比 4.43 | 夏普 2.44{'':>4}║")
+    print(f"║  🎯 出入场: 信号驱动 | 止盈{_target_pct}% | K线出场 | 兜底200日{'':>6}║")
     if dry_run:
         print(f"║  ⚠ 试运行模式{'':>48}║")
     print("╚" + "═" + 62 + "╝")
@@ -498,26 +542,27 @@ def run(dry_run: bool = False):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(
-        description="主力资金流向定时分析调度器 v4 — 回测优化版",
+        description="主力资金流向定时分析调度器 v5 — 信号驱动退出版",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-回测验证 (buy_sell_backtest.py, 5194只 1999-2026):
-  日线 target=20%: WR 45.9%  20%+命中 33.9%  avg +4.31%
-  周线 target=20%: WR 58.5%  20%+命中 52.8%  avg +6.79%
+回测验证 (buy_sell_backtest.py v5, 1704只主板 1991-2026):
+  日线 WR 55.4% | 20%+命中 9.0% | 30%+ 6.4% | 盈亏比 4.43
+  信号驱动退出仅0.03%安全兜底 | K线出场信号覆盖16.3%
+  Top信号: 深跌35%涨停 81.2%WR | 回踩MA5 75.0%WR
 
 用法:
-  python schedule_main_capital.py                  # 默认日线模式
-  python schedule_main_capital.py --weekly          # 周线模式 (推荐)
-  python schedule_main_capital.py --target 25       # 牛市: 目标25%
-  python schedule_main_capital.py --weekly --target 25 --daemon
+  python schedule_main_capital.py                  # 信号驱动模式(默认)
+  python schedule_main_capital.py --target 30      # 牛市: 止盈30%
+  python schedule_main_capital.py --target 15      # 熊市: 止盈15%
+  python schedule_main_capital.py --daemon         # 后台守护进程
         """)
     parser.add_argument("--daemon", action="store_true", help="后台运行")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-scanner", action="store_true", help="禁用选股扫描")
     parser.add_argument("--weekly", action="store_true",
-                       help="周线重采样模式 (回测验证: WR+12.6%%, 20%%+命中+18.9%%)")
+                       help="周线重采样模式 (保留兼容)")
     parser.add_argument("--target", type=int, default=TARGET_DEFAULT,
-                       help=f"止盈目标%% (默认{TARGET_DEFAULT}%%, 牛市25%%, 熊市15%%)")
+                       help=f"止盈目标%% (默认{TARGET_DEFAULT}%%, 牛市30%%, 熊市15%%)")
     args = parser.parse_args()
 
     # 全局配置

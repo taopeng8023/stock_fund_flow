@@ -6,17 +6,20 @@ v4 新增趋势跟踪模式:
   1. MA20趋势跟踪退出: 收盘跌破MA20 → 趋势结束,退出
   2. 无止盈上限: 让利润充分奔跑,目标单笔20%+
   3. 强制动量过滤: MA5>MA10>MA20, MA20上升, 价在MA20上
-  4. 延长持仓: 最长60日
-  5. 宽幅移动止损: -8% from peak (给趋势空间)
+  4. 延长持仓: 最长90日
+  5. 宽幅移动止损: -10% from peak (给趋势空间)
   6. 突破型信号优先: 金叉/突破/连涨/缺口 优于 超跌反弹
 
 用法:
-  python buy_sell_backtest.py                      # v3 波段模式(默认)
-  python buy_sell_backtest.py --trend              # v4 趋势跟踪模式
-  python buy_sell_backtest.py --trend --sample 500 # 快速验证
-  python buy_sell_backtest.py --target 20.0        # 目标收益
+  python buy_sell_backtest.py                          # v3 波段模式(默认, 全量)
+  python buy_sell_backtest.py --trend                  # v4 趋势跟踪模式
+  python buy_sell_backtest.py --sample 2000            # 采样快速验证
+  python buy_sell_backtest.py --main-board             # 仅主板个股
+  python buy_sell_backtest.py --min-history 500        # 至少500个交易日
+  python buy_sell_backtest.py --date-range 2024-01-01,2024-12-31  # 指定日期回测
+  python buy_sell_backtest.py --target 20.0            # 目标收益20%
 """
-import argparse, os, sys, time, warnings
+import argparse, csv, json, os, sys, time, warnings
 from collections import defaultdict
 from typing import Optional, List, Dict, Tuple
 import numpy as np
@@ -25,8 +28,9 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
-from stock_filter import load_stock_files
-from kline_discovery import compute_indicators, pattern_signal_at, confirm_entry, load_stock_csv
+from stock_filter import load_stock_files, load_main_board_files
+from kline_discovery import (compute_indicators, pattern_signal_at, confirm_entry,
+                             load_stock_csv, exit_signal_at, exit_signal_confirm)
 
 DAILY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "baostock_data", "data", "daily")
@@ -37,7 +41,7 @@ WEEKLY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 TAKE_PROFIT = 0.08
 STOP_LOSS = -0.05
 TRAILING_STOP = -0.05
-MAX_HOLD_DAYS = 20
+MAX_HOLD_DAYS = 200       # 安全兜底(非信号驱动,仅防僵尸仓)
 MIN_SAMPLE = 10
 DUAL_CONFIRM_WINDOW = 3
 
@@ -45,7 +49,7 @@ DUAL_CONFIRM_WINDOW = 3
 TREND_TAKE_PROFIT = 0.50     # 50% (等于无止盈,几乎不可能触发)
 TREND_STOP_LOSS = -0.08      # 宽止损,给趋势空间
 TREND_TRAILING = -0.10       # 宽移动止损 (10% from peak)
-TREND_MAX_HOLD = 90          # 长持仓 (给足时间跑20%+)
+TREND_MAX_HOLD = 250         # 安全兜底(信号驱动,此值仅防僵尸仓)
 TREND_MIN_MOMENTUM = 0.03    # MA20近20日至少涨3%
 TREND_TRAIL_START = 0.15     # 峰值15%+才启动移动止损
 TREND_MA_EXIT_DAYS = 2       # MA20跌破需连续2日确认
@@ -60,13 +64,38 @@ TREND_PRIORITY_PATTERNS = (
 
 BEAR_SAFE_PREFIXES = ("深跌", "急跌", "连阴", "启明星", "双针", "反包")
 
+# 周期划分基于实际数据覆盖: 1991~至今, 2010年后样本充足(>400只)
+# 2010年前每周期样本<300只, 统计意义弱, 仅做参考
 REGIMES = {
-    "bear_2018":   ("2018-01-01", "2018-12-31"),
-    "bull_2019":   ("2019-01-01", "2020-12-31"),
-    "range_2021":  ("2021-01-01", "2022-04-30"),
-    "bear_2022":   ("2022-05-01", "2022-10-31"),
-    "range_2023":  ("2023-01-01", "2024-06-30"),
-    "bull_2024":   ("2024-09-01", "2025-06-30"),
+    "bear_2010_13":   ("2010-01-01", "2013-12-31"),   # 慢熊 (400-1000只)
+    "bull_2014_15":   ("2014-01-01", "2015-06-12"),   # 杠杆牛
+    "crash_2015":     ("2015-06-15", "2016-01-31"),   # 股灾
+    "bull_2016_17":   ("2016-02-01", "2018-01-31"),   # 慢牛 (800-1500只)
+    "bear_2018":      ("2018-02-01", "2018-12-31"),   # 熊市 (1500只)
+    "bull_2019_20":   ("2019-01-01", "2020-12-31"),   # 结构牛 (1600-1900只)
+    "range_2021":     ("2021-01-01", "2022-04-30"),   # 震荡 (1900只)
+    "bear_2022":      ("2022-05-01", "2022-10-31"),   # 熊市
+    "bull_2023_24":   ("2023-01-01", "2024-06-30"),   # 修复行情
+    "bull_2024_h2":   ("2024-09-01", "2025-03-31"),   # 924行情
+    "range_2025":     ("2025-04-01", "2025-08-31"),   # 震荡
+    "bull_2025_h2":   ("2025-09-01", "2026-01-31"),   # 年末行情
+    "range_2026":     ("2026-02-01", "2026-07-31"),   # 震荡
+}
+
+REGIME_LABELS = {
+    "bear_2010_13": "🐻",
+    "bull_2014_15": "🐂",
+    "crash_2015": "💥",
+    "bull_2016_17": "🐂",
+    "bear_2018": "🐻",
+    "bull_2019_20": "🐂",
+    "range_2021": "📊",
+    "bear_2022": "🐻",
+    "bull_2023_24": "🐂",
+    "bull_2024_h2": "🐂",
+    "range_2025": "📊",
+    "bull_2025_h2": "🐂",
+    "range_2026": "📊",
 }
 
 
@@ -399,12 +428,23 @@ def simulate_trend_exit(df: pd.DataFrame, entry_idx: int,
                         "peak_return": round(peak_ret * 100, 2),
                         "hold_days": j - entry_idx, "win": ret > 0}
 
-    # 6. 超时
+        # 6. K线形态出场信号 (入场10日+已盈利5%+)
+        if j - entry_idx >= 10 and ret > 0.05:
+            exit_sig = exit_signal_at(df, entry_idx, j, entry_price)
+            if exit_sig and exit_signal_confirm(df, j):
+                return {"exit_idx": j, "exit_date": str(df.index[j]),
+                        "exit_price": close,
+                        "exit_reason": f"signal_{exit_sig}",
+                        "return_pct": round(ret * 100, 2),
+                        "peak_return": round((peak_price - entry_price) / entry_price * 100, 2),
+                        "hold_days": j - entry_idx, "win": ret > 0}
+
+    # 7. 安全兜底 (仅防僵尸仓, 正常趋势不会超250日)
     last_idx = end_idx - 1
     last_close = float(df["收盘"].values[last_idx])
     last_ret = (last_close - entry_price) / entry_price
     return {"exit_idx": last_idx, "exit_date": str(df.index[last_idx]),
-            "exit_price": last_close, "exit_reason": "timeout",
+            "exit_price": last_close, "exit_reason": "safety_timeout",
             "return_pct": round(last_ret * 100, 2),
             "peak_return": round((peak_price - entry_price) / entry_price * 100, 2),
             "hold_days": last_idx - entry_idx, "win": last_ret > 0}
@@ -460,10 +500,21 @@ def simulate_exit(df: pd.DataFrame, entry_idx: int,
                         "peak_return": round(peak_ret * 100, 2),
                         "hold_days": j - entry_idx, "win": ret > 0}
 
+        # 出场信号: 入场5日+已盈利3%+ → K线形态出场
+        if j - entry_idx >= 5 and ret > 0.03:
+            exit_sig = exit_signal_at(df, entry_idx, j, entry_price)
+            if exit_sig and exit_signal_confirm(df, j):
+                return {"exit_idx": j, "exit_date": str(df.index[j]),
+                        "exit_price": close,
+                        "exit_reason": f"signal_{exit_sig}",
+                        "return_pct": round(ret * 100, 2),
+                        "peak_return": round((peak_price - entry_price) / entry_price * 100, 2),
+                        "hold_days": j - entry_idx, "win": ret > 0}
+
     last_close = float(df["收盘"].values[end_idx - 1])
     last_ret = (last_close - entry_price) / entry_price
     return {"exit_idx": end_idx - 1, "exit_date": str(df.index[end_idx - 1]),
-            "exit_price": last_close, "exit_reason": "timeout",
+            "exit_price": last_close, "exit_reason": "safety_timeout",
             "return_pct": round(last_ret * 100, 2),
             "peak_return": round((peak_price - entry_price) / entry_price * 100, 2),
             "hold_days": end_idx - 1 - entry_idx, "win": last_ret > 0}
@@ -473,15 +524,21 @@ def simulate_exit(df: pd.DataFrame, entry_idx: int,
 # 回测引擎
 # ═══════════════════════════════════════════════════════════════
 
+TRADE_RECORD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "baostock_data", "analysis", "trade_records")
+
+
 class BuySellBacktest:
     def __init__(self, take_profit=TAKE_PROFIT, stop_loss=STOP_LOSS,
                  trailing=TRAILING_STOP, max_hold=MAX_HOLD_DAYS,
-                 trend_mode=False, skip_bear=False, weekly=False):
+                 trend_mode=False, skip_bear=False, weekly=False,
+                 label=""):
         self.take_profit = take_profit; self.stop_loss = stop_loss
         self.trailing_stop = trailing; self.max_hold = max_hold
         self.trend_mode = trend_mode
         self.skip_bear = skip_bear
         self.weekly = weekly
+        self.label = label
         self.trades: List[Dict] = []
         self.signals_by_pattern: Dict[str, List] = defaultdict(list)
         self.bear_filtered = 0
@@ -496,8 +553,8 @@ class BuySellBacktest:
         if n < 100:
             return 0
         if date_range:
-            mask = (df.index >= date_range[0]) & (df.index <= date_range[1])
-            df = df[mask]
+            mask = (df["日期"] >= date_range[0]) & (df["日期"] <= date_range[1])
+            df = df[mask].reset_index(drop=True)
             if len(df) < 30:
                 return 0
 
@@ -598,8 +655,13 @@ class BuySellBacktest:
 
             result["pattern"] = combined_name
             result["code"] = code
-            result["entry_date"] = str(df["日期"].values[entry_i])[:10] if "日期" in df.columns else str(df.index[entry_i])
+            entry_date_str = str(df["日期"].values[entry_i])[:10] if "日期" in df.columns else str(df.index[entry_i])
+            result["entry_date"] = entry_date_str
             result["entry_price"] = float(df["收盘"].values[entry_i])
+            # 记录入场时的市场体制
+            result["entry_regime"] = detect_market_regime(df, entry_i)
+            result["entry_ma_bull"] = bool(df["ma_bull"].values[entry_i]) if "ma_bull" in df.columns else False
+            result["entry_vol_ratio"] = round(float(df["vol_ratio_vs5"].values[entry_i]), 2) if "vol_ratio_vs5" in df.columns else 0
             self.trades.append(result)
             self.signals_by_pattern[combined_name].append(result)
             count += 1
@@ -674,6 +736,70 @@ class BuySellBacktest:
                          "avg_peak": round(np.mean([t["peak_return"] for t in trades]), 2),
                          "avg_hold": round(np.mean([t["hold_days"] for t in trades]), 1)})
         return pd.DataFrame(rows).sort_values("hit_20pct", ascending=False) if rows else pd.DataFrame()
+
+    def save_trades(self, date_range=None, regime_stats=None) -> str:
+        """保存交易记录到 JSON + CSV 文件。
+
+        Returns:
+            输出目录路径
+        """
+        from datetime import datetime as dt
+        ts = dt.now().strftime("%Y%m%d_%H%M%S")
+        mode = "trend" if self.trend_mode else "swing"
+        label_slug = f"_{self.label}" if self.label else ""
+        out_dir = os.path.join(TRADE_RECORD_DIR, f"backtest_{mode}{label_slug}_{ts}")
+        os.makedirs(out_dir, exist_ok=True)
+
+        if not self.trades:
+            print(f"  ⚠ 无交易记录，跳过保存")
+            return out_dir
+
+        # ── JSON 导出 (含完整上下文) ──
+        summary = self.summary()
+        export = {
+            "meta": {
+                "mode": mode,
+                "label": self.label,
+                "take_profit": self.take_profit,
+                "stop_loss": self.stop_loss,
+                "trailing_stop": self.trailing_stop,
+                "max_hold": self.max_hold,
+                "weekly": self.weekly,
+                "skip_bear": self.skip_bear,
+                "date_range": date_range,
+                "generated_at": ts,
+            },
+            "summary": summary,
+            "regime_stats": regime_stats or {},
+            "trades": self.trades,
+        }
+        json_path = os.path.join(out_dir, "trades.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(export, f, ensure_ascii=False, indent=2, default=str)
+        print(f"\n  📁 交易记录已保存: {json_path}")
+
+        # ── CSV 导出 (便于 Excel 分析) ──
+        csv_path = os.path.join(out_dir, "trades.csv")
+        csv_fields = [
+            "entry_date", "code", "pattern", "entry_price", "exit_date",
+            "exit_price", "exit_reason", "return_pct", "peak_return",
+            "hold_days", "win",
+        ]
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(csv_fields)
+            for t in self.trades:
+                writer.writerow([t.get(k, "") for k in csv_fields])
+        print(f"  📊 CSV 已导出: {csv_path} ({len(self.trades)} 条)")
+
+        # ── 信号组合排名 ──
+        rank_path = os.path.join(out_dir, "signal_ranking.csv")
+        ps = self.pattern_summary(min_samples=5)
+        if not ps.empty:
+            ps.to_csv(rank_path, index=False, encoding="utf-8-sig")
+            print(f"  🏆 信号排名: {rank_path} ({len(ps)} 个组合)")
+
+        return out_dir
 
 
 def big_winner_analysis(bt: BuySellBacktest, target=20.0) -> Dict:
@@ -752,8 +878,18 @@ def main():
     parser.add_argument("--weekly", action="store_true", help="周线数据回测 (扩大数据维度)")
     parser.add_argument("--resample-weekly", action="store_true", help="日线重采样为周线回测 (无需下载)")
     parser.add_argument("--no-bear", action="store_true", help="跳过熊市体制 (提高胜率)")
+    parser.add_argument("--main-board", action="store_true", help="仅主板个股 (排除科创/创业/北交所)")
+    parser.add_argument("--min-history", type=int, default=200, help="最少交易日数 (默认200)")
+    parser.add_argument("--date-range", type=str, default="", help="限定回测日期范围, 如 2024-01-01,2024-12-31")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    # 解析日期范围
+    date_range = None
+    if args.date_range:
+        parts = args.date_range.split(",")
+        if len(parts) == 2:
+            date_range = (parts[0].strip(), parts[1].strip())
 
     t0 = time.time()
     trend_mode = args.trend
@@ -787,7 +923,38 @@ def main():
         bear_tag = " 跳过熊市" if args.no_bear else ""
         mode_label = f"v3 波段({freq_label} 目标{int(args.target)}%{bear_tag})"
 
-    stock_files = load_stock_files(data_dir)
+    # 加载股票文件
+    if args.main_board:
+        stock_files = load_main_board_files(data_dir)
+    else:
+        stock_files = load_stock_files(data_dir)
+
+    # 按最小交易日数过滤 + 日期范围预检查
+    min_history = args.min_history
+    valid_files = []
+    skipped_short = 0
+    skipped_date = 0
+    for fpath in stock_files:
+        df = load_stock_csv(fpath)
+        if df is None:
+            skipped_short += 1
+            continue
+        if len(df) < min_history:
+            skipped_short += 1
+            continue
+        if date_range:
+            # 检查股票数据是否覆盖目标日期范围
+            dates = df["日期"]
+            if dates.iloc[0] > pd.Timestamp(date_range[1]) or dates.iloc[-1] < pd.Timestamp(date_range[0]):
+                skipped_date += 1
+                continue
+        valid_files.append(fpath)
+
+    if skipped_short or skipped_date:
+        print(f"  过滤: {skipped_short} 只不足{min_history}日, {skipped_date} 只日期不匹配")
+
+    stock_files = valid_files
+
     if args.sample > 0 and args.sample < len(stock_files):
         np.random.seed(args.seed)
         stock_files = list(np.random.choice(stock_files, min(args.sample, len(stock_files)), replace=False))
@@ -795,9 +962,12 @@ def main():
         args.sample = len(stock_files)
 
     max_hold_desc = f"{max_hold}周" if weekly_mode else f"{max_hold}日"
+    board_tag = " 主板" if args.main_board else ""
+    date_tag = f" 日期{date_range[0]}~{date_range[1]}" if date_range else ""
 
     print(f"\n{'═' * 70}")
-    print(f"  买入-卖出回测 {mode_label} | {freq_label} | {len(stock_files)} 只个股")
+    print(f"  买入-卖出回测 {mode_label} | {freq_label}{board_tag} | {len(stock_files)} 只个股"
+          f"{date_tag}")
     if trend_mode:
         print(f"  趋势跟踪: MA20跌破退出 | 止损{int(abs(sl_level)*100)}% | 移动止盈{int(abs(tr_level)*100)}%")
         print(f"  持仓≤{max_hold_desc} | 强制动量过滤 | 突破型信号优先")
@@ -809,12 +979,22 @@ def main():
         print(f"  止盈 +{int(args.target)}% | 移动止损 {int(tr_level*100)}% | 持仓≤{max_hold_desc}")
         if args.no_bear:
             print(f"  体制过滤: 跳过熊市/偏熊体制")
+    if args.min_history > MIN_SAMPLE:
+        print(f"  数据要求: 最少{args.min_history}个交易日")
     print(f"{'═' * 70}")
+
+    label_parts = []
+    if args.main_board:
+        label_parts.append("主板")
+    if date_range:
+        label_parts.append(f"{date_range[0][:7]}_{date_range[1][:7]}")
+    label = "_".join(label_parts) if label_parts else ""
 
     bt = BuySellBacktest(take_profit=tp_level, stop_loss=sl_level,
                          trailing=tr_level, max_hold=max_hold,
                          trend_mode=trend_mode, skip_bear=args.no_bear,
-                         weekly=(weekly_mode or resample_mode))
+                         weekly=(weekly_mode or resample_mode),
+                         label=label)
     total_sig = 0
     for i, fpath in enumerate(stock_files):
         df = load_stock_csv(fpath)
@@ -824,7 +1004,7 @@ def main():
         if df is None or len(df) < min_len:
             continue
         try:
-            total_sig += bt.run_stock(fpath, df)
+            total_sig += bt.run_stock(fpath, df, date_range=date_range)
         except Exception:
             continue
         progress_interval = 200 if weekly_mode else 500
@@ -876,9 +1056,10 @@ def main():
     for reg, (start, end) in REGIMES.items():
         rt = [t for t in bt.trades
               if len(t["entry_date"]) >= 10 and start <= t["entry_date"][:10] <= end]
+        label = REGIME_LABELS.get(reg, "")
         if not rt:
-            print(f"  {reg:<12s} N=   0")
-            regime_stats[reg] = {"n": 0, "wr": 0, "tp": 0, "avg": 0, "peak": 0, "hit20": 0}
+            print(f"  {label} {reg:<15s} N=   0")
+            regime_stats[reg] = {"n": 0, "wr": 0, "tp": 0, "avg": 0, "peak": 0, "hit20": 0, "hit10": 0}
             continue
         n_rt = len(rt)
         wr = sum(1 for t in rt if t["win"]) / n_rt * 100
@@ -886,17 +1067,18 @@ def main():
         avg = float(np.mean([t["return_pct"] for t in rt]))
         peak = float(np.mean([t["peak_return"] for t in rt]))
         hit20 = sum(1 for t in rt if t["return_pct"] >= 20.0) / n_rt * 100
+        hit10 = sum(1 for t in rt if t["return_pct"] >= 10.0) / n_rt * 100
         if trend_mode:
             marker = " ✅" if hit20 >= 15 else (" ⚠" if hit20 >= 10 else " ❌")
-            print(f"  {reg:<12s} N={n_rt:>4d} WR={wr:>5.1f}% "
+            print(f"  {label} {reg:<15s} N={n_rt:>4d} WR={wr:>5.1f}% "
                   f"Avg={avg:>+5.2f}% 20%+={hit20:>4.1f}% Peak={peak:>+5.2f}%{marker}")
         else:
             marker = " ✅" if tp >= 30 else (" ⚠" if tp >= 20 else " ❌")
-            print(f"  {reg:<12s} N={n_rt:>4d} WR={wr:>5.1f}% TP={tp:>4.1f}% "
-                  f"Avg={avg:>+5.2f}% Peak={peak:>+5.2f}%{marker}")
+            print(f"  {label} {reg:<15s} {start[:7]}~{end[:7]} N={n_rt:>4d} WR={wr:>5.1f}% TP={tp:>4.1f}% "
+                  f"Avg={avg:>+5.2f}% 10%+={hit10:>4.1f}% Peak={peak:>+5.2f}%{marker}")
         regime_stats[reg] = {"n": n_rt, "wr": round(wr, 1), "tp": round(tp, 1),
                              "avg": round(avg, 2), "peak": round(peak, 2),
-                             "hit20": round(hit20, 1)}
+                             "hit20": round(hit20, 1), "hit10": round(hit10, 1)}
 
     valid = [(r["wr"], r["tp"]) for r in regime_stats.values() if r["n"] >= 10]
     if valid:
@@ -938,6 +1120,9 @@ def main():
         print(f"    {'─'*40}")
         for strategy, data in bw["tier_analysis"].items():
             print(f"    {strategy:<12s} {data['avg_ret']:>+7.2f}% {data['wr']:>5.1f}% {data['tp_rate']:>5.1f}%")
+
+    # ── 保存交易记录 ──
+    bt.save_trades(date_range=date_range, regime_stats=regime_stats)
 
     print(f"\n{'═' * 70}")
     if trend_mode:

@@ -62,9 +62,20 @@ def load_stock_csv(filepath: str) -> Optional[pd.DataFrame]:
         df = pd.read_csv(filepath)
         if len(df) < MIN_DAYS:
             return None
-        df["日期"] = pd.to_datetime(df["日期"], format="%Y-%m-%d")
+        # 清理: 移除空日期行
+        df = df.dropna(subset=["日期"]).copy()
+        if len(df) < MIN_DAYS:
+            return None
+        # 日期解析 (兼容多种格式)
+        df["日期"] = pd.to_datetime(df["日期"], format="%Y-%m-%d", errors="coerce")
+        df = df.dropna(subset=["日期"])
         df = df.sort_values("日期").reset_index(drop=True)
-        df = df[df["成交量"] > 0].copy()
+        # 只保留有效交易数据
+        for col in ["成交量", "收盘", "开盘", "最高", "最低"]:
+            if col in df.columns:
+                df = df[df[col].notna() & (df[col] > 0)].copy()
+        # 去重 (同一日期保留最后一条)
+        df = df.drop_duplicates(subset=["日期"], keep="last")
         return df if len(df) >= MIN_DAYS else None
     except Exception:
         return None
@@ -494,6 +505,140 @@ def confirm_entry(df: pd.DataFrame, signal_i: int, strict: bool = True,
             return False
 
     return True
+
+
+# ═══════════════════════════════════════════════════════════
+# 出场信号检测 (v2 — 基于K线形态的卖出信号)
+# ═══════════════════════════════════════════════════════════
+
+def exit_signal_at(df: pd.DataFrame, entry_i: int, current_i: int,
+                   entry_price: float) -> Optional[str]:
+    """
+    检测是否触发出场信号。返回信号名称或 None.
+
+    检测顺序 (优先级从高到低):
+      1. MA20 高位死叉确认 → 趋势终结
+      2. 顶部反转形态 → 射击之星/看跌吞没/乌云盖顶
+      3. 量价背离 → 价创新高但量不跟
+      4. RSI 超买回落 → 过热回调
+      5. 连续缩量滞涨 → 动能衰竭
+    """
+    n = len(df)
+    if current_i < entry_i + 3:
+        return None  # 入场后至少持仓3日
+
+    c = df["收盘"].values
+    h = df["最高"].values
+    l = df["最低"].values
+    o = df["开盘"].values
+    v = df["成交量"].values
+    is_yang = df["is_yang"].values
+    is_yin = df["is_yin"].values
+    change_pct = df["change_pct"].values
+    vol_r5 = df["vol_ratio_vs5"].values
+    ma5 = df["ma5"].values
+    ma10 = df["ma10"].values
+    ma20 = df["ma20"].values
+    ma_bull = df["ma_bull"].values
+    body_r = df["body_ratio"].values
+    upper_s = df["upper_shadow"].values
+
+    i = current_i
+
+    # ── 1. MA 高位死叉 (趋势终结最可靠信号) ──
+    if i >= 2 and not pd.isna(ma5[i]) and not pd.isna(ma10[i]) and not pd.isna(ma20[i]):
+        # MA5 连续2日下穿 MA10
+        ma5_cross = (ma5[i] < ma10[i] and ma5[i-1] >= ma10[i-1] and
+                     ma5[i-2] >= ma10[i-2])
+        # 价跌破 MA20
+        below_ma20 = c[i] < ma20[i] and c[i-1] >= ma20[i-1]
+        # MA20 走平或下行
+        if i >= 5:
+            ma20_flat = ma20[i] <= ma20[i-5] * 1.01
+        else:
+            ma20_flat = False
+
+        if ma5_cross and below_ma20 and ma20_flat:
+            return "MA5死叉MA10_跌破MA20_MA20走平"
+
+        if ma5_cross and below_ma20:
+            return "MA5死叉MA10_跌破MA20"
+
+        if below_ma20 and c[i] < c[i-1]:
+            return "跌破MA20_收阴"
+
+    # ── 2. 顶部反转形态 ──
+    if i >= 1:
+        # 射击之星: 长上影线 + 小实体 + 高位
+        star_upper = not pd.isna(upper_s[i]) and upper_s[i] > 0.6
+        star_body = not pd.isna(body_r[i]) and body_r[i] < 0.3
+        star_high = (c[i] - entry_price) / entry_price > 0.05  # 已盈利5%+
+        if star_upper and star_body and star_high and is_yin[i]:
+            return "射击之星_高位_收阴"
+
+        # 看跌吞没: 前日阳线 + 今日阴线 + 今日实体包昨日 + 高位
+        if (i >= 1 and is_yang[i-1] and is_yin[i] and
+            o[i] > c[i-1] and c[i] < o[i-1] and
+            abs(change_pct[i]) > 0.03 and star_high):
+            return "看跌吞没_高位"
+
+    # ── 3. 量价背离 (价创新高但量递减) ──
+    if i >= 5 and not pd.isna(vol_r5[i]):
+        price_new_high = i >= 10 and c[i] > max(c[max(0, i-10):i])
+        vol_decline = (vol_r5[i] < 0.8 and
+                       all(vol_r5[j] >= vol_r5[j+1] or abs(vol_r5[j]-vol_r5[j+1]) < 0.1
+                           for j in range(i-3, i) if j >= 0 and not pd.isna(vol_r5[j])))
+        if price_new_high and vol_decline and star_high:
+            return "量价背离_价新高量缩"
+
+    # ── 4. 连续缩量滞涨 (动能衰竭) ──
+    if i >= 4:
+        ret_3d = (c[i] - c[max(0, i-3)]) / c[max(0, i-3)] if c[max(0, i-3)] > 0 else 0
+        vol_3d = [vol_r5[j] for j in range(max(0, i-3), i+1) if not pd.isna(vol_r5[j])]
+        if 0 <= ret_3d < 0.02 and len(vol_3d) >= 3 and all(vs < 0.7 for vs in vol_3d):
+            return "连续缩量滞涨_动能衰竭"
+
+    # ── 5. 急涨后大幅低开 ──
+    if i >= 3 and o[i] < c[i-1] * 0.97:  # 低开3%+
+        ret_5d = (c[i-1] - c[max(0, i-5)]) / c[max(0, i-5)] if c[max(0, i-5)] > 0 else 0
+        if ret_5d > 0.10:  # 前5日涨超10%
+            return "急涨后大幅低开_获利了结"
+
+    return None
+
+
+def exit_signal_confirm(df: pd.DataFrame, exit_i: int) -> bool:
+    """
+    出场信号确认: 检查 T+1 是否继续走弱.
+
+    Returns True if exit confirmed (应该卖出).
+    """
+    i = exit_i + 1
+    if i >= len(df):
+        return True  # 最后一天直接确认
+
+    c = df["收盘"].values
+    o = df["开盘"].values
+    l = df["最低"].values
+    is_yin = df["is_yin"].values
+    v = df["成交量"].values
+    ma20 = df["ma20"].values
+
+    # 确认条件:
+    # 1. 次日收阴 → confirmed
+    # 2. 次日在MA20下 → confirmed
+    # 3. 次日创新低 → confirmed
+    confirm_count = 0
+    if is_yin[i]:
+        confirm_count += 1
+    if not pd.isna(ma20[i]) and c[i] < ma20[i]:
+        confirm_count += 1
+    if l[i] < l[i-1]:
+        confirm_count += 1
+    if i >= 1 and v[i] < v[i-1]:  # 缩量
+        confirm_count += 1
+
+    return confirm_count >= 2  # 至少2个条件满足
 
 
 def compute_forward_returns(df: pd.DataFrame, entry_idx: int,

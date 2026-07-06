@@ -86,6 +86,9 @@ class BaoStockFetcher:
     def __init__(self, data_root=None):
         self.data_root = data_root or BAOSTOCK_DATA_ROOT
         self._logged_in = False
+        import os
+        self._bs_user = os.environ.get("BAOSTOCK_USER", "anonymous")
+        self._bs_pwd = os.environ.get("BAOSTOCK_PASS", "123456")
 
     # ============================================================
     # 连接管理
@@ -95,7 +98,7 @@ class BaoStockFetcher:
         if self._logged_in:
             return
         try:
-            lg = bs.login()
+            lg = bs.login(user_id=self._bs_user, password=self._bs_pwd)
             if lg.error_code != "0":
                 raise ConnectionError(f"BaoStock 登录失败: {lg.error_msg} (code={lg.error_code})")
             self._logged_in = True
@@ -257,11 +260,11 @@ class BaoStockFetcher:
                     self._flush_print(f"\n  ⚠ {code} 断连，{wait}s 后重试 ({attempt + 1}/{max_retries})")
                     time.sleep(wait)
                     try:
-                        bs.login()
+                        bs.login(user_id=self._bs_user, password=self._bs_pwd)
                     except Exception:
                         time.sleep(1)
                         try:
-                            bs.login()
+                            bs.login(user_id=self._bs_user, password=self._bs_pwd)
                         except Exception:
                             pass
                     continue

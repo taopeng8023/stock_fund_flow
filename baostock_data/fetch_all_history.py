@@ -96,8 +96,9 @@ def bs_login():
             lg = bs.login()
             if lg.error_code == "0":
                 return True
-        except Exception:
-            pass
+            print(f"  login failed: {lg.error_msg}", flush=True)
+        except Exception as e:
+            print(f"  login exception: {e}", flush=True)
         time.sleep(2 + attempt * 2)
     return False
 
@@ -158,19 +159,31 @@ def _read_last_date(csv_path):
     return None
 
 
+def _is_data_complete(last_date_str: str, end_date_str: str) -> bool:
+    """判断数据是否完整：最后数据日距 end_date ≤ 2 个自然日（覆盖周末）"""
+    if not last_date_str:
+        return False
+    try:
+        ld = datetime.strptime(last_date_str.replace("-", "")[:8], "%Y%m%d")
+        ed = datetime.strptime(end_date_str[:10], "%Y-%m-%d")
+        return (ed - ld).days <= 2
+    except Exception:
+        return False
+
+
 def _worker_fetch(args):
     """
     子进程：独立登录 → 逐只拉取（增量追加） + 更新共享进度 → 写 CSV。
     每个子进程拥有独立的 baostock 连接，真正并行。
 
     args: (chunk_id, chunk, frequency, start_date, end_date,
-           adjustflag, fields, headers, outdir, progress_done, progress_rows)
+           adjustflag, fields, headers, outdir, progress_done, progress_rows, delay)
     """
     import baostock as bs
 
     (chunk_id, chunk, frequency, start_date, end_date,
      adjustflag, fields, headers, outdir,
-     progress_done, progress_rows) = args
+     progress_done, progress_rows, delay) = args
 
     fields_str = ",".join(fields)
     name_insert_pos = 3 if frequency in ("5", "15", "30", "60") else 2
@@ -178,9 +191,11 @@ def _worker_fetch(args):
     row_count = 0
 
     # 登录
+    user = os.environ.get("BAOSTOCK_USER", "anonymous")
+    pwd = os.environ.get("BAOSTOCK_PASS", "123456")
     for attempt in range(3):
         try:
-            lg = bs.login()
+            lg = bs.login(user_id=user, password=pwd)
             if lg.error_code == "0":
                 break
         except Exception:
@@ -208,8 +223,8 @@ def _worker_fetch(args):
         stock_start = start_date
         is_append = False
         last_date = _read_last_date(outpath)
-        if last_date and last_date >= end_date:
-            # 已是最新，跳过
+        if _is_data_complete(last_date, end_date):
+            # 数据已完整（最后交易日距今天 ≤ 2 天），跳过
             progress_done.value += 1
             continue
         if last_date:
@@ -220,7 +235,9 @@ def _worker_fetch(args):
                 pass
             is_append = True
 
-        # API 调用（带重试）
+        # API 调用（带重试 + 断连恢复）
+        mode_label = "增量" if is_append else "全量"
+        print(f"  {code} {name} ({mode_label}) ...", end=" ", flush=True)
         rows = []
         for attempt in range(3):
             try:
@@ -236,13 +253,22 @@ def _worker_fetch(args):
                     rows.append(rs.get_row_data())
                 break
             except Exception:
-                time.sleep(1 + attempt)
+                # 断连恢复：先登出关闭旧 socket，再重新登录
+                time.sleep(2 + attempt * 2)
                 try:
-                    bs.login()
+                    bs.logout()
                 except Exception:
                     pass
+                for login_attempt in range(2):
+                    try:
+                        lg = bs.login(user_id=user, password=pwd)
+                        if lg.error_code == "0":
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(1)
 
-        # 写 CSV（新建或追加）
+        print(f"{len(rows)} 行", flush=True)
         mode = "a" if is_append else "w"
         with open(outpath, mode, encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
@@ -260,6 +286,10 @@ def _worker_fetch(args):
         progress_done.value += 1
         progress_rows.value += len(rows)
 
+        # 请求间隔（避免触发服务器限流/黑名单）
+        if delay > 0:
+            time.sleep(delay)
+
     try:
         bs.logout()
     except Exception:
@@ -272,7 +302,7 @@ def _worker_fetch(args):
 # 多进程批量拉取
 # ============================================================
 def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
-                 fields, headers, subdir, num_workers, data_root):
+                 fields, headers, subdir, num_workers, data_root, delay=0.5):
     """多进程拉取，共享进度计数器，实时刷新。输出到 data_root/<subdir>/。"""
     from multiprocessing import Manager
 
@@ -290,7 +320,7 @@ def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
     progress_rows = manager.Value("i", 0)
 
     print(f"\n{'─' * 50}", flush=True)
-    print(f"  {frequency} K线 — {total} 只 → {n_workers} 进程", flush=True)
+    print(f"  {frequency} K线 — {total} 只 → {n_workers} 进程, 间隔 {delay}s", flush=True)
     print(f"  输出: {outdir}", flush=True)
     print(f"  范围: {start_date} → {end_date}", flush=True)
     print(f"{'─' * 50}", flush=True)
@@ -298,7 +328,7 @@ def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
     # 构建任务（每进程一个大块，减少登录次数）
     tasks = [(cid, chunk, frequency, start_date, end_date,
               adjustflag, fields, headers, outdir,
-              progress_done, progress_rows)
+              progress_done, progress_rows, delay)
              for cid, chunk in enumerate(chunks)]
 
     t0 = time.time()
@@ -349,22 +379,26 @@ def run_parallel(stocks, frequency, start_date, end_date, adjustflag,
 # ============================================================
 if __name__ == "__main__":
     with_minute = True
-    num_workers = min(8, os.cpu_count() or 4)  # 默认 = CPU 核数
+    num_workers = 1  # 默认单进程，避免触发服务器限流/黑名单
+    delay = 0.5  # 每只股票间默认间隔 0.5s
 
     for arg in sys.argv[1:]:
         if arg == "--no-minute":
             with_minute = False
         elif arg.startswith("--workers="):
             num_workers = int(arg.split("=")[1])
+        elif arg.startswith("--delay="):
+            delay = float(arg.split("=")[1])
         # 忽略旧的日期参数（向后兼容）
         elif not arg.startswith("--"):
             pass  # date_str no longer used
 
+    num_workers = max(1, min(num_workers, 8))
     end_date = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
     today_str = now_str()
 
     print("═" * 60, flush=True)
-    print(f"  BaoStock 全量历史 K 线（{num_workers} 进程，本机 {os.cpu_count()} 核）", flush=True)
+    print(f"  BaoStock 全量历史 K 线（{num_workers} 进程，间隔 {delay}s）", flush=True)
     print(f"  增量模式：已有数据自动跳过，仅追加新交易日", flush=True)
     print(f"  日/周/月线: 1990-12-19 → {end_date}", flush=True)
     if with_minute:
@@ -406,16 +440,16 @@ if __name__ == "__main__":
     print("\n[1/3] 日线", flush=True)
     run_parallel(stocks, "d", "1990-12-19", end_date, "2",
                  KLINE_FIELDS, KLINE_HEADERS, "daily",
-                 num_workers, DATA_ROOT)
+                 num_workers, DATA_ROOT, delay=delay)
 
     # 2. 周线 + 月线
     print("\n[2/3] 周线 + 月线", flush=True)
     run_parallel(stocks, "w", "1990-12-19", end_date, "2",
                  KLINE_FIELDS, KLINE_HEADERS, "weekly",
-                 num_workers, DATA_ROOT)
+                 num_workers, DATA_ROOT, delay=delay)
     run_parallel(stocks, "m", "1990-12-19", end_date, "2",
                  KLINE_FIELDS, KLINE_HEADERS, "monthly",
-                 num_workers, DATA_ROOT)
+                 num_workers, DATA_ROOT, delay=delay)
 
     # 3. 分钟线
     if with_minute:
@@ -423,7 +457,7 @@ if __name__ == "__main__":
         for freq in ["5", "15", "30", "60"]:
             run_parallel(stocks, freq, "2019-01-02", end_date, "2",
                          KLINE_FIELDS_MINUTE, KLINE_HEADERS_MINUTE,
-                         f"minute_{freq}", num_workers, DATA_ROOT)
+                         f"minute_{freq}", num_workers, DATA_ROOT, delay=delay)
 
     # 指数（主进程串行，数据量小，增量追加）
     print("\n[指数]", flush=True)

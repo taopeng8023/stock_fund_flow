@@ -98,6 +98,18 @@ def read_last_date(csv_path: str) -> Optional[str]:
     return None
 
 
+def is_data_complete(last_date_str: Optional[str], end_date_str: str) -> bool:
+    """判断数据是否完整：最后数据日距 end_date ≤ 2 个自然日（覆盖周末）"""
+    if not last_date_str:
+        return False
+    try:
+        ld = datetime.strptime(last_date_str.replace("-", "")[:8], "%Y%m%d")
+        ed = datetime.strptime(end_date_str[:10], "%Y-%m-%d")
+        return (ed - ld).days <= 2
+    except Exception:
+        return False
+
+
 # ============================================================
 # 进度追踪器（线程安全）
 # ============================================================
@@ -216,6 +228,7 @@ class UpdateWorker:
         headers: List[str],
         progress: ProgressTracker,
         minute_mode: bool = False,
+        delay: float = 0.5,
     ):
         self.out_dir = out_dir
         self.frequency = frequency
@@ -225,7 +238,11 @@ class UpdateWorker:
         self.headers = headers
         self.progress = progress
         self.minute_mode = minute_mode
+        self.delay = delay
         self._bs = None
+        import os
+        self._bs_user = os.environ.get("BAOSTOCK_USER", "anonymous")
+        self._bs_pwd = os.environ.get("BAOSTOCK_PASS", "123456")
 
     def _login(self) -> bool:
         import baostock as bs
@@ -237,7 +254,7 @@ class UpdateWorker:
 
         for attempt in range(5):
             try:
-                lg = bs.login()
+                lg = bs.login(user_id=self._bs_user, password=self._bs_pwd)
                 if lg.error_code == "0":
                     self._bs = bs
                     return True
@@ -278,8 +295,8 @@ class UpdateWorker:
             stock_start = self.start_date
             is_append = False
             last_date = read_last_date(csv_path)
-            if last_date and last_date >= self.end_date:
-                # 已是最新
+            if is_data_complete(last_date, self.end_date):
+                # 数据已完整（最后交易日距今天 ≤ 2 天），跳过
                 self.progress.add_done(code, 0)
                 continue
             if last_date:
@@ -311,12 +328,20 @@ class UpdateWorker:
                         rows.append(rs.get_row_data())
                     break
                 except (BrokenPipeError, ConnectionError, OSError):
-                    if attempt < 2:
-                        time.sleep(1 + attempt * 2)
+                    # 断连恢复：先登出关闭旧 socket，再重新登录
+                    time.sleep(2 + attempt * 2)
+                    try:
+                        self._bs.logout()
+                    except Exception:
+                        pass
+                    for _ in range(2):
                         try:
-                            self._bs.login()
+                            lg = self._bs.login(user_id=self._bs_user, password=self._bs_pwd)
+                            if lg.error_code == "0":
+                                break
                         except Exception:
                             pass
+                        time.sleep(1)
                 except Exception:
                     time.sleep(1 + attempt)
 
@@ -336,9 +361,9 @@ class UpdateWorker:
 
             self.progress.add_done(code, len(rows))
 
-            # 分钟线限速（避免触发频率限制）
-            if self.minute_mode:
-                time.sleep(0.05)
+            # 请求间隔（避免触发服务器限流/黑名单）
+            if self.delay > 0:
+                time.sleep(self.delay)
 
         self._logout()
 
@@ -349,6 +374,10 @@ class UpdateWorker:
 def _bs_login() -> bool:
     """BaoStock 登录（带 socket 重置 + 重试）"""
     import baostock as bs
+    import os
+
+    user = os.environ.get("BAOSTOCK_USER", "anonymous")
+    pwd = os.environ.get("BAOSTOCK_PASS", "123456")
 
     # 先确保旧连接被清理
     try:
@@ -358,7 +387,7 @@ def _bs_login() -> bool:
 
     for attempt in range(5):
         try:
-            lg = bs.login()
+            lg = bs.login(user_id=user, password=pwd)
             if lg.error_code == "0":
                 return True
             print(f"    登录返回: {lg.error_msg} (code={lg.error_code})", flush=True)
@@ -434,6 +463,7 @@ def run_parallel(
     out_dir: str,
     num_workers: int,
     label: str,
+    delay: float = 0.5,
 ) -> None:
     """多线程并行拉取，每个线程独立连接"""
     os.makedirs(out_dir, exist_ok=True)
@@ -459,7 +489,7 @@ def run_parallel(
 
     print(
         f"\n{'─' * 55}\n"
-        f"  [{label}] {frequency} K线 — {total} 只 → {n_workers} 线程\n"
+        f"  [{label}] {frequency} K线 — {total} 只 → {n_workers} 线程, 间隔 {delay}s\n"
         f"  输出: {out_dir}\n"
         f"  范围: {start_date} → {end_date}\n"
         f"{'─' * 55}",
@@ -477,6 +507,7 @@ def run_parallel(
             headers=list(headers),
             progress=progress,
             minute_mode=minute_mode,
+            delay=delay,
         )
         for _ in range(n_workers)
     ]
@@ -526,7 +557,7 @@ def update_index(
         idx_start = start_date
         is_append = False
         last_date = read_last_date(csv_path)
-        if last_date and last_date >= end_date:
+        if is_data_complete(last_date, end_date):
             print(f"    {code} ({name}) ... 已是最新，跳过", flush=True)
             continue
         if last_date:
@@ -580,7 +611,8 @@ def update_index(
 # ============================================================
 def main() -> None:
     days_back = 5
-    num_workers = min(16, os.cpu_count() * 2) if os.cpu_count() else 8
+    num_workers = 1  # 默认单线程，避免触发服务器限流/黑名单
+    delay = 0.5  # 每只股票间默认间隔 0.5s
     with_minute = True
 
     # 解析命令行参数
@@ -589,6 +621,8 @@ def main() -> None:
             with_minute = False
         elif arg.startswith("--workers="):
             num_workers = int(arg.split("=")[1])
+        elif arg.startswith("--delay="):
+            delay = float(arg.split("=")[1])
         elif arg.startswith("-w"):
             # -w8 或 -w 8
             if "=" in arg:
@@ -604,6 +638,7 @@ def main() -> None:
             days_back = int(arg)
 
     num_workers = max(1, min(num_workers, 16))  # 限制 1-16
+    delay = max(0, min(delay, 10))  # 限制 0-10s
 
     end_date_str = datetime.now(BJS_TZ).strftime("%Y-%m-%d")
     start_date_str = (
@@ -617,7 +652,7 @@ def main() -> None:
 
     print("═" * 60, flush=True)
     print(f"  BaoStock 多线程增量更新", flush=True)
-    print(f"  本机 {cpu_count} 核 → {num_workers} 线程", flush=True)
+    print(f"  本机 {cpu_count} 核 → {num_workers} 线程, 间隔 {delay}s", flush=True)
     print(f"  更新范围: 近 {days_back} 个交易日", flush=True)
     print(f"  日线: {start_date_str} → {end_date_str}", flush=True)
     if with_minute:
@@ -653,6 +688,7 @@ def main() -> None:
         out_dir=DAILY_DIR,
         num_workers=num_workers,
         label="日线",
+        delay=delay,
     )
 
     # 2. 周线 + 月线
@@ -667,6 +703,7 @@ def main() -> None:
         out_dir=WEEKLY_DIR,
         num_workers=num_workers,
         label="周线",
+        delay=delay,
     )
     run_parallel(
         stocks=stocks,
@@ -678,6 +715,7 @@ def main() -> None:
         out_dir=MONTHLY_DIR,
         num_workers=num_workers,
         label="月线",
+        delay=delay,
     )
 
     # 3. 分钟线
@@ -694,6 +732,7 @@ def main() -> None:
                 out_dir=FREQ_DIR_MAP[freq],
                 num_workers=num_workers,
                 label=f"{freq}分钟",
+                delay=delay,
             )
 
     # 4. 指数
