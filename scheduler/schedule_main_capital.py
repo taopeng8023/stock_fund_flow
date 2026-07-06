@@ -438,7 +438,7 @@ def run(dry_run: bool = False):
     print(f"║  🎯 出入场: 信号驱动 | 止盈{_target_pct}% | K线出场 | 兜底200日{'':>6}║")
     if dry_run:
         print(f"║  ⚠ 试运行模式{'':>48}║")
-    print("╚" + "═" + 62 + "╝")
+    print("╚" + "═" * 62 + "╝")
     print()
 
     while _running:
