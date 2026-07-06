@@ -737,6 +737,129 @@ class BuySellBacktest:
                          "avg_hold": round(np.mean([t["hold_days"] for t in trades]), 1)})
         return pd.DataFrame(rows).sort_values("hit_20pct", ascending=False) if rows else pd.DataFrame()
 
+    def run_analysis(self) -> dict:
+        """内置分析: 持股天数/出场信号/入场出场配对."""
+        if not self.trades:
+            return {}
+        trades = self.trades
+
+        # ── 持股天数 vs 收益 ──
+        hold_buckets = [
+            (1, 3, "1-3天"), (4, 5, "4-5天"), (6, 10, "6-10天"),
+            (11, 20, "11-20天"), (21, 40, "21-40天"), (41, 60, "41-60天"),
+            (61, 100, "61-100天"), (101, 999, "100天+"),
+        ]
+        hold_analysis = []
+        for lo, hi, label in hold_buckets:
+            sub = [t for t in trades if lo <= t["hold_days"] <= hi]
+            if len(sub) < 3:
+                continue
+            rets = [t["return_pct"] for t in sub]
+            wr = sum(1 for t in sub if t["win"]) / len(sub) * 100
+            hit20 = sum(1 for r in rets if r >= 20) / len(sub) * 100
+            hold_analysis.append({
+                "bucket": label, "n": len(sub), "wr": round(wr, 1),
+                "avg_ret": round(np.mean(rets), 2), "hit20": round(hit20, 1),
+                "avg_peak": round(np.mean([t["peak_return"] for t in sub]), 2),
+                "avg_hold": round(np.mean([t["hold_days"] for t in sub]), 1),
+            })
+
+        # ── 出场信号有效性 ──
+        def _simplify_exit(reason: str) -> str:
+            for k, v in {"take_profit": "止盈30%", "trailing_stop": "移动止损",
+                         "stop_loss": "硬止损", "safety_timeout": "安全兜底"}.items():
+                if k in reason: return v
+            if "射击之星" in reason: return "射击之星"
+            if "跌破MA20" in reason: return "跌破MA20"
+            if "MA5死叉" in reason: return "MA死叉"
+            if "量价背离" in reason: return "量价背离"
+            if "看跌吞没" in reason: return "看跌吞没"
+            if "缩量滞涨" in reason: return "缩量滞涨"
+            if "急涨" in reason: return "急涨低开"
+            return "其他"
+
+        exit_groups = defaultdict(list)
+        for t in trades:
+            exit_groups[_simplify_exit(t.get("exit_reason", "?"))].append(t)
+        exit_analysis = []
+        for sig, st in exit_groups.items():
+            if len(st) < 3:
+                continue
+            rets = [t["return_pct"] for t in st]
+            exit_analysis.append({
+                "exit_signal": sig, "n": len(st),
+                "avg_ret": round(np.mean(rets), 2),
+                "wr": round(sum(1 for t in st if t["win"]) / len(st) * 100, 1),
+                "hit20": round(sum(1 for r in rets if r >= 20) / len(st) * 100, 1),
+                "avg_peak": round(np.mean([t["peak_return"] for t in st]), 2),
+                "avg_hold": round(np.mean([t["hold_days"] for t in st]), 1),
+            })
+        exit_analysis.sort(key=lambda x: x["avg_ret"], reverse=True)
+
+        # ── 入场×出场配对 ──
+        def _simplify_entry(pattern: str) -> str:
+            for kw in ["深跌35%", "深跌25%", "MA5金叉MA10", "MA5金叉MA20",
+                       "三连阳", "三日连涨", "启明星", "双针探底",
+                       "MA20上升", "二连阴缩", "涨停", "放量破高", "回踩MA5"]:
+                if kw in pattern: return kw
+            return pattern[:20]
+
+        pairs = defaultdict(list)
+        for t in trades:
+            entry = _simplify_entry(t.get("pattern", "?"))
+            exit_s = _simplify_exit(t.get("exit_reason", "?"))
+            pairs[f"{entry} → {exit_s}"].append(t)
+        pair_analysis = []
+        for pk, pt in pairs.items():
+            if len(pt) < 3:
+                continue
+            rets = [t["return_pct"] for t in pt]
+            pair_analysis.append({
+                "pair": pk, "n": len(pt),
+                "avg_ret": round(np.mean(rets), 2),
+                "wr": round(sum(1 for t in pt if t["win"]) / len(pt) * 100, 1),
+                "hit20": round(sum(1 for r in rets if r >= 20) / len(pt) * 100, 1),
+                "hit30": round(sum(1 for r in rets if r >= 30) / len(pt) * 100, 1),
+            })
+        pair_analysis.sort(key=lambda x: x["avg_ret"], reverse=True)
+
+        return {
+            "hold_analysis": hold_analysis,
+            "exit_analysis": exit_analysis,
+            "pair_analysis": pair_analysis[:20],
+        }
+
+    def print_analysis(self, analysis: dict):
+        """打印内置分析结果."""
+        if not analysis:
+            return
+        print(f"\n{'='*65}")
+        print(f"  📊 内置分析")
+        print(f"{'='*65}")
+
+        ha = analysis.get("hold_analysis", [])
+        if ha:
+            print(f"\n  ── 持股天数 vs 收益率 ──")
+            print(f"  {'区间':<10s} {'N':>5s} {'WR':>6s} {'均值':>7s} {'20%+':>6s} {'峰值':>7s} {'持仓':>5s}")
+            for r in ha:
+                best = " ⭐" if r["avg_ret"] == max(x["avg_ret"] for x in ha) else ""
+                print(f"  {r['bucket']:<10s} {r['n']:>5d} {r['wr']:>5.1f}% {r['avg_ret']:>+6.2f}% {r['hit20']:>5.1f}% {r['avg_peak']:>+6.1f}% {r['avg_hold']:>4.1f}d{best}")
+
+        ea = analysis.get("exit_analysis", [])
+        if ea:
+            print(f"\n  ── 出场信号有效性 ──")
+            print(f"  {'出场信号':<12s} {'N':>5s} {'均值':>7s} {'WR':>5s} {'20%+':>6s} {'持仓':>5s}")
+            for r in ea[:10]:
+                grade = "🏆" if r["avg_ret"] > 10 else ("✅" if r["avg_ret"] > 5 else "👍")
+                print(f"  {grade} {r['exit_signal']:<10s} {r['n']:>5d} {r['avg_ret']:>+6.2f}% {r['wr']:>4.1f}% {r['hit20']:>5.1f}% {r['avg_hold']:>4.1f}d")
+
+        pa = analysis.get("pair_analysis", [])
+        if pa:
+            print(f"\n  ── 最优入场→出场配对 Top 10 ──")
+            print(f"  {'入场 → 出场':<35s} {'N':>4s} {'均值':>7s} {'WR':>5s} {'20%+':>6s} {'30%+':>6s}")
+            for r in pa[:10]:
+                print(f"  {r['pair']:<35s} {r['n']:>4d} {r['avg_ret']:>+6.2f}% {r['wr']:>4.1f}% {r['hit20']:>5.1f}% {r['hit30']:>5.1f}%")
+
     def save_trades(self, date_range=None, regime_stats=None) -> str:
         """保存交易记录到 JSON + CSV 文件。
 
@@ -879,8 +1002,10 @@ def main():
     parser.add_argument("--resample-weekly", action="store_true", help="日线重采样为周线回测 (无需下载)")
     parser.add_argument("--no-bear", action="store_true", help="跳过熊市体制 (提高胜率)")
     parser.add_argument("--main-board", action="store_true", help="仅主板个股 (排除科创/创业/北交所)")
+    parser.add_argument("--all-stocks", action="store_true", help="全量个股 (含科创/创业/北交所)")
     parser.add_argument("--min-history", type=int, default=200, help="最少交易日数 (默认200)")
     parser.add_argument("--date-range", type=str, default="", help="限定回测日期范围, 如 2024-01-01,2024-12-31")
+    parser.add_argument("--analysis", action="store_true", default=True, help="输出内置分析 (默认开启)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -924,10 +1049,12 @@ def main():
         mode_label = f"v3 波段({freq_label} 目标{int(args.target)}%{bear_tag})"
 
     # 加载股票文件
-    if args.main_board:
-        stock_files = load_main_board_files(data_dir)
+    if args.all_stocks:
+        stock_files = load_stock_files(data_dir)  # 全量 (含科创/创业/北交所)
+    elif args.main_board:
+        stock_files = load_main_board_files(data_dir)  # 仅主板
     else:
-        stock_files = load_stock_files(data_dir)
+        stock_files = load_main_board_files(data_dir)  # 默认主板
 
     # 按最小交易日数过滤 + 日期范围预检查
     min_history = args.min_history
@@ -1120,6 +1247,11 @@ def main():
         print(f"    {'─'*40}")
         for strategy, data in bw["tier_analysis"].items():
             print(f"    {strategy:<12s} {data['avg_ret']:>+7.2f}% {data['wr']:>5.1f}% {data['tp_rate']:>5.1f}%")
+
+    # ── 内置分析 ──
+    if args.analysis:
+        analysis = bt.run_analysis()
+        bt.print_analysis(analysis)
 
     # ── 保存交易记录 ──
     bt.save_trades(date_range=date_range, regime_stats=regime_stats)
