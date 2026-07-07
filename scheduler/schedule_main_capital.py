@@ -655,6 +655,7 @@ if __name__ == "__main__":
     parser.add_argument("--daemon", action="store_true", help="后台运行")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-scanner", action="store_true", help="禁用选股扫描")
+    parser.add_argument("--weekly", action="store_true", help="周线模式")
     parser.add_argument("--target", type=int, default=TARGET_DEFAULT,
                        help=f"止盈目标%% (默认{TARGET_DEFAULT}%%, 牛市30%%, 熊市15%%)")
     args = parser.parse_args()

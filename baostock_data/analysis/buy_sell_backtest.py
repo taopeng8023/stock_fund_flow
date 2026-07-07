@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-买入-卖出信号回测系统 v4 — 双模式: 波段(v3) + 趋势跟踪(trend)
+买入-卖出信号回测系统 v5 — 三模式: 波段(v3) + 趋势跟踪(trend) + 增强(v5)
 
-v4 新增趋势跟踪模式:
-  1. MA20趋势跟踪退出: 收盘跌破MA20 → 趋势结束,退出
-  2. 无止盈上限: 让利润充分奔跑,目标单笔20%+
-  3. 强制动量过滤: MA5>MA10>MA20, MA20上升, 价在MA20上
-  4. 延长持仓: 最长90日
-  5. 宽幅移动止损: -10% from peak (给趋势空间)
-  6. 突破型信号优先: 金叉/突破/连涨/缺口 优于 超跌反弹
+v5 增强模式核心改进:
+  1. 重新入场: 出场后冷却N日继续扫描,单股可多笔交易
+  2. 体制自适应参数: bull/bear/range 不同止盈止损
+  3. 信号质量评分: 趋势+量价+位置+形态 综合过滤
+  4. 回踩入场: 信号后等1-2日回踩,优化入场价
+  5. 灵活确认: 高质量信号放宽 confirm 要求
+  6. 双确认窗口: 3日→5日 (扩大有效信号范围)
 
 用法:
-  python buy_sell_backtest.py                          # v3 波段模式(默认, 全量)
+  python buy_sell_backtest.py                          # v3 波段模式(默认,全量)
+  python buy_sell_backtest.py --v5                     # v5 增强波段模式
   python buy_sell_backtest.py --trend                  # v4 趋势跟踪模式
+  python buy_sell_backtest.py --v5 --trend             # v5 增强趋势模式
   python buy_sell_backtest.py --sample 2000            # 采样快速验证
   python buy_sell_backtest.py --main-board             # 仅主板个股
   python buy_sell_backtest.py --min-history 500        # 至少500个交易日
@@ -54,6 +56,47 @@ TREND_MIN_MOMENTUM = 0.03    # MA20近20日至少涨3%
 TREND_TRAIL_START = 0.15     # 峰值15%+才启动移动止损
 TREND_MA_EXIT_DAYS = 2       # MA20跌破需连续2日确认
 TREND_MIN_SCORE = 0.40       # 趋势评分最低门槛 (放宽)
+
+# ── v5 增强模式参数 ──
+V5_DUAL_CONFIRM_WINDOW = 5      # 双确认窗口扩至5日
+V5_COOLDOWN_BARS = 3            # 出场后冷却N日再入场 (基础值,实际用动态冷却)
+V5_MIN_SIGNAL_SCORE = 0.40      # 信号质量最低分 (bull/range放宽,bear收紧)
+V5_HIGH_QUALITY_THRESHOLD = 0.75  # 高于此分: 单信号可入场 (精英级)
+V5_STRICT_CONFIRM_THRESHOLD = 0.60  # 低于此分: 必须strict confirm
+V5_PULLBACK_MAX_WAIT = 2        # 回踩入场最多等2日
+V5_COOLDOWN_AFTER_LOSS = 20     # 亏损出场后更长冷却 (避免连续亏损)
+V5_COOLDOWN_AFTER_WIN = 5       # 盈利出场后冷却
+V5_MAX_TRADES_PER_STOCK = 20    # 单股最多交易次数 (防过度交易)
+
+# v5 体制门控: 仅在有利体制下交易,跳过熊市/偏熊
+V5_ALLOWED_REGIMES = {"bull", "bull_bias", "range"}
+
+# 体制自适应最低评分
+REGIME_MIN_SCORE = {
+    "bull": 0.40, "bull_bias": 0.45, "range": 0.50,
+    "bear_bias": 0.60, "bear": 0.70,
+}
+
+# 体制自适应参数 (v5 波段模式)
+# bull: 大止盈+小止损 → 让利润奔跑
+# bear: 小止盈+紧止损 → 快进快出保本
+REGIME_PARAMS_SWING = {
+    # tp/sl/trail/max_hold/trail_start (峰值%才启动移动止损)
+    "bull":       {"tp": 0.14, "sl": -0.05, "trail": -0.07, "max_hold": 30, "trail_start": 0.08},
+    "bull_bias":  {"tp": 0.11, "sl": -0.05, "trail": -0.06, "max_hold": 25, "trail_start": 0.06},
+    "range":      {"tp": 0.08, "sl": -0.05, "trail": -0.05, "max_hold": 18, "trail_start": 0.05},
+    "bear_bias":  {"tp": 0.06, "sl": -0.05, "trail": -0.05, "max_hold": 12, "trail_start": 0.04},
+    "bear":       {"tp": 0.05, "sl": -0.04, "trail": -0.04, "max_hold": 10, "trail_start": 0.03},
+}
+
+# 体制自适应参数 (v5 趋势模式)
+REGIME_PARAMS_TREND = {
+    "bull":       {"tp": 0.60, "sl": -0.10, "trail": -0.12, "max_hold": 300},
+    "bull_bias":  {"tp": 0.50, "sl": -0.09, "trail": -0.11, "max_hold": 250},
+    "range":      {"tp": 0.40, "sl": -0.08, "trail": -0.10, "max_hold": 200},
+    "bear_bias":  {"tp": 0.25, "sl": -0.06, "trail": -0.07, "max_hold": 100},
+    "bear":       {"tp": 0.15, "sl": -0.05, "trail": -0.05, "max_hold": 60},
+}
 
 # 趋势模式下优先的信号类型 (突破/趋势延续 > 超跌反弹)
 TREND_PRIORITY_PATTERNS = (
@@ -328,6 +371,116 @@ def detect_trendiness(df: pd.DataFrame, i: int) -> Tuple[bool, float, str]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# v5 信号质量评分 & 回踩入场
+# ═══════════════════════════════════════════════════════════════
+
+def calc_signal_quality(df: pd.DataFrame, i: int, pattern: str, regime: str) -> float:
+    """
+    v5 信号质量综合评分 0-1.
+    维度: 趋势对齐(0-0.30) + 量价确认(0-0.15) + 位置健康(0-0.15)
+         + MA排列(0-0.20) + 形态类型(0-0.10) + 波动率(0-0.10)
+    熊市体制自动打折,保护本金.
+    """
+    if i < 20:
+        return 0.0
+    score = 0.0
+    c = df["收盘"].values
+
+    # 1. 趋势对齐 (0-0.30)
+    _, trend_score, _ = detect_trendiness(df, i)
+    score += trend_score * 0.30
+
+    # 2. 量价确认 (0-0.15)
+    if "vol_ratio_vs5" in df.columns:
+        vr = df["vol_ratio_vs5"].values[i]
+        if not pd.isna(vr):
+            if 1.2 <= vr <= 3.0:
+                score += 0.15   # 温和放量,最佳
+            elif 0.8 <= vr < 1.2:
+                score += 0.08   # 平量,可接受
+            elif 3.0 < vr <= 5.0:
+                score += 0.05   # 过度放量,减分
+
+    # 3. 位置健康 vs MA20 (0-0.15)
+    ma20 = df["ma20"].values[i] if "ma20" in df.columns else np.nan
+    if not pd.isna(ma20) and ma20 > 0:
+        dist = (c[i] - ma20) / ma20
+        if -0.02 <= dist <= 0.03:
+            score += 0.15   # 在MA20附近,最佳入场区
+        elif 0.03 < dist <= 0.08:
+            score += 0.10   # 略高于MA20
+        elif -0.05 <= dist < -0.02:
+            score += 0.08   # 略低于MA20(超跌反弹)
+        elif 0.08 < dist <= 0.15:
+            score += 0.04   # 偏离较远,追高风险
+
+    # 4. MA排列质量 (0-0.20)
+    ma5 = df["ma5"].values[i] if "ma5" in df.columns else np.nan
+    ma10 = df["ma10"].values[i] if "ma10" in df.columns else np.nan
+    ma60 = df["ma60"].values[i] if "ma60" in df.columns else np.nan
+
+    if not pd.isna(ma5) and not pd.isna(ma10) and not pd.isna(ma20):
+        if ma5 > ma10 > ma20:
+            score += 0.20   # 完美多头排列
+        elif ma5 > ma10:
+            score += 0.12   # 短期多头
+        elif c[i] > ma20:
+            score += 0.06   # 至少站上MA20
+
+    # MA60大趋势确认
+    if not pd.isna(ma60) and not pd.isna(ma20) and ma20 > ma60:
+        score += 0.05   # 中长期趋势向上
+
+    # 5. 形态类型 (0-0.10)
+    if is_trend_priority(pattern):
+        score += 0.10   # 趋势延续型信号
+    elif is_safe_for_bear(pattern):
+        score += 0.05   # 反转型信号
+
+    # 6. 波动率健康度 (0-0.10)
+    if "volatility_20" in df.columns:
+        vol = df["volatility_20"].values[i]
+        if not pd.isna(vol):
+            if 0.015 <= vol <= 0.045:
+                score += 0.10   # 适中波动,趋势稳定
+            elif 0.045 < vol <= 0.06:
+                score += 0.05   # 偏高但可接受
+
+    # 熊市体制信号密度惩罚: 信号过多时降低得分 (避免频繁交易)
+    if regime in ("bear", "bear_bias"):
+        # 检查近20日信号密度,过多信号说明市场噪音大
+        score *= 0.85
+
+    return min(score, 1.0)
+
+
+def find_pullback_entry(df: pd.DataFrame, signal_i: int, max_wait: int = 2) -> int:
+    """
+    v5 回踩入场: 信号日后等待1-2日,若回踩则更低价格入场.
+    不回踩则信号日收盘价入场. 若跳空>2%则放弃等待.
+    返回最优入场 bar index.
+    """
+    n = len(df)
+    close_signal = float(df["收盘"].values[signal_i])
+    best_i = signal_i
+    best_price = close_signal
+
+    for j in range(signal_i + 1, min(signal_i + max_wait + 1, n - 1)):
+        close_j = float(df["收盘"].values[j])
+
+        # 跳空追高>2% → 不等了,用信号日入场
+        if close_j > close_signal * 1.02:
+            break
+
+        # 回踩 → 更低入场价
+        if close_j < best_price:
+            best_price = close_j
+            best_i = j
+
+    return best_i
+
+
+# ═══════════════════════════════════════════════════════════════
 # v4 趋势跟踪卖出逻辑
 # ═══════════════════════════════════════════════════════════════
 
@@ -456,7 +609,8 @@ def simulate_trend_exit(df: pd.DataFrame, entry_idx: int,
 
 def simulate_exit(df: pd.DataFrame, entry_idx: int,
                   take_profit=TAKE_PROFIT, stop_loss=STOP_LOSS,
-                  trailing_stop=TRAILING_STOP, max_hold=MAX_HOLD_DAYS) -> Dict:
+                  trailing_stop=TRAILING_STOP, max_hold=MAX_HOLD_DAYS,
+                  trail_start=0.05) -> Dict:
     entry_price = float(df["收盘"].values[entry_idx])
     n = len(df)
     end_idx = min(entry_idx + max_hold + 1, n)
@@ -491,7 +645,7 @@ def simulate_exit(df: pd.DataFrame, entry_idx: int,
                     "hold_days": j - entry_idx, "win": False}
 
         peak_ret = (peak_price - entry_price) / entry_price
-        if peak_ret > 0.05:
+        if peak_ret > trail_start:
             dd = (close - peak_price) / peak_price
             if dd <= trailing_stop:
                 return {"exit_idx": j, "exit_date": str(df.index[j]),
@@ -532,12 +686,13 @@ class BuySellBacktest:
     def __init__(self, take_profit=TAKE_PROFIT, stop_loss=STOP_LOSS,
                  trailing=TRAILING_STOP, max_hold=MAX_HOLD_DAYS,
                  trend_mode=False, skip_bear=False, weekly=False,
-                 label=""):
+                 v5_mode=False, label=""):
         self.take_profit = take_profit; self.stop_loss = stop_loss
         self.trailing_stop = trailing; self.max_hold = max_hold
         self.trend_mode = trend_mode
         self.skip_bear = skip_bear
         self.weekly = weekly
+        self.v5_mode = v5_mode
         self.label = label
         self.trades: List[Dict] = []
         self.signals_by_pattern: Dict[str, List] = defaultdict(list)
@@ -546,9 +701,213 @@ class BuySellBacktest:
         self.trend_filtered = 0
         self.regime_filtered = 0    # 体制过滤
         self.dual_confirmed = 0
+        self.v5_score_filtered = 0  # v5 信号评分过滤
+        self.v5_reentries = 0       # v5 重新入场计数
+
+    def _run_stock_v5(self, filepath: str, df: pd.DataFrame,
+                      date_range: Optional[Tuple[str, str]] = None) -> int:
+        """
+        v5 增强模式: 重新入场 + 体制自适应 + 信号评分 + 回踩入场 + 灵活确认.
+        单只股票可产生多笔非重叠交易,最大化交易日利用率.
+        """
+        n = len(df)
+        if n < 100:
+            return 0
+        if date_range:
+            mask = (df["日期"] >= date_range[0]) & (df["日期"] <= date_range[1])
+            df = df[mask].reset_index(drop=True)
+            if len(df) < 30:
+                return 0
+
+        df = compute_indicators(df)
+        code = os.path.splitext(os.path.basename(filepath))[0]
+        count = 0
+
+        signal_window: List[Tuple[int, str]] = []
+        next_scan_from = 70  # 下次扫描起点
+        confirm_window = 8 if self.weekly else V5_DUAL_CONFIRM_WINDOW
+        trades_this_stock = 0
+
+        for i in range(70, len(df) - 1):
+            # 冷却期跳过
+            if i < next_scan_from:
+                continue
+
+            # 单股交易上限
+            if trades_this_stock >= V5_MAX_TRADES_PER_STOCK:
+                break
+
+            # 修剪过期信号
+            signal_window = [(si, sp) for si, sp in signal_window if i - si <= confirm_window]
+
+            pattern = pattern_signal_at(df, i)
+            if pattern is None:
+                continue
+
+            # 检测体制
+            regime = detect_market_regime(df, i)
+
+            # v5 体制门控: 仅在有利体制下交易
+            if regime not in V5_ALLOWED_REGIMES:
+                self.regime_filtered += 1
+                continue
+
+            # 熊市过滤 (保留反转型信号)
+            if is_bearish(df, i) and not is_safe_for_bear(pattern):
+                self.bear_filtered += 1
+                continue
+
+            # 体制过滤 (--no-bear) — v5已使用regime gate,此选项无效但保留兼容
+            if self.skip_bear and not self.trend_mode:
+                if regime in ("bear", "bear_bias") and not is_safe_for_bear(pattern):
+                    self.regime_filtered += 1
+                    continue
+
+            # ── 趋势模式增强 ──
+            if self.trend_mode:
+                trend_ok, trend_score, trend_level = detect_trendiness(df, i)
+
+                if trend_score < TREND_MIN_SCORE:
+                    self.trend_filtered += 1
+                    continue
+
+                if not is_trend_priority(pattern) and trend_level != "strong":
+                    self.trend_filtered += 1
+                    continue
+
+                # v5: 趋势模式也用信号评分
+                sig_score = trend_score  # 趋势模式用趋势评分
+                regime_params = REGIME_PARAMS_TREND.get(regime, REGIME_PARAMS_TREND["range"])
+
+                # 确认入场
+                if trend_level == "strong":
+                    if not confirm_entry(df, i, strict=True):
+                        continue
+                elif trend_level == "good":
+                    if not confirm_entry(df, i, strict=True):
+                        continue
+                    signal_window.append((i, pattern))
+                    unique_patterns = set(sp for _, sp in signal_window)
+                    if len(unique_patterns) < 2:
+                        continue
+                elif trend_level == "weak":
+                    if not confirm_entry(df, i, strict=False):
+                        continue
+                    signal_window.append((i, pattern))
+                    unique_patterns = set(sp for _, sp in signal_window)
+                    trend_signals = [sp for sp in unique_patterns if is_trend_priority(sp)]
+                    if len(unique_patterns) < 2 or len(trend_signals) < 1:
+                        continue
+
+                self.dual_confirmed += 1
+                entry_i = signal_window[-1][0] if signal_window and trend_level != "strong" else i
+                if trend_level == "strong":
+                    entry_i = i
+
+                # v5: 回踩入场
+                entry_i = find_pullback_entry(df, entry_i, V5_PULLBACK_MAX_WAIT)
+
+                result = simulate_trend_exit(df, entry_i,
+                                             regime_params.get("sl", self.stop_loss),
+                                             regime_params.get("trail", self.trailing_stop),
+                                             regime_params.get("max_hold", self.max_hold))
+                result["trend_score"] = round(sig_score, 2)
+                result["trend_level"] = trend_level
+            else:
+                # ── v5 波段模式增强 ──
+                # 体制自适应参数
+                params = REGIME_PARAMS_SWING.get(regime, REGIME_PARAMS_SWING["range"])
+
+                # 信号质量评分
+                sig_score = calc_signal_quality(df, i, pattern, regime)
+
+                # 体制自适应最低评分: 熊市要求更高信号质量
+                regime_min = REGIME_MIN_SCORE.get(regime, V5_MIN_SIGNAL_SCORE)
+                if sig_score < regime_min:
+                    self.v5_score_filtered += 1
+                    continue
+
+                # 量价质量
+                if not is_volume_quality_ok(df, i):
+                    self.quality_filtered += 1
+                    continue
+
+                # 确认入场: 精英级非严格确认, 高分严格确认, 其余拒绝
+                if sig_score >= V5_HIGH_QUALITY_THRESHOLD:
+                    # 精英级信号: 非严格确认即可
+                    if not confirm_entry(df, i, strict=False):
+                        continue
+                elif sig_score >= V5_STRICT_CONFIRM_THRESHOLD:
+                    # 高/中分信号: 严格确认
+                    if not confirm_entry(df, i, strict=True):
+                        continue
+                else:
+                    # 低于严格门槛: 拒绝 (regime_min已保证不低于0.40)
+                    continue
+
+                signal_window.append((i, pattern))
+
+                # 双确认逻辑: 精英级单信号可入场, 其余需≥2个不同信号
+                in_bear = is_bearish(df, i)
+                unique_patterns = set(sp for _, sp in signal_window)
+
+                if not self.weekly:
+                    if sig_score >= V5_HIGH_QUALITY_THRESHOLD:
+                        # 精英级: 单信号即可,但熊市技术面仍需双确认
+                        if in_bear and len(unique_patterns) < 2:
+                            continue
+                    elif not in_bear and len(unique_patterns) < 2:
+                        continue
+                    # 熊市技术面+反转型信号+双确认满足 → 通过
+
+                self.dual_confirmed += 1
+
+                # v5: 回踩入场
+                entry_i = find_pullback_entry(df, signal_window[-1][0], V5_PULLBACK_MAX_WAIT)
+
+                result = simulate_exit(df, entry_i,
+                                       params.get("tp", self.take_profit),
+                                       params.get("sl", self.stop_loss),
+                                       params.get("trail", self.trailing_stop),
+                                       params.get("max_hold", self.max_hold),
+                                       params.get("trail_start", 0.05))
+
+            # ── 记录交易 ──
+            unique_patterns_final = set(sp for _, sp in signal_window) if signal_window else {pattern}
+            combined_name = "+".join(sorted(unique_patterns_final, key=lambda x: x[:20])[:3])
+
+            result["pattern"] = combined_name
+            result["code"] = code
+            entry_date_str = str(df["日期"].values[entry_i])[:10] if "日期" in df.columns else str(df.index[entry_i])
+            result["entry_date"] = entry_date_str
+            result["entry_price"] = float(df["收盘"].values[entry_i])
+            result["entry_regime"] = regime
+            result["signal_score"] = round(sig_score, 2)
+            result["entry_ma_bull"] = bool(df["ma_bull"].values[entry_i]) if "ma_bull" in df.columns else False
+            result["entry_vol_ratio"] = round(float(df["vol_ratio_vs5"].values[entry_i]), 2) if "vol_ratio_vs5" in df.columns else 0
+
+            self.trades.append(result)
+            self.signals_by_pattern[combined_name].append(result)
+
+            # ── v5 重新入场: 跳过出场点,清空信号窗,加冷却期 ──
+            exit_idx = result["exit_idx"]
+            is_loss = not result["win"]
+            cooldown = V5_COOLDOWN_AFTER_LOSS if is_loss else V5_COOLDOWN_AFTER_WIN
+            next_scan_from = max(exit_idx + cooldown, i + 1)
+            signal_window = []
+            if count > 0:
+                self.v5_reentries += 1
+            count += 1
+            trades_this_stock += 1
+
+        return count
 
     def run_stock(self, filepath: str, df: pd.DataFrame,
                   date_range: Optional[Tuple[str, str]] = None) -> int:
+        # v5 增强模式路由
+        if self.v5_mode:
+            return self._run_stock_v5(filepath, df, date_range)
+
         n = len(df)
         if n < 100:
             return 0
@@ -701,7 +1060,7 @@ class BuySellBacktest:
         hit_20 = sum(1 for r in returns if r >= 20.0)
         hit_10 = sum(1 for r in returns if r >= 10.0)
 
-        return {"total_trades": n, "win_rate": round(wins / n * 100, 1),
+        summary = {"total_trades": n, "win_rate": round(wins / n * 100, 1),
                 "avg_return": round(float(np.mean(returns)), 2),
                 "max_drawdown": mdd,
                 "avg_peak_return": round(float(np.mean([t["peak_return"] for t in self.trades])), 2),
@@ -717,7 +1076,10 @@ class BuySellBacktest:
                 "quality_filtered": self.quality_filtered,
                 "trend_filtered": self.trend_filtered,
                 "regime_filtered": self.regime_filtered,
+                "v5_score_filtered": self.v5_score_filtered,
+                "v5_reentries": self.v5_reentries,
                 "dual_confirmed": self.dual_confirmed}
+        return summary
 
     def pattern_summary(self, min_samples=MIN_SAMPLE) -> pd.DataFrame:
         rows = []
@@ -868,7 +1230,14 @@ class BuySellBacktest:
         """
         from datetime import datetime as dt
         ts = dt.now().strftime("%Y%m%d_%H%M%S")
-        mode = "trend" if self.trend_mode else "swing"
+        if self.v5_mode:
+            mode = "v5"
+            if self.trend_mode:
+                mode = "v5_trend"
+        elif self.trend_mode:
+            mode = "trend"
+        else:
+            mode = "swing"
         label_slug = f"_{self.label}" if self.label else ""
         out_dir = os.path.join(TRADE_RECORD_DIR, f"backtest_{mode}{label_slug}_{ts}")
         os.makedirs(out_dir, exist_ok=True)
@@ -889,6 +1258,7 @@ class BuySellBacktest:
                 "max_hold": self.max_hold,
                 "weekly": self.weekly,
                 "skip_bear": self.skip_bear,
+                "v5_mode": self.v5_mode,
                 "date_range": date_range,
                 "generated_at": ts,
             },
@@ -908,6 +1278,10 @@ class BuySellBacktest:
             "exit_price", "exit_reason", "return_pct", "peak_return",
             "hold_days", "win",
         ]
+        # v5 专属字段
+        if self.v5_mode:
+            csv_fields.insert(3, "entry_regime")
+            csv_fields.insert(4, "signal_score")
         with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(csv_fields)
@@ -921,6 +1295,27 @@ class BuySellBacktest:
         if not ps.empty:
             ps.to_csv(rank_path, index=False, encoding="utf-8-sig")
             print(f"  🏆 信号排名: {rank_path} ({len(ps)} 个组合)")
+
+        # ── v5 体制分析 ──
+        if self.v5_mode and self.trades:
+            regime_path = os.path.join(out_dir, "regime_analysis.csv")
+            regime_rows = []
+            for reg in ["bull", "bull_bias", "range", "bear_bias", "bear"]:
+                rt = [t for t in self.trades if t.get("entry_regime") == reg]
+                if not rt:
+                    continue
+                n_rt = len(rt)
+                wr = sum(1 for t in rt if t["win"]) / n_rt * 100
+                avg_ret = float(np.mean([t["return_pct"] for t in rt]))
+                avg_score = float(np.mean([t.get("signal_score", 0) for t in rt]))
+                regime_rows.append({
+                    "regime": reg, "n": n_rt, "wr": round(wr, 1),
+                    "avg_ret": round(avg_ret, 2), "avg_score": round(avg_score, 2),
+                    "hit_10pct": round(sum(1 for t in rt if t["return_pct"] >= 10.0) / n_rt * 100, 1),
+                })
+            if regime_rows:
+                pd.DataFrame(regime_rows).to_csv(regime_path, index=False, encoding="utf-8-sig")
+                print(f"  📈 体制分析: {regime_path}")
 
         return out_dir
 
@@ -994,10 +1389,11 @@ def resample_daily_to_weekly(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 # ═══════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(description="买入-卖出信号回测 v4")
+    parser = argparse.ArgumentParser(description="买入-卖出信号回测 v5")
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--target", type=float, default=20.0)
     parser.add_argument("--trend", action="store_true", help="v4 趋势跟踪模式")
+    parser.add_argument("--v5", action="store_true", help="v5 增强模式 (重新入场+体制自适应+信号评分+回踩入场)")
     parser.add_argument("--weekly", action="store_true", help="周线数据回测 (扩大数据维度)")
     parser.add_argument("--resample-weekly", action="store_true", help="日线重采样为周线回测 (无需下载)")
     parser.add_argument("--no-bear", action="store_true", help="跳过熊市体制 (提高胜率)")
@@ -1018,6 +1414,7 @@ def main():
 
     t0 = time.time()
     trend_mode = args.trend
+    v5_mode = args.v5
     weekly_mode = args.weekly
     resample_mode = args.resample_weekly
 
@@ -1040,13 +1437,18 @@ def main():
         tr_level = TREND_TRAILING
         max_hold = TREND_MAX_HOLD if not weekly_mode else TREND_MAX_HOLD // 5
         mode_label = f"v4 趋势跟踪({freq_label})"
+        if v5_mode:
+            mode_label = f"v5 增强趋势({freq_label})"
     else:
         tp_level = args.target / 100
         sl_level = STOP_LOSS
         tr_level = -(args.target / 100 * 0.6)
         max_hold = base_max_hold
         bear_tag = " 跳过熊市" if args.no_bear else ""
-        mode_label = f"v3 波段({freq_label} 目标{int(args.target)}%{bear_tag})"
+        if v5_mode:
+            mode_label = f"v5 增强波段({freq_label} 目标{int(args.target)}%{bear_tag})"
+        else:
+            mode_label = f"v3 波段({freq_label} 目标{int(args.target)}%{bear_tag})"
 
     # 加载股票文件
     if args.all_stocks:
@@ -1102,10 +1504,19 @@ def main():
         if weekly_mode or resample_mode:
             print(f"  周线单信号入场 | ATR动态止损 | 量价质量检查")
         else:
-            print(f"  双信号互确认({DUAL_CONFIRM_WINDOW}日≥2) | ATR动态止损 | 量价质量检查")
-        print(f"  止盈 +{int(args.target)}% | 移动止损 {int(tr_level*100)}% | 持仓≤{max_hold_desc}")
+            if v5_mode:
+                print(f"  双确认{V5_DUAL_CONFIRM_WINDOW}日≥2(高质量单信号可入) | 体制自适应TP/SL | 回踩优化入场")
+            else:
+                print(f"  双信号互确认({DUAL_CONFIRM_WINDOW}日≥2) | ATR动态止损 | 量价质量检查")
+        if v5_mode:
+            print(f"  止盈: 体制自适应(bull+12%/bear+5%) | 重新入场+冷却 | 信号评分≥{V5_MIN_SIGNAL_SCORE}")
+        else:
+            print(f"  止盈 +{int(args.target)}% | 移动止损 {int(tr_level*100)}% | 持仓≤{max_hold_desc}")
         if args.no_bear:
             print(f"  体制过滤: 跳过熊市/偏熊体制")
+    if v5_mode:
+        print(f"  v5增强: 回踩入场≤{V5_PULLBACK_MAX_WAIT}日 | 高分阈值{V5_HIGH_QUALITY_THRESHOLD} | "
+              f"盈利冷却{V5_COOLDOWN_AFTER_WIN}d/亏损冷却{V5_COOLDOWN_AFTER_LOSS}d")
     if args.min_history > MIN_SAMPLE:
         print(f"  数据要求: 最少{args.min_history}个交易日")
     print(f"{'═' * 70}")
@@ -1115,13 +1526,15 @@ def main():
         label_parts.append("主板")
     if date_range:
         label_parts.append(f"{date_range[0][:7]}_{date_range[1][:7]}")
+    if v5_mode:
+        label_parts.insert(0, "v5")
     label = "_".join(label_parts) if label_parts else ""
 
     bt = BuySellBacktest(take_profit=tp_level, stop_loss=sl_level,
                          trailing=tr_level, max_hold=max_hold,
                          trend_mode=trend_mode, skip_bear=args.no_bear,
                          weekly=(weekly_mode or resample_mode),
-                         label=label)
+                         v5_mode=v5_mode, label=label)
     total_sig = 0
     for i, fpath in enumerate(stock_files):
         df = load_stock_csv(fpath)
@@ -1140,6 +1553,8 @@ def main():
             rate = (i + 1) / e if e > 0 else 1
             eta = (len(stock_files) - i - 1) / rate
             extra = f"趋势{bt.trend_filtered}" if trend_mode else f"质{bt.quality_filtered}"
+            if v5_mode:
+                extra += f" 评分{bt.v5_score_filtered} 重入{bt.v5_reentries}"
             if args.no_bear:
                 extra += f" 体制{bt.regime_filtered}"
             print(f"  [{i+1}/{len(stock_files)}] {bt.dual_confirmed}确认 {total_sig}交易 "
@@ -1147,6 +1562,8 @@ def main():
 
     elapsed = time.time() - t0
     f_extra = f" 趋势{bt.trend_filtered}" if trend_mode else f" 质{bt.quality_filtered}"
+    if v5_mode:
+        f_extra += f" 评分{bt.v5_score_filtered} 重入{bt.v5_reentries}"
     if args.no_bear:
         f_extra += f" 体制{bt.regime_filtered}"
     print(f"\n  ✅ {total_sig}笔交易 | 双确认{bt.dual_confirmed}次 "
@@ -1162,6 +1579,8 @@ def main():
     print(f"  均值{s['avg_return']}% | 峰值{s['avg_peak_return']}% | 最大回撤{s['max_drawdown']}%")
     print(f"  夏普{s['sharpe']} | 盈亏比{s['profit_factor']} | 连亏{s['max_loss_streak']} | 持仓{s['avg_hold_days']}d")
     print(f"  退出: {s['reason_dist']}")
+    if v5_mode:
+        print(f"  v5: 重新入场{s['v5_reentries']}次 | 评分过滤{s['v5_score_filtered']}次")
 
     ps = bt.pattern_summary(5)
     if not ps.empty:
@@ -1253,6 +1672,27 @@ def main():
         analysis = bt.run_analysis()
         bt.print_analysis(analysis)
 
+    # ── v5 体制收益分析 ──
+    if v5_mode and bt.trades:
+        print(f"\n{'─' * 60}")
+        print(f"  📈 v5 体制自适应收益分析")
+        print(f"{'─' * 60}")
+        print(f"  {'体制':<12s} {'笔数':>5s} {'胜率':>6s} {'均收益':>7s} {'均分':>5s} {'10%+':>5s}")
+        print(f"  {'─'*45}")
+        for reg in ["bull", "bull_bias", "range", "bear_bias", "bear"]:
+            rt = [t for t in bt.trades if t.get("entry_regime") == reg]
+            if not rt:
+                continue
+            n_rt = len(rt)
+            wr = sum(1 for t in rt if t["win"]) / n_rt * 100
+            avg_ret = float(np.mean([t["return_pct"] for t in rt]))
+            avg_score = float(np.mean([t.get("signal_score", 0) for t in rt]))
+            hit10 = sum(1 for t in rt if t["return_pct"] >= 10.0) / n_rt * 100
+            params = REGIME_PARAMS_SWING.get(reg, {})
+            tp_str = f"{int(params.get('tp', 0)*100)}%"
+            print(f"  {reg:<12s} {n_rt:>5d} {wr:>5.1f}% {avg_ret:>+6.2f}% {avg_score:>4.2f} {hit10:>4.1f}%  "
+                  f"TP={tp_str}")
+
     # ── 保存交易记录 ──
     bt.save_trades(date_range=date_range, regime_stats=regime_stats)
 
@@ -1261,7 +1701,8 @@ def main():
         print(f"  v4 趋势跟踪 | 20%+命中率: {s['hit_20pct']}% ({s['hit_20pct_n']}/{s['total_trades']})")
     else:
         regime_str = f" | 体制 {s.get('regime_filtered',0)}" if args.no_bear else ""
-        print(f"  v3 波段过滤: 熊市 {s.get('bear_filtered',0)} | 量质 {s.get('quality_filtered',0)}{regime_str} | 双确认 {s.get('dual_confirmed',0)}")
+        v5_str = f" | v5重入{s.get('v5_reentries',0)} 评分过滤{s.get('v5_score_filtered',0)}" if v5_mode else ""
+        print(f"  v3 波段过滤: 熊市 {s.get('bear_filtered',0)} | 量质 {s.get('quality_filtered',0)}{regime_str}{v5_str} | 双确认 {s.get('dual_confirmed',0)}")
     print(f"  总耗时 {elapsed:.0f}s")
     print(f"{'═' * 70}")
 
