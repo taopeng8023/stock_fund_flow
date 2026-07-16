@@ -20,3 +20,6 @@ web_dashboard/.web/
 *.log
 .env
 baostock_data/analysis/trade_records/
+node_modules/
+package.json
+package-lock.json

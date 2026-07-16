@@ -38,6 +38,12 @@ v5 final 回测验证 (buy_sell_backtest.py 5122只 1991-2026 7544笔):
   3层过滤: 量比>1 → 双信号确认 → 体制适配
   卖出优先: K线出场信号 > 移动止损 > 硬止损
   盘中轻量 → 尾盘全量精选 → 企微推送高置信信号
+
+主力占比信号 (v6 forward验证 — 20日对 106,947条):
+  条件: 主力占比 Top 1% | 等权买入 | 持有1日
+  验证: 夏普 2.79 | 日胜率 78.9% | 累积 +27.82% | 最大回撤 -2.94%
+  增强: 跳过周五(避免跨周末缺口) 夏普→3.50 | 累积→+30.29%
+  逻辑: 机构尾盘高度控盘 = 次日继续上涨概率 55% | 均超额 +151bp
 """
 
 import os
@@ -299,6 +305,149 @@ def _count_snapshots(date_str: str) -> int:
                if f.name.startswith("fund_flow_") and f.name.endswith(".csv"))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# v6 主力占比 Top 1% 信号 — forward 验证: 夏普 2.79 日胜率 78.9% 累积 +27.82%
+# ═══════════════════════════════════════════════════════════════════════════════
+
+MAIN_CAPITAL_TOP_PCT = 0.01          # Top 1%
+MAIN_CAPITAL_MIN_PICKS = 5           # 最少选股数
+MAIN_CAPITAL_SKIP_FRIDAY = True      # 跳过周五→周一跨周末缺口
+
+
+def _compute_main_capital_signal(date_str: str) -> list[dict]:
+    """读取最新 fund_flow 快照, 计算主力占比 Top 1% 信号.
+
+    Returns:
+        [{code, name, price, main_pct, change_pct, super_large, large,
+          turnover, volume_ratio, market_cap}, ...]
+        按 主力占比 降序排列.
+    """
+    import pandas as pd
+
+    intraday_dir = PROJECT_ROOT / "research_data" / date_str / "intraday"
+    if not intraday_dir.exists():
+        return []
+
+    files = sorted(intraday_dir.glob("fund_flow_*.csv"))
+    if not files:
+        return []
+
+    try:
+        df = pd.read_csv(files[-1])
+    except Exception:
+        return []
+
+    if "主力占比" not in df.columns:
+        return []
+
+    # 数值化
+    for col in ["主力占比", "最新价", "涨跌幅", "超大单净流入", "大单净流入",
+                "换手率", "量比", "总市值", "成交额"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    valid = df["主力占比"].notna()
+    if valid.sum() < MAIN_CAPITAL_MIN_PICKS:
+        return []
+
+    threshold = df.loc[valid, "主力占比"].quantile(1 - MAIN_CAPITAL_TOP_PCT)
+    top = df[valid & (df["主力占比"] >= threshold)].copy()
+    top = top.sort_values("主力占比", ascending=False)
+
+    picks = []
+    for _, row in top.iterrows():
+        picks.append({
+            "code": str(row.get("代码", "")),
+            "name": str(row.get("名称", "")),
+            "price": float(row.get("最新价", 0)) if pd.notna(row.get("最新价")) else 0.0,
+            "main_pct": float(row["主力占比"]),
+            "change_pct": float(row.get("涨跌幅", 0)) if pd.notna(row.get("涨跌幅")) else 0.0,
+            "super_large": float(row.get("超大单净流入", 0)) if pd.notna(row.get("超大单净流入")) else 0.0,
+            "large": float(row.get("大单净流入", 0)) if pd.notna(row.get("大单净流入")) else 0.0,
+            "turnover": float(row.get("换手率", 0)) if pd.notna(row.get("换手率")) else 0.0,
+            "volume_ratio": float(row.get("量比", 0)) if pd.notna(row.get("量比")) else 0.0,
+            "market_cap": float(row.get("总市值", 0)) if pd.notna(row.get("总市值")) else 0.0,
+        })
+    return picks
+
+
+def _should_skip_main_capital_signal(date_str: str) -> bool:
+    """判断是否应跳过主力占比信号 (周五跨周末风险)."""
+    if not MAIN_CAPITAL_SKIP_FRIDAY:
+        return False
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    return dt.weekday() == 4  # 周五
+
+
+def _save_main_capital_picks(date_str: str, picks: list[dict], time_label: str = ""):
+    """持久化主力占比信号选股结果."""
+    import json
+    out_dir = PROJECT_ROOT / "research_data" / date_str
+    out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f"_{time_label}" if time_label else ""
+    out_path = out_dir / f"main_capital_picks{suffix}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "date": date_str,
+            "time": time_label,
+            "signal": "主力占比Top1%",
+            "sharpe_20d": 2.79,
+            "daily_wr": 0.789,
+            "cum_return_20d": 0.2782,
+            "total_picks": len(picks),
+            "picks": picks,
+        }, f, ensure_ascii=False, indent=2)
+    return out_path
+
+
+def _notify_main_capital_signal(date_str: str, picks: list[dict]):
+    """企微推送主力占比 Top 1% 收盘信号."""
+    if not picks:
+        return
+
+    # 周五跳过推送（信号也跳过交易）
+    if _should_skip_main_capital_signal(date_str):
+        print(f"  ⏭ 周五 skip 主力占比信号 (跨周末风险)")
+        return
+
+    try:
+        from notify.wecom_sender import send_markdown
+    except ImportError:
+        return
+
+    top_n = min(10, len(picks))
+    now_str = datetime.now(BJS_TZ).strftime("%H:%M")
+    lines = [
+        f"## 📊 主力占比 Top 1% 信号 — {date_str} {now_str}",
+        f"> v6 forward验证: 夏普 2.79 | 日胜率 78.9% | 累积 +27.82%",
+        f"> 入选 {len(picks)} 只 | 等权 | T+1 出场",
+        "",
+    ]
+
+    for i, p in enumerate(picks[:top_n]):
+        change_str = f"{p['change_pct']:+.2f}%" if p['change_pct'] else ""
+        lines.append(
+            f"**{i+1}. {p['name']}** ({p['code']})  "
+            f"主力占比: {p['main_pct']:.2f}%  {change_str}"
+        )
+        cap_str = f"{p['market_cap']/1e8:.0f}亿" if p['market_cap'] else ""
+        lines.append(f"> 换手: {p['turnover']:.2f}% | 量比: {p['volume_ratio']:.1f} | 市值: {cap_str}")
+
+    if len(picks) > top_n:
+        lines.append(f"")
+        lines.append(f"> ... 共 {len(picks)} 只 (完整列表见 data/{date_str}/main_capital_picks.json)")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("> ⚠ 等权买入 | T+1收盘卖出 | 跳过周五 | 回测最大回撤-2.94%")
+
+    try:
+        send_markdown("\n".join(lines))
+        print(f"  📤 企微推送: 主力占比 Top1% {len(picks)} 只")
+    except Exception as e:
+        print(f"  ⚠ 推送失败: {e}")
+
+
 def _sleep_until(target: datetime, reason: str):
     """休眠到指定时间，每秒检查停止信号。"""
     global _has_shown_lunch
@@ -527,10 +676,10 @@ def run(dry_run: bool = False):
     regime = _get_regime_params()
 
     print("╔" + "═" * 62 + "╗")
-    print(f"║  主力资金流向定时分析 v5 final — 7544笔全量回测版{'':>18}║")
+    print(f"║  主力资金流向定时分析 v6 — 主力占比Top1%信号 + K线选股{'':>10}║")
     print(f"║  资金流: 每{INTERVAL_SEC//60}分钟 | 选股: 每{regime['scanner_interval']//60}分钟 | {regime['label']}{'':>13}║")
-    print(f"║  📊 v5回测: 5122只 7544笔 | 峰值 +16.15% | 盈亏比 3.65{'':>4}║")
-    print(f"║  🎯 买入: 量比>1 + 三重确认 | 卖出: K线信号 > 移动止损{'':>6}║")
+    print(f"║  📊 v6验证: 主力占比Top1% 夏普2.79 日胜率78.9% 累积+27.82%{'':>1}║")
+    print(f"║  🎯 买入: 主力Top1%等权 | K线: 量比>1 + 三重确认 | 卖出: K线>移损{'':>0}║")
     if dry_run:
         print(f"║  ⚠ 试运行模式{'':>48}║")
     print("╚" + "═" * 62 + "╝")
@@ -628,6 +777,22 @@ def run(dry_run: bool = False):
             print(f"  📊 {ts_display} {phase_label} ({current_count}帧) [{regime['label']}]")
             print(f"{'─'*60}")
             ok = _run_analysis(date_str)
+            # ── v6 主力占比 Top 1% 信号 ──
+            main_picks = _compute_main_capital_signal(date_str)
+            if main_picks:
+                time_label = now.strftime("%H%M%S")
+                _save_main_capital_picks(date_str, main_picks, time_label)
+                if phase == "closing":
+                    # 尾盘: 推送企微通知
+                    _notify_main_capital_signal(date_str, main_picks)
+                    print(f"  📊 主力占比 Top1% 收盘信号: {len(main_picks)} 只")
+                else:
+                    # 盘中: 仅打印摘要
+                    top3_info = " | ".join(
+                        f"{p['name']}({p['main_pct']:.1f}%)"
+                        for p in main_picks[:3]
+                    )
+                    print(f"  📊 主力占比 Top1%: {len(main_picks)} 只 | Top3: {top3_info}")
             print(f"{'─'*60}")
             print(f"  {'✅' if ok else '❌'} {ts_display}")
 
