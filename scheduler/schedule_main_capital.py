@@ -782,17 +782,16 @@ def run(dry_run: bool = False):
             if main_picks:
                 time_label = now.strftime("%H%M%S")
                 _save_main_capital_picks(date_str, main_picks, time_label)
+                print(f"  📊 主力占比 Top1% 信号 ({len(main_picks)} 只) | 阈值≥{main_picks[-1]['main_pct']:.1f}%")
+                # 每次执行都输出完整列表
+                for i, p in enumerate(main_picks):
+                    chg = f"{p['change_pct']:+.2f}%" if p['change_pct'] else "—"
+                    cap = f"{p['market_cap']/1e8:.0f}亿" if p['market_cap'] else "—"
+                    print(f"  {i+1:3d}. {p['name']:8s} {p['code']:12s} "
+                          f"主力{p['main_pct']:5.1f}%  {chg:>8s}  "
+                          f"换手{p['turnover']:.1f}%  {cap}")
                 if phase == "closing":
-                    # 尾盘: 推送企微通知
                     _notify_main_capital_signal(date_str, main_picks)
-                    print(f"  📊 主力占比 Top1% 收盘信号: {len(main_picks)} 只")
-                else:
-                    # 盘中: 仅打印摘要
-                    top3_info = " | ".join(
-                        f"{p['name']}({p['main_pct']:.1f}%)"
-                        for p in main_picks[:3]
-                    )
-                    print(f"  📊 主力占比 Top1%: {len(main_picks)} 只 | Top3: {top3_info}")
             print(f"{'─'*60}")
             print(f"  {'✅' if ok else '❌'} {ts_display}")
 
